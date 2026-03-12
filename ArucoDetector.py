@@ -119,8 +119,8 @@ class ArucoDetectionViewer(PoseReader):
 
     def broadcast_marker_transform(self, marker_pos, marker_orient,
                                    parent_frame="base_link", child_frame="aruco_marker"):
-        if not hasattr(self, 'tf2_broadcaster'):
-            self.tf2_broadcaster = tf2_ros.TransformBroadcaster(self)
+        if not hasattr(self, 'tf2_static_broadcaster'):
+            self.tf2_static_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
@@ -129,7 +129,7 @@ class ArucoDetectionViewer(PoseReader):
         t.transform.translation.x, t.transform.translation.y, t.transform.translation.z = float(marker_pos[0]), float(marker_pos[1]), float(marker_pos[2])
         q = R.from_euler("XYZ", marker_orient, degrees=False).as_quat()
         t.transform.rotation.x, t.transform.rotation.y, t.transform.rotation.z, t.transform.rotation.w = float(q[0]), float(q[1]), float(q[2]), float(q[3])
-        self.tf2_broadcaster.sendTransform(t)
+        self.tf2_static_broadcaster.sendTransform(t)
 
     # ---- Marker pose printing ----
 

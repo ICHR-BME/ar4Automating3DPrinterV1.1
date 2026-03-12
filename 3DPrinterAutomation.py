@@ -421,16 +421,23 @@ def _input_thread(node):
 
 def main():
     rclpy.init()
-    
-    # Create the node FIRST so we can pass it to the printer
-    node = printerAutomation(calibration_mode=False,stream_source="webcam")
+    runVirtual = 0
 
-    '''printer = Simulated3DPrinter(
-        node=node,
-        pos=[0.0, -0.62, 0.18],
-        orient=[0.0, 0.0, np.pi],
-    )
-    printer.spawn_fast()'''
+    if runVirtual:
+        stream_source = "ros"  # Use ROS topic stream for simulated environment
+    else:        
+        stream_source = "webcam"  # Use webcam for real environment
+    # Create the node FIRST so we can pass it to the printer
+    node = printerAutomation(calibration_mode=False,stream_source=stream_source)
+
+    
+    if runVirtual:
+        printer = Simulated3DPrinter(
+            node=node,
+            pos=[0.0, -0.62, 0.18],
+            orient=[0.0, 0.0, np.pi],
+        )
+        printer.spawn_fast()
 
     # Spin both the ROS node and the stream's internal ROS node
     executor = rclpy.executors.MultiThreadedExecutor()
@@ -466,16 +473,19 @@ def main():
 
     # Run the initial scan (blocks until move_to_pose completes)
     node.get_logger().info("Starting initial scan for markers...")
-    '''node.scanLocationForMarkers(
-        estimated_pos=[0.62, 0.0, 0.20],
-        estimated_orient=[0.0, 0.0, 0],  # marker Z-axis points +Y (toward robot)
-        viewing_distance=0.30
-    )'''
-    node.scanLocationForMarkers(
-        estimated_pos=[0.34, 0.06, 0.15],
-        estimated_orient=[0.0, 0.0, -np.pi/2],  # marker Z-axis points +Y (toward robot)
-        viewing_distance=0.00
+    if runVirtual:
+        node.scanLocationForMarkers(
+            estimated_pos=[0.62, 0.0, 0.20],
+            estimated_orient=[0.0, 0.0, 0],  # marker Z-axis points +Y (toward robot)
+            viewing_distance=0.30
     )
+    else:
+        node.scanLocationForMarkers(
+            estimated_pos=[0.37, 0.08, 0.10],
+            estimated_orient=[0.0, 0.0, -np.pi/2],  # marker Z-axis points +Y (toward robot)
+            viewing_distance=0.00
+        )
+    
     node.get_logger().info("Initial scan complete.")
 
     # Now start the interactive input loop on the main thread
