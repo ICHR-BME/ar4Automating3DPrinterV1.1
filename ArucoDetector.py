@@ -24,7 +24,8 @@ class ArucoDetectionViewer(PoseReader):
                  camera_keyword="GENERAL WEBCAM",
                  color_topic="/rgbd_camera/image",
                  depth_topic="/rgbd_camera/depth_image",
-                 camera_info_topic="/rgbd_camera/camera_info"):
+                 camera_info_topic="/rgbd_camera/camera_info",
+                 feed_rotation_deg=0.0):
         super().__init__('aruco_detection_viewer', enable_pose_print=False)
 
         self.fps = 30.0
@@ -52,6 +53,7 @@ class ArucoDetectionViewer(PoseReader):
             color_topic=color_topic,
             depth_topic=depth_topic,
             camera_info_topic=camera_info_topic,
+            feed_rotation_deg=feed_rotation_deg,
         )
 
         self.tf2_buffer = tf2_ros.Buffer()

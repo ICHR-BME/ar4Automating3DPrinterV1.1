@@ -16,13 +16,15 @@ import threading
 
 class printerAutomation(ArucoDetectionViewer):
     def __init__(self, calibration_mode=False, stream_source="webcam", camera_index=None, camera_keyword="GENERAL WEBCAM",
-                 color_topic="/rgbd_camera/image", depth_topic="/rgbd_camera/depth_image", camera_info_topic="/rgbd_camera/camera_info"):
+                 color_topic="/rgbd_camera/image", depth_topic="/rgbd_camera/depth_image", camera_info_topic="/rgbd_camera/camera_info",
+                 feed_rotation_deg=0.0):
         super().__init__(source=stream_source,
                          camera_index=camera_index,
                          camera_keyword=camera_keyword,
                          color_topic=color_topic,
                          depth_topic=depth_topic,
-                         camera_info_topic=camera_info_topic)
+                         camera_info_topic=camera_info_topic,
+                         feed_rotation_deg=feed_rotation_deg)
         self.get_logger().info(f"printerAutomation initialized, calibration_mode={calibration_mode}")
 
         # Estimated marker frame name prefix
@@ -425,11 +427,13 @@ def main():
 
     if runVirtual:
         stream_source = "ros"  # Use ROS topic stream for simulated environment
+        node = printerAutomation(calibration_mode=False,stream_source=stream_source)
+
     else:        
         stream_source = "webcam"  # Use webcam for real environment
-    # Create the node FIRST so we can pass it to the printer
-    node = printerAutomation(calibration_mode=False,stream_source=stream_source)
+        node = printerAutomation(calibration_mode=False,stream_source=stream_source, feed_rotation_deg=90.0)
 
+    # Create the node FIRST so we can pass it to the printer
     
     if runVirtual:
         printer = Simulated3DPrinter(
@@ -481,8 +485,8 @@ def main():
     )
     else:
         node.scanLocationForMarkers(
-            estimated_pos=[0.37, 0.08, 0.10],
-            estimated_orient=[0.0, 0.0, -np.pi/2],  # marker Z-axis points +Y (toward robot)
+            estimated_pos=[0.37, 0.1, 0.07],
+            estimated_orient=[0.0, 0.0, -np.pi/2],#estimated_orient=[0.0, 0.0, -np.pi/2],  # marker Z-axis points +Y (toward robot)
             viewing_distance=0.00
         )
     

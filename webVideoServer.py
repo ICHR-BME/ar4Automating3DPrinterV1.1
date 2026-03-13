@@ -113,9 +113,14 @@ class WebVideoStream:
                  camera_keyword="GENERAL WEBCAM",
                  color_topic="/rgbd_camera/image",
                  depth_topic="/rgbd_camera/depth_image",
-                 camera_info_topic="/rgbd_camera/camera_info"):
+                 camera_info_topic="/rgbd_camera/camera_info",
+                 feed_rotation_deg=0.0):
 
         self.source = source.lower()
+        # Rotate the webcam feed by this angle (degrees) to compensate for
+        # calibration differences between simulation and the real camera.
+        # Only applied when source is "webcam".
+        self.feed_rotation_deg = float(feed_rotation_deg) if self.source == "webcam" else 0.0
         self.fps = fps
         self.display_scale = display_scale
         self.depth_colormap = depth_colormap
@@ -384,8 +389,18 @@ class WebVideoStream:
 
     # ---- Composite frame ----
 
+    def _rotate_frame(self, frame: np.ndarray) -> np.ndarray:
+        """Rotate frame by self.feed_rotation_deg around its centre."""
+        if self.feed_rotation_deg == 0.0:
+            return frame
+        h, w = frame.shape[:2]
+        M = cv2.getRotationMatrix2D((w / 2.0, h / 2.0), self.feed_rotation_deg, 1.0)
+        return cv2.warpAffine(frame, M, (w, h))
+
     def _build_frame(self, color, depth=None):
         frame = color.copy()
+        # Apply feed rotation (only non-zero for webcam source)
+        frame = self._rotate_frame(frame)
         live_marker_poses = []
         if self.enable_aruco:
             frame, live_marker_poses = self.detect(frame)
