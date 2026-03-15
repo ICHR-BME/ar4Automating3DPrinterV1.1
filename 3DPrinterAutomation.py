@@ -419,7 +419,7 @@ def _input_thread(node):
 
 def main():
     rclpy.init()
-    runVirtual = 1
+    runVirtual = 0
 
     if runVirtual:
         stream_source = "ros"  # Use ROS topic stream for simulated environment

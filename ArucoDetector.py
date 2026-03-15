@@ -137,8 +137,11 @@ class ArucoDetectionViewer(PoseReader):
             filteredEuler = alpha * badEuler + (1 - alpha) * prev[3:6]
         self.filterStates[markerID, :] = np.hstack((filteredPos, filteredEuler))
 
-        self.broadcast_marker_transform(filteredPos, filteredEuler,
-                                        child_frame=f"{self.markerNamePrefix}{markerID}")
+        try:
+            self.broadcast_marker_transform(filteredPos, filteredEuler,
+                                            child_frame=f"{self.markerNamePrefix}{markerID}")
+        except Exception:
+            pass  # TF broadcast failure is non-fatal
         return filteredPos, filteredEuler
 
     def broadcast_marker_transform(self, marker_pos, marker_orient,

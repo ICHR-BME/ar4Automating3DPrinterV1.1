@@ -432,11 +432,15 @@ class WebVideoStream:
         if self.source == "webcam":
             dt = 1.0 / self.fps
             while True:
-                ret, frame = self.cap.read()
-                if not ret:
-                    time.sleep(0.1)
-                    continue
-                self._build_frame(frame)
+                try:
+                    ret, frame = self.cap.read()
+                    if not ret:
+                        time.sleep(0.1)
+                        continue
+                    self._build_frame(frame)
+                except Exception as e:
+                    _log = self.log_fn or print
+                    _log(f'Webcam frame error (recovering): {e}')
                 time.sleep(dt)
             
         else:
