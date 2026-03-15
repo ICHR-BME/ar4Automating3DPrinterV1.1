@@ -429,7 +429,6 @@ def main():
         stream_source = "webcam"  # Use webcam for real environment
         node = printerAutomation(calibration_mode=False,stream_source=stream_source, feed_rotation_deg=90.0)
 
-    # Create the node FIRST so we can pass it to the printer
     
     if runVirtual:
         # printer in the front
