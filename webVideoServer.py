@@ -318,9 +318,9 @@ class WebVideoStream:
                     'distanceFromCamera': distance,
                 }
 
-                # Always store the base entry in found_markers (camera-relative pose)
-                # so the marker is known even if enrich_fn fails
-                self.found_markers[marker_id] = entry.copy()
+                # Store base entry only if we don't already have an enriched version
+                if marker_id not in self.found_markers:
+                    self.found_markers[marker_id] = entry.copy()
 
                 if self.enrich_fn is not None:
                     enriched = self.enrich_fn(entry)

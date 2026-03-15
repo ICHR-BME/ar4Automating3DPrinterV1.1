@@ -164,13 +164,11 @@ class printerAutomation(ArucoDetectionViewer):
         if markers:
             for entry in markers:
                 if entry['id'] == markerID:
-                    marker_pos = entry['positionInWorld']
-                    temp = entry['orientInWorld']
-                    marker_ori = np.array([temp['roll'], temp['pitch'], temp['yaw']])
+                    bad_pos = entry['positionInBase']
+                    bad_euler = entry['eulerInBase']
                     tf2Name = entry['tf2Name']
 
                     # Re-broadcast marker TF and poll until the frame is available
-                    bad_pos, bad_euler = self.to_bad_frame(marker_pos, np.radians(marker_ori))
                     badPos, badEuler = None, None
                     for attempt in range(20):
                         self.broadcast_marker_transform(bad_pos, bad_euler, child_frame=tf2Name)
@@ -185,7 +183,7 @@ class printerAutomation(ArucoDetectionViewer):
                         return
                     goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
 
-                    self.get_logger().info(f'Moving to marker ID {markerID} at pose: {marker_pos}, {marker_ori}')
+                    self.get_logger().info(f'Moving to marker ID {markerID} at pose: {bad_pos}')
                     print(f"Computed target pose: pos={goodPos}, orient={goodEuler}")
                     self.move_to_pose(goodPos, goodEuler)
                     foundMarker = 1
@@ -205,13 +203,11 @@ class printerAutomation(ArucoDetectionViewer):
         if markers:
             for entry in markers:
                 if entry['id'] == markerID:
-                    marker_pos = entry['positionInWorld']
-                    temp = entry['orientInWorld']
-                    marker_ori = np.array([temp['roll'], temp['pitch'], temp['yaw']])
+                    bad_pos = entry['positionInBase']
+                    bad_euler = entry['eulerInBase']
                     tf2Name = entry['tf2Name']
 
                     # Re-broadcast marker TF and poll until the frame is available
-                    bad_pos, bad_euler = self.to_bad_frame(marker_pos, np.radians(marker_ori))
                     badPos, badEuler = None, None
                     for attempt in range(20):
                         self.broadcast_marker_transform(bad_pos, bad_euler, child_frame=tf2Name)
@@ -226,7 +222,7 @@ class printerAutomation(ArucoDetectionViewer):
                         return
                     goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
 
-                    self.get_logger().info(f'Moving to marker ID {markerID} at pose: {marker_pos}, {marker_ori}')
+                    self.get_logger().info(f'Moving to marker ID {markerID} at pose: {bad_pos}')
                     self.move_to_pose(goodPos, goodEuler)
                     return
 
@@ -423,7 +419,7 @@ def _input_thread(node):
 
 def main():
     rclpy.init()
-    runVirtual = 0
+    runVirtual = 1
 
     if runVirtual:
         stream_source = "ros"  # Use ROS topic stream for simulated environment
@@ -436,9 +432,16 @@ def main():
     # Create the node FIRST so we can pass it to the printer
     
     if runVirtual:
+        # printer in the front
+        '''printer = Simulated3DPrinter(
+            node=node,
+            pos=[0.62, 0.0, 0.18],
+            orient=[0.0, 0.0, 3/2*np.pi],
+        )'''
+        #printer from the side
         printer = Simulated3DPrinter(
             node=node,
-            pos=[0.0, -0.62, 0.18],
+            pos=[0.37, -0.3, 0.1],
             orient=[0.0, 0.0, np.pi],
         )
         printer.spawn_fast()
@@ -478,11 +481,17 @@ def main():
     # Run the initial scan (blocks until move_to_pose completes)
     node.get_logger().info("Starting initial scan for markers...")
     if runVirtual:
-        node.scanLocationForMarkers(
+        '''node.scanLocationForMarkers(
             estimated_pos=[0.62, 0.0, 0.20],
             estimated_orient=[0.0, 0.0, 0],  # marker Z-axis points +Y (toward robot)
             viewing_distance=0.30
-    )
+        )'''
+        node.scanLocationForMarkers(
+            estimated_pos=[0.37, 0.1, 0.07],
+            estimated_orient=[0.0, 0.0, -np.pi/2],#estimated_orient=[0.0, 0.0, -np.pi/2],  # marker Z-axis points +Y (toward robot)
+            viewing_distance=0.00
+        )
+    
     else:
         node.scanLocationForMarkers(
             estimated_pos=[0.37, 0.1, 0.07],

@@ -74,12 +74,28 @@ class Simulated3DPrinter:
         static_marker_local_pos=None,
         enable_door_flapping_animation=False,
         model_dir=None,
-        aruco_sdf_path=None
+        aruco_sdf_path=None,
+        use_bad_frame=True
     ):
         # Create node if not provided
         self._owns_node = node is None
         self.node = node if node else Node('simulated_printer')
         
+        pos = np.array(pos)
+        orient = np.array(orient)
+
+        # Convert from "good frame" to "bad frame" (base_link/world) if requested.
+        # Only apply the frame rotation — not the EEF offset angles that to_bad_frame adds.
+        if use_bad_frame and hasattr(self.node, 'frameRotationAngles'):
+            from scipy.spatial.transform import Rotation as R_scipy
+            R_BF_GF = R_scipy.from_euler("XYZ", self.node.frameRotationAngles, degrees=False)
+            R_GF_BF = R_BF_GF.inv()
+            # Rotate position
+            pos = R_GF_BF.apply(pos)
+            # Rotate orientation (compose rotations)
+            R_orient = R_scipy.from_euler("XYZ", orient, degrees=False)
+            orient = (R_GF_BF * R_orient).as_euler("XYZ", degrees=False)
+
         self.pos = np.array(pos)
         self.orient = np.array(orient)
         self.width = width
