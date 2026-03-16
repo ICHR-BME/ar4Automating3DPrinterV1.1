@@ -5,6 +5,7 @@ from sensor_msgs.msg import Image, CameraInfo
 import cv2
 from poseReader import PoseReader
 import numpy as np
+from pymoveit2 import GripperInterface
 from scipy.spatial.transform import Rotation as R
 from geometry_msgs.msg import Pose, TransformStamped, PoseStamped
 import tf2_ros
@@ -36,8 +37,28 @@ class printerAutomation(ArucoDetectionViewer):
         self.markerToHandleOffset = np.array([0.0, 0.08, 0.05])
         self.markerToPickupOffset = np.array([0.0, 0.18, 0.05])
 
+        # Gripper interface
+        self.gripper = GripperInterface(
+            node=self,
+            gripper_joint_names=["gripper_jaw1_joint"],
+            open_gripper_joint_positions=[0.014],
+            closed_gripper_joint_positions=[0.0],
+            gripper_group_name="ar_gripper",
+            callback_group=self._cb_group,
+            gripper_command_action_name="gripper_controller/gripper_cmd",
+        )
+
     # NO detected_markers property needed — use self.marker_poses inherited
     # from ArucoDetectionViewer which reads self.stream.found_markers
+
+    def open_gripper(self):
+        self.get_logger().info("Opening gripper...")
+        self.gripper.open()
+
+    def close_gripper(self):
+        self.get_logger().info("Closing gripper...")
+        self.gripper.close()
+
 
     def scanLocationForMarkers(self, estimated_pos, estimated_orient=[0,0,0], viewing_distance=0.15, frame_name=None):
         """
@@ -153,9 +174,11 @@ class printerAutomation(ArucoDetectionViewer):
 
     def pickupPlate(self, markerID=0):
         self.moveToMarker(markerID)
+        self.close_gripper()
         self.liftPlate(markerID)
 
     def moveToMarker(self, markerID=0):
+        self.open_gripper()
         foundMarker = 0
         print(f"Moving to marker ID {markerID}...")
         offsetPos = self.markerToHandleOffset
@@ -493,7 +516,7 @@ def main():
     
     else:
         node.scanLocationForMarkers(
-            estimated_pos=[0.37, 0.1, 0.07],
+            estimated_pos=[0.37, 0.1, 0.14],
             estimated_orient=[0.0, 0.0, -np.pi/2],#estimated_orient=[0.0, 0.0, -np.pi/2],  # marker Z-axis points +Y (toward robot)
             viewing_distance=0.00
         )
