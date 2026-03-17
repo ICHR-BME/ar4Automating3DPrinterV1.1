@@ -516,7 +516,7 @@ def main():
     
     else:
         node.scanLocationForMarkers(
-            estimated_pos=[0.37, 0.1, 0.14],
+            estimated_pos=[0.37, 0.1, 0.11],
             estimated_orient=[0.0, 0.0, -np.pi/2],#estimated_orient=[0.0, 0.0, -np.pi/2],  # marker Z-axis points +Y (toward robot)
             viewing_distance=0.00
         )
