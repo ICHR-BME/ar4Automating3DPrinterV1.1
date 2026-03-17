@@ -34,15 +34,16 @@ class printerAutomation(ArucoDetectionViewer):
         if not hasattr(self, 'tf2_broadcaster'):
             self.tf2_broadcaster = tf2_ros.TransformBroadcaster(self)
 
-        self.markerToHandleOffset = np.array([0.0, 0.08, 0.05])
-        self.markerToPickupOffset = np.array([0.0, 0.18, 0.05])
+        self.markerToHandleOffset = np.array([0.0, -0.025, 0.04])
+        self.markerToPickupOffset = np.array([0.0, 0.11, 0.04])
+        self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
 
         # Gripper interface
         self.gripper = GripperInterface(
             node=self,
             gripper_joint_names=["gripper_jaw1_joint"],
-            open_gripper_joint_positions=[0.014],
-            closed_gripper_joint_positions=[0.0],
+            open_gripper_joint_positions=[0.027],
+            closed_gripper_joint_positions=[0.04],
             gripper_group_name="ar_gripper",
             callback_group=self._cb_group,
             gripper_command_action_name="gripper_controller/gripper_cmd",
@@ -58,6 +59,125 @@ class printerAutomation(ArucoDetectionViewer):
     def close_gripper(self):
         self.get_logger().info("Closing gripper...")
         self.gripper.close()
+
+    def freeze_markers(self):
+        """Disable marker pose updates. Call before moving the robot."""
+        self.stream.marker_updates_enabled = False
+        self.get_logger().info("Marker pose updates frozen.")
+
+    def unfreeze_markers(self):
+        """Re-enable marker pose updates. Call after the robot has stopped."""
+        self.stream.marker_updates_enabled = True
+        self.get_logger().info("Marker pose updates resumed.")
+
+    def register_estimated_marker(self, marker_id, bad_pos, bad_euler):
+        """
+        Pre-populate an estimated marker pose in both the TF tree and found_markers.
+        
+        This broadcasts an ``aruco_marker_{id}`` frame in base_link and stores
+        a synthetic entry in ``stream.found_markers`` so that scanToMarker /
+        moveToMarker can work immediately.
+        
+        Once the camera actually detects this marker, _enrich_marker_pose will
+        overwrite both the TF frame and the found_markers entry with the real
+        measurement.
+        
+        Parameters:
+            marker_id: ArUco marker ID (int)
+            bad_pos:   np.array([x, y, z]) in base_link
+            bad_euler: np.array([roll, pitch, yaw]) intrinsic XYZ in base_link
+        """
+        bad_pos = np.array(bad_pos, dtype=float)
+        bad_euler = np.array(bad_euler, dtype=float)
+        tf2Name = f"{self.markerNamePrefix}{marker_id}"
+
+        # Broadcast the TF frame
+        self.broadcast_marker_transform(bad_pos, bad_euler, child_frame=tf2Name)
+
+        # Compute good-frame values for display
+        R_BF_GF = R.from_euler("XYZ", self.frameRotationAngles, degrees=False)
+        goodPos = R_BF_GF.apply(bad_pos)
+        goodEuler = (R_BF_GF * R.from_euler("XYZ", bad_euler, degrees=False)).as_euler("XYZ", degrees=False)
+
+        entry = {
+            'id': marker_id,
+            'tf2Name': tf2Name,
+            'positionInBase': bad_pos,
+            'eulerInBase': bad_euler,
+            'positionInWorld': goodPos,
+            'orientInWorld': {
+                'roll': np.degrees(goodEuler[0]),
+                'pitch': np.degrees(goodEuler[1]),
+                'yaw': np.degrees(goodEuler[2]),
+            },
+            # Dummy camera-frame keys so the HUD panel and enrich_fn don't crash
+            'positionFromCamera': np.array([0.0, 0.0, 0.0]),
+            'eulerFromCamera': np.array([0.0, 0.0, 0.0]),
+            'orientFromCamera': {'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0},
+            'distanceFromCamera': 0.0,
+            'estimated': True,  # flag so callers can tell this is not camera-detected
+        }
+        self.stream.found_markers[marker_id] = entry
+        self.get_logger().info(
+            f"Registered estimated marker {marker_id} at base_link pos={bad_pos}, euler={bad_euler}"
+        )
+
+    def scanToMarker(self, marker_id=0, viewing_distance=0.15):
+        """
+        Move the camera to face a known/estimated marker using its TF frame.
+        
+        Works with both estimated markers (from register_estimated_marker) and
+        already-detected markers.  The marker must have an entry in
+        ``stream.found_markers`` so that its TF frame ``aruco_marker_{id}``
+        exists.
+        
+        Parameters:
+            marker_id: ArUco marker ID whose TF frame to look up
+            viewing_distance: How far from the marker face to position the camera (m)
+        """
+        tf2Name = f"{self.markerNamePrefix}{marker_id}"
+        markers = self.marker_poses
+        entry = None
+        for m in markers:
+            if m['id'] == marker_id:
+                entry = m
+                break
+        if entry is None:
+            self.get_logger().error(f"Marker {marker_id} not found in found_markers. Register it first.")
+            return False
+
+        bad_pos = entry['positionInBase']
+        bad_euler = entry['eulerInBase']
+
+        offsetPos = np.array([0.0, 0.0, viewing_distance])
+        offsetOri = self.offsetOri
+
+        # Re-broadcast and look up TF
+        badPos, badEuler = None, None
+        for attempt in range(20):
+            self.broadcast_marker_transform(bad_pos, bad_euler, child_frame=tf2Name)
+            time.sleep(0.05)
+            try:
+                badPos, badEuler = self.applyFrameChange(
+                    offsetPos, offsetOri,
+                    source_frame="base_link", target_frame=tf2Name,
+                )
+                if badPos is not None:
+                    break
+            except Exception as e:
+                self.get_logger().warn(f"TF lookup attempt {attempt+1}/20 for '{tf2Name}' failed: {e}")
+
+        if badPos is None:
+            self.get_logger().error(f"Failed to resolve TF frame '{tf2Name}' after 20 attempts")
+            return False
+
+        goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
+
+        self.get_logger().info(f"Scanning marker {marker_id}: moving to viewing pos={goodPos}")
+        self.freeze_markers()
+        self.move_to_pose(goodPos, goodEuler)
+        self.unfreeze_markers()
+        return True
 
 
     def scanLocationForMarkers(self, estimated_pos, estimated_orient=[0,0,0], viewing_distance=0.15, frame_name=None):
@@ -133,7 +253,9 @@ class printerAutomation(ArucoDetectionViewer):
         self.get_logger().info(f'Scanning for markers at estimated position: {estimated_pos}')
         self.get_logger().info(f'Moving to viewing position: {goodPos}')
         
+        self.freeze_markers()
         self.move_to_pose(goodPos, goodEuler)
+        self.unfreeze_markers()
         return True
     
     def scanMultipleLocations(self, locations, viewing_distance=0.15, pause_duration=2.0):
@@ -173,8 +295,10 @@ class printerAutomation(ArucoDetectionViewer):
                     self.get_logger().info(f"No markers detected at location {i+1}")
 
     def pickupPlate(self, markerID=0):
+        self.open_gripper()
         self.moveToMarker(markerID)
         self.close_gripper()
+        time.sleep(3.0)
         self.liftPlate(markerID)
 
     def moveToMarker(self, markerID=0):
@@ -182,7 +306,7 @@ class printerAutomation(ArucoDetectionViewer):
         foundMarker = 0
         print(f"Moving to marker ID {markerID}...")
         offsetPos = self.markerToHandleOffset
-        offsetOri = np.array([0.0, 0.0, 0.0])
+        offsetOri = self.offsetOri
         markers = self.marker_poses
         if markers:
             for entry in markers:
@@ -208,7 +332,9 @@ class printerAutomation(ArucoDetectionViewer):
 
                     self.get_logger().info(f'Moving to marker ID {markerID} at pose: {bad_pos}')
                     print(f"Computed target pose: pos={goodPos}, orient={goodEuler}")
+                    self.freeze_markers()
                     self.move_to_pose(goodPos, goodEuler)
+                    self.unfreeze_markers()
                     foundMarker = 1
                     return
 
@@ -221,7 +347,7 @@ class printerAutomation(ArucoDetectionViewer):
 
     def liftPlate(self, markerID=0):
         offsetPos = self.markerToPickupOffset
-        offsetOri = np.array([0.0, 0.0, 0.0])
+        offsetOri = self.offsetOri
         markers = self.marker_poses
         if markers:
             for entry in markers:
@@ -246,7 +372,9 @@ class printerAutomation(ArucoDetectionViewer):
                     goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
 
                     self.get_logger().info(f'Moving to marker ID {markerID} at pose: {bad_pos}')
+                    self.freeze_markers()
                     self.move_to_pose(goodPos, goodEuler)
+                    self.unfreeze_markers()
                     return
 
     def add_movement_constraint(self, constraint_type, value):
@@ -304,7 +432,7 @@ def _print_menu():
     print("\n" + "=" * 50)
     print("  3D Printer Automation - Command Menu")
     print("=" * 50)
-    print("  1) Scan location for markers")
+    print("  1) Scan location for markers (manual pos/orient)")
     print("  2) Move to marker")
     print("  3) Pickup plate (move + lift)")
     print("  4) Move to pose (manual)")
@@ -312,6 +440,8 @@ def _print_menu():
     print("  6) Add movement constraint")
     print("  7) Print current end-effector pose")
     print("  8) Set marker offsets")
+    print("  9) Toggle marker updates")
+    print(" 10) Scan to marker (by ID, uses TF)")
     print("  0) Quit")
     print("=" * 50)
 
@@ -431,6 +561,22 @@ def _input_thread(node):
             if which not in ('h', 'p', 'b'):
                 print("  Unknown selection.")
 
+        elif choice == "9":
+            if node.stream.marker_updates_enabled:
+                node.freeze_markers()
+                print("  Marker updates FROZEN.")
+            else:
+                node.unfreeze_markers()
+                print("  Marker updates RESUMED.")
+
+        elif choice == "10":
+            mid = _parse_floats("  Marker ID [0]: ", 1)
+            mid = int(mid[0]) if mid else 0
+            dist = _parse_floats("  Viewing distance [0.15]: ", 1)
+            dist = dist[0] if dist else 0.15
+            node.get_logger().info(f"User requested scanToMarker({mid}, dist={dist})")
+            node.scanToMarker(marker_id=mid, viewing_distance=dist)
+
         elif choice == "0":
             print("  Shutting down...")
             rclpy.shutdown()
@@ -451,22 +597,21 @@ def main():
     else:        
         stream_source = "webcam"  # Use webcam for real environment
         node = printerAutomation(calibration_mode=False,stream_source=stream_source, feed_rotation_deg=90.0)
+        node.stream.distance_scale = 1.5  # Correct webcam distance underestimation (~50%)
 
     
-    if runVirtual:
-        # printer in the front
-        '''printer = Simulated3DPrinter(
-            node=node,
-            pos=[0.62, 0.0, 0.18],
-            orient=[0.0, 0.0, 3/2*np.pi],
-        )'''
-        #printer from the side
-        printer = Simulated3DPrinter(
-            node=node,
-            pos=[0.37, -0.3, 0.1],
-            orient=[0.0, 0.0, np.pi],
-        )
-        printer.spawn_fast()
+    # printer in the front
+    '''printer = Simulated3DPrinter(
+        node=node,
+        pos=[0.62, 0.0, 0.18],
+        orient=[0.0, 0.0, 3/2*np.pi],
+    )'''
+    #printer from the side
+    printer = Simulated3DPrinter(
+        node=node,
+        pos=[0.37, -0.2, 0.21],
+        orient=[0.0, 0.0, np.pi],
+    )
 
     # Spin both the ROS node and the stream's internal ROS node
     executor = rclpy.executors.MultiThreadedExecutor()
@@ -503,23 +648,26 @@ def main():
     # Run the initial scan (blocks until move_to_pose completes)
     node.get_logger().info("Starting initial scan for markers...")
     if runVirtual:
-        '''node.scanLocationForMarkers(
-            estimated_pos=[0.62, 0.0, 0.20],
-            estimated_orient=[0.0, 0.0, 0],  # marker Z-axis points +Y (toward robot)
-            viewing_distance=0.30
-        )'''
-        node.scanLocationForMarkers(
-            estimated_pos=[0.37, 0.1, 0.07],
-            estimated_orient=[0.0, 0.0, -np.pi/2],#estimated_orient=[0.0, 0.0, -np.pi/2],  # marker Z-axis points +Y (toward robot)
-            viewing_distance=0.00
-        )
+        # Register the printer's door marker (ID 0) using its known spawn pose
+        bad_pos, bad_euler = printer.get_door_marker_pose_in_base()
+        node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
+        # Move camera to view the marker from 15 cm away
+        node.scanToMarker(marker_id=0, viewing_distance=0.20)
     
     else:
-        node.scanLocationForMarkers(
-            estimated_pos=[0.37, 0.1, 0.11],
-            estimated_orient=[0.0, 0.0, -np.pi/2],#estimated_orient=[0.0, 0.0, -np.pi/2],  # marker Z-axis points +Y (toward robot)
-            viewing_distance=0.00
+        # For the physical setup, provide a rough estimate of where the marker is.
+        # register_estimated_marker takes base_link (bad frame) coordinates.
+        # These will be overwritten once the camera detects the real marker.
+        '''est_pos, est_euler = node.to_bad_frame(
+            np.array([0.29, 0.15, 0.16]),   # estimated good-frame position
+            np.array([0.0, 0.0, 0.0]),       # estimated good-frame orientation
         )
+        node.register_estimated_marker(marker_id=0, bad_pos=est_pos, bad_euler=est_euler)
+        node.scanToMarker(marker_id=0, viewing_distance=0.0)'''
+        bad_pos, bad_euler = printer.get_door_marker_pose_in_base()
+        node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
+        # Move camera to view the marker from 15 cm away
+        node.scanToMarker(marker_id=0, viewing_distance=0.20)
     
     node.get_logger().info("Initial scan complete.")
 

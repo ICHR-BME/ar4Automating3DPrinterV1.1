@@ -121,6 +121,9 @@ class WebVideoStream:
         # calibration differences between simulation and the real camera.
         # Only applied when source is "webcam".
         self.feed_rotation_deg = float(feed_rotation_deg) if self.source == "webcam" else 0.0
+        # Scale factor applied to ArUco tvec (translation) to correct
+        # systematic distance bias.  1.0 = no correction.
+        self.distance_scale = 1.0
         self.fps = fps
         self.display_scale = display_scale
         self.depth_colormap = depth_colormap
@@ -130,6 +133,8 @@ class WebVideoStream:
         # Permanent dict of all markers ever found: {marker_id: entry_dict}
         # This is NEVER cleared. Once a marker is seen, it stays here forever.
         self.found_markers = {}
+        # When False, found_markers will not be updated with new detections.
+        self.marker_updates_enabled = True
 
         # ---- ArUco detector ----
         self.enable_aruco = enable_aruco
@@ -300,7 +305,7 @@ class WebVideoStream:
                 rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
                     corner, marker_size, self.camera_matrix, self.dist_coeffs)
 
-                position_cam = tvec[0][0]
+                position_cam = tvec[0][0] * self.distance_scale
                 distance = float(np.linalg.norm(position_cam))
                 rot_mat, _ = cv2.Rodrigues(rvec[0])
                 roll, pitch, yaw = R.from_matrix(rot_mat).as_euler('XYZ', degrees=False)
@@ -319,18 +324,19 @@ class WebVideoStream:
                 }
 
                 # Store base entry only if we don't already have an enriched version
-                if marker_id not in self.found_markers:
-                    self.found_markers[marker_id] = entry.copy()
+                if self.marker_updates_enabled:
+                    if marker_id not in self.found_markers:
+                        self.found_markers[marker_id] = entry.copy()
 
-                if self.enrich_fn is not None:
-                    enriched = self.enrich_fn(entry)
-                    if enriched is not None:
-                        entry = enriched
-                        # Update found_markers with the enriched version
-                        self.found_markers[marker_id] = entry
-                    else:
-                        # enrich_fn failed but we still have the base entry
-                        pass
+                    if self.enrich_fn is not None:
+                        enriched = self.enrich_fn(entry)
+                        if enriched is not None:
+                            entry = enriched
+                            # Update found_markers with the enriched version
+                            self.found_markers[marker_id] = entry
+                        else:
+                            # enrich_fn failed but we still have the base entry
+                            pass
                 live_marker_poses.append(entry)
 
                 cv2.drawFrameAxes(output, self.camera_matrix, self.dist_coeffs,

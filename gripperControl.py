@@ -35,7 +35,7 @@ def main():
     # Wait for initialization
     time.sleep(1.0)
 
-    for i in range(3):
+    for i in range(1):
         node.get_logger().info(f"Closing gripper (iteration {i + 1})")
         gripper.close()
         gripper.wait_until_executed()

@@ -35,7 +35,7 @@ class ArucoDetectionViewer(PoseReader):
 
         self.fps = 30.0
         self.markerNamePrefix = "aruco_marker_"
-        self.filterStates = np.zeros((100, 6))
+        self.filterStates = np.zeros((100, 7))
 
         # Default dt in case joint_states hasn't arrived yet
         if not hasattr(self, 'dt') or self.dt is None:
@@ -77,6 +77,9 @@ class ArucoDetectionViewer(PoseReader):
     # ---- Marker enrichment ----
 
     def _enrich_marker_pose(self, entry: dict) -> dict:
+        # Skip estimated markers — they already have base-frame poses
+        if entry.get('estimated'):
+            return entry
         badPos, badEuler = self.cameraToBase(entry['positionFromCamera'], entry['eulerFromCamera'],
                                               markerID=entry['id'])
         if badPos is None:
@@ -123,19 +126,28 @@ class ArucoDetectionViewer(PoseReader):
         except Exception:
             return None, None
 
-        # Low-pass filter
+        # Low-pass filter (position: linear lerp, orientation: quaternion SLERP)
         fCutoff = 3.0
         RC = 1 / (2 * np.pi * fCutoff)
         alpha = self.dt / (RC + self.dt)
         prev = self.filterStates[markerID, :]
-        # Initialize filter to first measurement instead of zero
+        # filterStates layout: [x, y, z, qx, qy, qz, qw]
+        q_new = R.from_euler("XYZ", badEuler, degrees=False).as_quat()  # [x,y,z,w]
         if np.allclose(prev, 0.0):
             filteredPos = badPos
-            filteredEuler = badEuler
+            filteredQuat = q_new
         else:
             filteredPos = alpha * badPos + (1 - alpha) * prev[0:3]
-            filteredEuler = alpha * badEuler + (1 - alpha) * prev[3:6]
-        self.filterStates[markerID, :] = np.hstack((filteredPos, filteredEuler))
+            q_prev = prev[3:7]
+            # Ensure shortest-path interpolation (flip if dot product is negative)
+            if np.dot(q_prev, q_new) < 0:
+                q_new = -q_new
+            q_interp = R.from_quat(q_prev) * R.from_rotvec(
+                alpha * (R.from_quat(q_prev).inv() * R.from_quat(q_new)).as_rotvec()
+            )
+            filteredQuat = q_interp.as_quat()
+        self.filterStates[markerID, :7] = np.hstack((filteredPos, filteredQuat))
+        filteredEuler = R.from_quat(filteredQuat).as_euler("XYZ", degrees=False)
 
         try:
             self.broadcast_marker_transform(filteredPos, filteredEuler,

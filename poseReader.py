@@ -93,8 +93,8 @@ class PoseReader(Node):
 	def move_to_pose(self, pos, euler):
 
 		bad_pos, bad_euler = self.to_bad_frame(pos, euler)
-		q = quaternion_from_euler(bad_euler[0], bad_euler[1], bad_euler[2])
-		q_msg = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
+		q = R.from_euler("XYZ", bad_euler, degrees=False).as_quat()  # [x, y, z, w]
+		q_msg = Quaternion(x=float(q[0]), y=float(q[1]), z=float(q[2]), w=float(q[3]))
 		self.moveit2.move_to_pose(position=Point(x=bad_pos[0], y=bad_pos[1], z=bad_pos[2]), quat_xyzw=q_msg)
 		self.moveit2.wait_until_executed()
 

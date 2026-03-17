@@ -674,6 +674,49 @@ class Simulated3DPrinter:
         self.node.get_logger().info('Fast printer spawn complete (3 models)')
         return body_name, 'door', marker_name
 
+    def get_door_marker_pose_in_base(self):
+        """
+        Compute the door marker's pose in base_link frame using the ArUco
+        convention (Z-axis pointing out of the marker face, toward the viewer).
+
+        Returns (bad_pos, bad_euler) — numpy arrays in the same convention
+        that ArucoDetector.cameraToBase / broadcast_marker_transform use,
+        or (None, None) if the transform lookup fails.
+        """
+        from scipy.spatial.transform import Rotation as R_scipy
+
+        # Marker local position in the printer frame
+        door_relative_pos = self.door_marker_local_pos if self.door_marker_local_pos else [0, 0, 0]
+        marker_surface_offset = -0.005
+        door_front_face_local = np.array([
+            0,
+            -self.depth / 2 - self.wall_thickness / 2 + marker_surface_offset,
+            0,
+        ])
+        marker_local_pos = door_front_face_local + np.array(door_relative_pos)
+
+        # Printer orientation in world (bad frame)
+        R_printer = R_scipy.from_euler("XYZ", self.orient, degrees=False)
+
+        # Marker world position
+        marker_world_pos = np.array(self.pos) + R_printer.apply(marker_local_pos)
+
+        # Build the ArUco-convention rotation for the marker in world frame.
+        # In the printer local frame the door faces -Y, so:
+        #   marker Z (out of face) = printer local -Y
+        #   marker X (right on face) = printer local +X
+        #   marker Y = Z × X = [0,0,-1] (down in printer frame — ArUco convention)
+        marker_z_local = np.array([0.0, -1.0, 0.0])
+        marker_x_local = np.array([1.0, 0.0, 0.0])
+        marker_y_local = np.cross(marker_z_local, marker_x_local)
+
+        R_marker_local = np.column_stack([marker_x_local, marker_y_local, marker_z_local])
+        R_marker_world = R_printer.as_matrix() @ R_marker_local
+        marker_euler_world = R_scipy.from_matrix(R_marker_world).as_euler("XYZ", degrees=False)
+
+        # world == base_link (both are the Gazebo fixed frame)
+        return marker_world_pos, marker_euler_world
+
     def spawn_door_marker(self, texture_path, marker_size, door_relative_pos=None):
         """
         Spawn a marker attached to the front door.
