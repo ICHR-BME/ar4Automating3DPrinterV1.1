@@ -31,6 +31,9 @@ class printerAutomation(ArucoDetectionViewer):
         # Estimated marker frame name prefix
         self.estimatedMarkerPrefix = "estimated_marker_"
 
+        # When True, open_gripper/close_gripper are no-ops (workaround for sim instability)
+        self.gripper_disabled = False
+
         if not hasattr(self, 'tf2_broadcaster'):
             self.tf2_broadcaster = tf2_ros.TransformBroadcaster(self)
 
@@ -53,12 +56,20 @@ class printerAutomation(ArucoDetectionViewer):
     # from ArucoDetectionViewer which reads self.stream.found_markers
 
     def open_gripper(self):
+        if self.gripper_disabled:
+            self.get_logger().info("Gripper disabled — skipping open.")
+            return
         self.get_logger().info("Opening gripper...")
         self.gripper.open()
+        #self.gripper.wait_until_executed()
 
     def close_gripper(self):
+        if self.gripper_disabled:
+            self.get_logger().info("Gripper disabled — skipping close.")
+            return
         self.get_logger().info("Closing gripper...")
         self.gripper.close()
+        #self.gripper.wait_until_executed()
 
     def freeze_markers(self):
         """Disable marker pose updates. Call before moving the robot."""
@@ -91,8 +102,21 @@ class printerAutomation(ArucoDetectionViewer):
         bad_euler = np.array(bad_euler, dtype=float)
         tf2Name = f"{self.markerNamePrefix}{marker_id}"
 
-        # Broadcast the TF frame
-        self.broadcast_marker_transform(bad_pos, bad_euler, child_frame=tf2Name)
+        # Broadcast as a static transform so it persists in the TF buffer
+        # regardless of executor timing (static transforms use latched QoS).
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = "base_link"
+        t.child_frame_id = tf2Name
+        t.transform.translation.x = float(bad_pos[0])
+        t.transform.translation.y = float(bad_pos[1])
+        t.transform.translation.z = float(bad_pos[2])
+        q = R.from_euler("XYZ", bad_euler, degrees=False).as_quat()
+        t.transform.rotation.x = float(q[0])
+        t.transform.rotation.y = float(q[1])
+        t.transform.rotation.z = float(q[2])
+        t.transform.rotation.w = float(q[3])
+        self.tf2_static_broadcaster.sendTransform(t)
 
         # Compute good-frame values for display
         R_BF_GF = R.from_euler("XYZ", self.frameRotationAngles, degrees=False)
@@ -295,11 +319,64 @@ class printerAutomation(ArucoDetectionViewer):
                     self.get_logger().info(f"No markers detected at location {i+1}")
 
     def pickupPlate(self, markerID=0):
-        self.open_gripper()
         self.moveToMarker(markerID)
         self.close_gripper()
         time.sleep(3.0)
         self.liftPlate(markerID)
+
+    def placePlate(self, markerID=0):
+        """
+        Place a held build plate at the specified marker location.
+
+        Mirrors pickupPlate in reverse: move above the destination using the
+        pickup offset, lower to the handle offset (without releasing the gripper),
+        open the gripper to release the plate, then lift back up.
+
+        Parameters:
+            markerID: ArUco marker ID at the destination location
+        """
+        # Step 1: move above destination (same motion as liftPlate)
+        self.liftPlate(markerID)
+
+        # Step 2: lower to handle position without touching the gripper
+        offsetPos = self.markerToHandleOffset
+        offsetOri = self.offsetOri
+        markers = self.marker_poses
+        if markers:
+            for entry in markers:
+                if entry['id'] == markerID:
+                    bad_pos = entry['positionInBase']
+                    bad_euler = entry['eulerInBase']
+                    tf2Name = entry['tf2Name']
+
+                    badPos, badEuler = None, None
+                    for attempt in range(20):
+                        self.broadcast_marker_transform(bad_pos, bad_euler, child_frame=tf2Name)
+                        time.sleep(0.05)
+                        try:
+                            badPos, badEuler = self.applyFrameChange(offsetPos, offsetOri, source_frame="base_link", target_frame=tf2Name)
+                            break
+                        except Exception as e:
+                            self.get_logger().warn(f"TF lookup attempt {attempt+1}/20 for '{tf2Name}' failed: {e}")
+                    if badPos is None:
+                        self.get_logger().error(f"Could not resolve TF frame '{tf2Name}' after 20 attempts")
+                        return
+                    goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
+
+                    self.get_logger().info(f'Placing plate at marker ID {markerID}: lowering to handle pos={bad_pos}')
+                    self.freeze_markers()
+                    self.move_to_pose(goodPos, goodEuler)
+                    self.unfreeze_markers()
+
+                    # Step 3: release
+                    self.open_gripper()
+                    time.sleep(1.0)
+
+                    return
+
+            self.get_logger().warn(f"Marker ID {markerID} not found in detected marker poses.")
+        else:
+            self.get_logger().warn("No marker poses available to place plate.")
 
     def moveToMarker(self, markerID=0):
         self.open_gripper()
@@ -435,6 +512,7 @@ def _print_menu():
     print("  1) Scan location for markers (manual pos/orient)")
     print("  2) Move to marker")
     print("  3) Pickup plate (move + lift)")
+    print(" 11) Place plate at marker")
     print("  4) Move to pose (manual)")
     print("  5) List detected markers")
     print("  6) Add movement constraint")
@@ -577,6 +655,12 @@ def _input_thread(node):
             node.get_logger().info(f"User requested scanToMarker({mid}, dist={dist})")
             node.scanToMarker(marker_id=mid, viewing_distance=dist)
 
+        elif choice == "11":
+            mid = _parse_floats("  Marker ID [0]: ", 1)
+            mid = int(mid[0]) if mid else 0
+            node.get_logger().info(f"User requested placePlate({mid})")
+            node.placePlate(markerID=mid)
+
         elif choice == "0":
             print("  Shutting down...")
             rclpy.shutdown()
@@ -588,30 +672,42 @@ def _input_thread(node):
 
 def main():
     rclpy.init()
-    runVirtual = 0
+    runVirtual = 1
 
     if runVirtual:
         stream_source = "ros"  # Use ROS topic stream for simulated environment
         node = printerAutomation(calibration_mode=False,stream_source=stream_source)
+        node.gripper_disabled = True  # Workaround: gripper causes joint drift in simulation
 
-    else:        
+        # Source printer: marker ID 0 (left side)
+        printer_source = Simulated3DPrinter(
+            node=node,
+            pos=[0.37, -0.2, 0.21],
+            orient=[0.0, 0.0, np.pi],
+            door_marker_texture='materials/textures/marker6x6_0.png',
+        )
+        printer_source.spawn_fast()
+
+        # Destination printer: marker ID 1 (right side)
+        printer_dest = Simulated3DPrinter(
+            node=node,
+            pos=[0.37, 0.2, 0.21],
+            orient=[0.0, 0.0, 0.0],
+            door_marker_texture='materials/textures/marker6x6_1.png',
+        )
+        printer_dest.spawn_fast()
+
+    else:
         stream_source = "webcam"  # Use webcam for real environment
         node = printerAutomation(calibration_mode=False,stream_source=stream_source, feed_rotation_deg=90.0)
         node.stream.distance_scale = 1.5  # Correct webcam distance underestimation (~50%)
 
-    
-    # printer in the front
-    '''printer = Simulated3DPrinter(
-        node=node,
-        pos=[0.62, 0.0, 0.18],
-        orient=[0.0, 0.0, 3/2*np.pi],
-    )'''
-    #printer from the side
-    printer = Simulated3DPrinter(
-        node=node,
-        pos=[0.37, -0.2, 0.21],
-        orient=[0.0, 0.0, np.pi],
-    )
+        # Single physical printer
+        printer = Simulated3DPrinter(
+            node=node,
+            pos=[0.37, -0.2, 0.21],
+            orient=[0.0, 0.0, np.pi],
+        )
 
     # Spin both the ROS node and the stream's internal ROS node
     executor = rclpy.executors.MultiThreadedExecutor()
@@ -648,12 +744,28 @@ def main():
     # Run the initial scan (blocks until move_to_pose completes)
     node.get_logger().info("Starting initial scan for markers...")
     if runVirtual:
-        # Register the printer's door marker (ID 0) using its known spawn pose
-        bad_pos, bad_euler = printer.get_door_marker_pose_in_base()
+        # Register both printer door markers using their known spawn poses
+        bad_pos, bad_euler = printer_source.get_door_marker_pose_in_base()
         node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
-        # Move camera to view the marker from 15 cm away
+
+        bad_pos, bad_euler = printer_dest.get_door_marker_pose_in_base()
+        node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
+
+        # Scan to source marker so the camera gets a real detection
+        node.get_logger().info("Scanning source printer (marker 0)...")
         node.scanToMarker(marker_id=0, viewing_distance=0.20)
-    
+
+        # Scan to destination marker so the camera gets a real detection
+        node.get_logger().info("Scanning destination printer (marker 1)...")
+        node.scanToMarker(marker_id=1, viewing_distance=0.20)
+
+        # Pick up the plate from the source printer and place it on the destination
+        node.get_logger().info("Picking up plate from source printer (marker 0)...")
+        node.pickupPlate(markerID=0)
+
+        node.get_logger().info("Placing plate on destination printer (marker 1)...")
+        node.placePlate(markerID=1)
+
     else:
         # For the physical setup, provide a rough estimate of where the marker is.
         # register_estimated_marker takes base_link (bad frame) coordinates.
@@ -668,7 +780,7 @@ def main():
         node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
         # Move camera to view the marker from 15 cm away
         node.scanToMarker(marker_id=0, viewing_distance=0.20)
-    
+
     node.get_logger().info("Initial scan complete.")
 
     # Now start the interactive input loop on the main thread

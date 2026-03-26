@@ -2,6 +2,7 @@
 
 import sys
 import time
+import warnings
 from typing import Optional
 
 import rclpy
@@ -156,7 +157,9 @@ class PoseReader(Node):
 
 		# Extract rotation matrix and convert to Euler angles ("XYZ" order)
 		bad_euler_angles_vec = R.from_matrix(HBadFrame[:3, :3])
-		bad_euler_angles = bad_euler_angles_vec.as_euler("XYZ", degrees=False)
+		with warnings.catch_warnings():
+			warnings.simplefilter("ignore", UserWarning)
+			bad_euler_angles = bad_euler_angles_vec.as_euler("XYZ", degrees=False)
 		return bad_position, bad_euler_angles
 
 

@@ -5,6 +5,7 @@ import numpy as np
 import subprocess
 import threading
 import time as _time
+import warnings
 from scipy.spatial.transform import Rotation as R
 from geometry_msgs.msg import Pose, Point, TransformStamped
 from sensor_msgs.msg import Image, CameraInfo
@@ -63,6 +64,7 @@ class ArucoDetectionViewer(PoseReader):
 
         self.tf2_buffer = tf2_ros.Buffer()
         self.tf2_listener = tf2_ros.TransformListener(self.tf2_buffer, self)
+        self.tf2_static_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
 
         # RViz visualization publisher
         self._marker_array_pub = self.create_publisher(MarkerArray, '/aruco_markers_viz', 10)
@@ -112,8 +114,11 @@ class ArucoDetectionViewer(PoseReader):
 
         tf2_quat = [transformed.orientation.x, transformed.orientation.y,
                      transformed.orientation.z, transformed.orientation.w]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            euler = R.from_quat(tf2_quat).as_euler("XYZ", degrees=False)
         return (np.array([transformed.position.x, transformed.position.y, transformed.position.z]),
-                R.from_quat(tf2_quat).as_euler("XYZ", degrees=False))
+                euler)
 
     def cameraToBase(self, posInFrame, eulerInFrame, markerID=0):
         # Guard: if dt is not yet set by PoseReader, use default
