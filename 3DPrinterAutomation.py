@@ -672,7 +672,7 @@ def _input_thread(node):
 
 def main():
     rclpy.init()
-    runVirtual = 1
+    runVirtual = 0
 
     if runVirtual:
         stream_source = "ros"  # Use ROS topic stream for simulated environment
@@ -780,6 +780,10 @@ def main():
         node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
         # Move camera to view the marker from 15 cm away
         node.scanToMarker(marker_id=0, viewing_distance=0.20)
+
+        # Pick up the plate and place it back at the same marker
+        node.pickupPlate(markerID=0)
+        node.placePlate(markerID=0)
 
     node.get_logger().info("Initial scan complete.")
 
