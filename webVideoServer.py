@@ -342,7 +342,7 @@ class WebVideoStream:
                 cv2.drawFrameAxes(output, self.camera_matrix, self.dist_coeffs,
                                   rvec[0], tvec[0], marker_size * 0.5)
                 centre = corner[0].mean(axis=0).astype(int)
-                cv2.putText(output, f"ID:{marker_id} D:{distance:.2f}m",
+                cv2.putText(output, f"ID:{marker_id} D:{distance:.3f}m",
                             tuple(centre + np.array([0, -10])),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
@@ -459,17 +459,14 @@ class WebVideoStream:
 # ------------------------------------------------------------------
 
 if __name__ == "__main__":
-    rclpy.init()
     stream = WebVideoStream(
-        source="ros",
+        source="webcam",
         port=5000,
         fps=30.0,
-        display_scale=2.0,
+        display_scale=1.0/0.702,
         depth_colormap="turbo",
         marker_sizes=[0.03, 0.05],
         dict_names=['DICT_4X4_50', 'DICT_6X6_50'],
-        color_topic="/rgbd_camera/image",
-        depth_topic="/rgbd_camera/depth_image",
-        camera_info_topic="/rgbd_camera/camera_info",
+        camera_keyword="GENERAL WEBCAM",
     )
     stream.run()

@@ -700,7 +700,7 @@ def main():
     else:
         stream_source = "webcam"  # Use webcam for real environment
         node = printerAutomation(calibration_mode=False,stream_source=stream_source, feed_rotation_deg=90.0)
-        node.stream.distance_scale = 1.5  # Correct webcam distance underestimation (~50%)
+        node.stream.distance_scale = 1.0/0.702  # Correct webcam distance underestimation (~50%)
 
         # Single physical printer
         printer = Simulated3DPrinter(
