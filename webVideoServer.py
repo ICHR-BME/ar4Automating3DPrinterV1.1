@@ -405,11 +405,12 @@ class WebVideoStream:
 
     def _build_frame(self, color, depth=None):
         frame = color.copy()
-        # Apply feed rotation (only non-zero for webcam source)
-        frame = self._rotate_frame(frame)
         live_marker_poses = []
         if self.enable_aruco:
             frame, live_marker_poses = self.detect(frame)
+        # Apply feed rotation AFTER detection so pose estimation uses the
+        # original camera frame (rotation only affects the web stream display)
+        frame = self._rotate_frame(frame)
 
         if depth is not None:
             depth_raw = depth

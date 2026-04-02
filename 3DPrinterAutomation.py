@@ -37,16 +37,18 @@ class printerAutomation(ArucoDetectionViewer):
         if not hasattr(self, 'tf2_broadcaster'):
             self.tf2_broadcaster = tf2_ros.TransformBroadcaster(self)
 
-        self.markerToHandleOffset = np.array([0.0, -0.025, 0.04])
-        self.markerToPickupOffset = np.array([0.0, 0.11, 0.04])
+        #self.markerToHandleOffset = np.array([0.0, -0.025, 0.033])
+        #self.markerToPickupOffset = np.array([0.0, 0.11, 0.033])
+        self.markerToHandleOffset = np.array([0.0, 0, 0.0])
+        self.markerToPickupOffset = np.array([0.0, 0.0, 0.0])
         self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
 
         # Gripper interface
         self.gripper = GripperInterface(
             node=self,
             gripper_joint_names=["gripper_jaw1_joint"],
-            open_gripper_joint_positions=[0.027],
-            closed_gripper_joint_positions=[0.04],
+            open_gripper_joint_positions=[0.012],
+            closed_gripper_joint_positions=[0.025],
             gripper_group_name="ar_gripper",
             callback_group=self._cb_group,
             gripper_command_action_name="gripper_controller/gripper_cmd",
@@ -672,7 +674,7 @@ def _input_thread(node):
 
 def main():
     rclpy.init()
-    runVirtual = 0
+    runVirtual = 1
 
     if runVirtual:
         stream_source = "ros"  # Use ROS topic stream for simulated environment
@@ -683,7 +685,7 @@ def main():
         printer_source = Simulated3DPrinter(
             node=node,
             pos=[0.37, -0.2, 0.21],
-            orient=[0.0, 0.0, np.pi],
+            orient=[0.0, 0.1, np.pi],
             door_marker_texture='materials/textures/marker6x6_0.png',
         )
         printer_source.spawn_fast()
@@ -782,8 +784,8 @@ def main():
         node.scanToMarker(marker_id=0, viewing_distance=0.20)
 
         # Pick up the plate and place it back at the same marker
-        node.pickupPlate(markerID=0)
-        node.placePlate(markerID=0)
+        #node.pickupPlate(markerID=0)
+        #node.placePlate(markerID=0)
 
     node.get_logger().info("Initial scan complete.")
 
