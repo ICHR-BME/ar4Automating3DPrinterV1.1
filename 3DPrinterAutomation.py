@@ -39,8 +39,8 @@ class printerAutomation(ArucoDetectionViewer):
 
         #self.markerToHandleOffset = np.array([0.0, -0.025, 0.033])
         #self.markerToPickupOffset = np.array([0.0, 0.11, 0.033])
-        self.markerToHandleOffset = np.array([0.0, 0, 0.0])
-        self.markerToPickupOffset = np.array([0.0, 0.0, 0.0])
+        self.markerToHandleOffset = np.array([0.0, -0.025, 0.033])
+        self.markerToPickupOffset = np.array([0.0, 0.11, 0.033])
         self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
 
         # Gripper interface
@@ -390,9 +390,15 @@ class printerAutomation(ArucoDetectionViewer):
         if markers:
             for entry in markers:
                 if entry['id'] == markerID:
+                    is_estimated = entry.get('estimated', False)
                     bad_pos = entry['positionInBase']
                     bad_euler = entry['eulerInBase']
                     tf2Name = entry['tf2Name']
+                    self.get_logger().warn(
+                        f"[moveToMarker] ID={markerID} "
+                        f"estimated={is_estimated} "
+                        f"positionInBase={np.round(bad_pos, 4)}"
+                    )
 
                     # Re-broadcast marker TF and poll until the frame is available
                     badPos, badEuler = None, None
@@ -410,6 +416,11 @@ class printerAutomation(ArucoDetectionViewer):
                     goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
 
                     self.get_logger().info(f'Moving to marker ID {markerID} at pose: {bad_pos}')
+                    self.get_logger().warn(
+                        f"[moveToMarker] TF-based handle pos in base_link: {np.round(badPos, 4)} "
+                        f"(marker base_link pos was {np.round(bad_pos, 4)}, "
+                        f"expected handle ~= marker + offset {np.round(offsetPos, 4)})"
+                    )
                     print(f"Computed target pose: pos={goodPos}, orient={goodEuler}")
                     self.freeze_markers()
                     self.move_to_pose(goodPos, goodEuler)
@@ -674,7 +685,7 @@ def _input_thread(node):
 
 def main():
     rclpy.init()
-    runVirtual = 1
+    runVirtual = 0
 
     if runVirtual:
         stream_source = "ros"  # Use ROS topic stream for simulated environment
