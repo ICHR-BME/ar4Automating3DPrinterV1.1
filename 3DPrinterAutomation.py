@@ -102,6 +102,18 @@ class printerAutomation(ArucoDetectionViewer):
         """
         bad_pos = np.array(bad_pos, dtype=float)
         bad_euler = np.array(bad_euler, dtype=float)
+        # Add a random offset of magnitude 0.05 to the estimated marker position
+        rng = np.random.default_rng()
+        random_dir = rng.normal(size=3)
+        random_dir /= np.linalg.norm(random_dir)
+        random_offset = random_dir * 0.05
+        bad_pos = bad_pos + random_offset
+
+        # Add a random orientation offset of magnitude 0.05 radians
+        random_ori_dir = rng.normal(size=3)
+        random_ori_dir /= np.linalg.norm(random_ori_dir)
+        random_ori_offset = random_ori_dir * 0.05
+        bad_euler = bad_euler + random_ori_offset
         tf2Name = f"{self.markerNamePrefix}{marker_id}"
 
         # Broadcast as a static transform so it persists in the TF buffer
@@ -200,9 +212,22 @@ class printerAutomation(ArucoDetectionViewer):
         goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
 
         self.get_logger().info(f"Scanning marker {marker_id}: moving to viewing pos={goodPos}")
+        # Only allow marker updates while observing the marker
         self.freeze_markers()
         self.move_to_pose(goodPos, goodEuler)
         self.unfreeze_markers()
+        # Pause to allow camera to observe the marker
+        time.sleep(1.0)
+        # Check if marker is still estimated
+        markers = self.marker_poses
+        observed = False
+        for m in markers:
+            if m['id'] == marker_id and not m.get('estimated', False):
+                observed = True
+                break
+        if not observed:
+            self.get_logger().warn(f"Marker {marker_id} was not observed by the camera after moving to view it.")
+        self.freeze_markers()
         return True
 
 
@@ -685,7 +710,7 @@ def _input_thread(node):
 
 def main():
     rclpy.init()
-    runVirtual = 0
+    runVirtual = 1
 
     if runVirtual:
         stream_source = "ros"  # Use ROS topic stream for simulated environment
