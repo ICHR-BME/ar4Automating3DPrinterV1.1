@@ -346,6 +346,44 @@ class ArucoDetectionViewer(PoseReader):
                 ax.color = color
                 msg.markers.append(ax)
 
+        # --- Camera pose cube ---
+        try:
+            cam_tf = self.tf2_buffer.lookup_transform('base_link', 'ee_camera_link', Time())
+            cam = Marker()
+            cam.header.stamp = now
+            cam.header.frame_id = frame_id
+            cam.ns = 'camera_pose'
+            cam.id = next_id; next_id += 1
+            cam.type = Marker.CUBE
+            cam.action = Marker.ADD
+            cam.pose.position.x = cam_tf.transform.translation.x
+            cam.pose.position.y = cam_tf.transform.translation.y
+            cam.pose.position.z = cam_tf.transform.translation.z
+            cam.pose.orientation = cam_tf.transform.rotation
+            cam.scale.x = 0.03
+            cam.scale.y = 0.04
+            cam.scale.z = 0.02
+            cam.color = ColorRGBA(r=0.2, g=0.6, b=1.0, a=0.9)
+            msg.markers.append(cam)
+
+            # Label above camera
+            cam_label = Marker()
+            cam_label.header.stamp = now
+            cam_label.header.frame_id = frame_id
+            cam_label.ns = 'camera_pose'
+            cam_label.id = next_id; next_id += 1
+            cam_label.type = Marker.TEXT_VIEW_FACING
+            cam_label.action = Marker.ADD
+            cam_label.pose.position.x = cam_tf.transform.translation.x
+            cam_label.pose.position.y = cam_tf.transform.translation.y
+            cam_label.pose.position.z = cam_tf.transform.translation.z + 0.04
+            cam_label.scale.z = 0.02
+            cam_label.color = ColorRGBA(r=1.0, g=1.0, b=1.0, a=1.0)
+            cam_label.text = 'Camera'
+            msg.markers.append(cam_label)
+        except Exception:
+            pass  # TF not yet available
+
         if msg.markers:
             self._marker_array_pub.publish(msg)
         else:

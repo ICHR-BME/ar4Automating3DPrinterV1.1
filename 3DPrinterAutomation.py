@@ -31,8 +31,8 @@ class printerAutomation(ArucoDetectionViewer):
         # When True, register_estimated_marker adds random noise to test scan robustness
         self.randomize_estimated_markers = False
 
-        self.markerToHandleOffset = np.array([0.0, 0, 0.05])
-        self.markerToPickupOffset = np.array([0.0, 0, 0.05])
+        self.markerToHandleOffset = np.array([0.0, 0.06, 0.06])
+        self.markerToPickupOffset = np.array([0.0, 0.11, 0.06])
         self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
 
         # Gripper interface
