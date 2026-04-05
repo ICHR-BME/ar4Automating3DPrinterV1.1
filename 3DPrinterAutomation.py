@@ -1,15 +1,10 @@
 from ArucoDetector import ArucoDetectionViewer
 import rclpy
-from rclpy.node import Node
-from sensor_msgs.msg import Image, CameraInfo
-import cv2
-from poseReader import PoseReader
 import numpy as np
 from pymoveit2 import GripperInterface
 from scipy.spatial.transform import Rotation as R
-from geometry_msgs.msg import Pose, TransformStamped, PoseStamped
+from geometry_msgs.msg import TransformStamped
 import tf2_ros
-from rclpy.time import Time
 from simulated3DPrinter import Simulated3DPrinter
 import time
 import threading
@@ -33,14 +28,11 @@ class printerAutomation(ArucoDetectionViewer):
 
         # When True, open_gripper/close_gripper are no-ops (workaround for sim instability)
         self.gripper_disabled = False
+        # When True, register_estimated_marker adds random noise to test scan robustness
+        self.randomize_estimated_markers = False
 
-        if not hasattr(self, 'tf2_broadcaster'):
-            self.tf2_broadcaster = tf2_ros.TransformBroadcaster(self)
-
-        #self.markerToHandleOffset = np.array([0.0, -0.025, 0.033])
-        #self.markerToPickupOffset = np.array([0.0, 0.11, 0.033])
-        self.markerToHandleOffset = np.array([0.0, -0.025, 0.033])
-        self.markerToPickupOffset = np.array([0.0, 0.11, 0.033])
+        self.markerToHandleOffset = np.array([0.0, 0, 0.05])
+        self.markerToPickupOffset = np.array([0.0, 0, 0.05])
         self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
 
         # Gripper interface
@@ -54,8 +46,71 @@ class printerAutomation(ArucoDetectionViewer):
             gripper_command_action_name="gripper_controller/gripper_cmd",
         )
 
-    # NO detected_markers property needed — use self.marker_poses inherited
-    # from ArucoDetectionViewer which reads self.stream.found_markers
+    # ---- Helpers ----
+
+    def _find_marker_entry(self, marker_id):
+        """Look up a marker by ID from marker_poses. Returns entry dict or None."""
+        for m in self.marker_poses:
+            if m['id'] == marker_id:
+                return m
+        return None
+
+    def _broadcast_static_tf(self, bad_pos, bad_euler, child_frame):
+        """Broadcast a static TF for a marker pose in base_link."""
+        t = TransformStamped()
+        t.header.stamp = self.get_clock().now().to_msg()
+        t.header.frame_id = "base_link"
+        t.child_frame_id = child_frame
+        t.transform.translation.x = float(bad_pos[0])
+        t.transform.translation.y = float(bad_pos[1])
+        t.transform.translation.z = float(bad_pos[2])
+        q = R.from_euler("XYZ", bad_euler, degrees=False).as_quat()
+        t.transform.rotation.x = float(q[0])
+        t.transform.rotation.y = float(q[1])
+        t.transform.rotation.z = float(q[2])
+        t.transform.rotation.w = float(q[3])
+        self.tf2_static_broadcaster.sendTransform(t)
+
+    def _apply_offset_in_marker_frame(self, marker_pos, marker_euler, offset_pos, offset_ori):
+        """
+        Compute a target pose by applying an offset in the marker's local frame.
+
+        Returns (target_pos, target_euler) in base_link.
+        """
+        R_marker = R.from_euler("XYZ", marker_euler, degrees=False)
+        target_pos = marker_pos + R_marker.apply(offset_pos)
+        target_euler = (R_marker * R.from_euler("XYZ", offset_ori, degrees=False)).as_euler("XYZ", degrees=False)
+        return target_pos, target_euler
+
+    def _move_to_marker_offset(self, marker_id, offset_pos, offset_ori=None):
+        """
+        Core routine: find marker, compute offset, and move.
+
+        Returns True on success, False if marker not found.
+        """
+        if offset_ori is None:
+            offset_ori = self.offsetOri
+
+        entry = self._find_marker_entry(marker_id)
+        if entry is None:
+            self.get_logger().warn(f"Marker ID {marker_id} not found in detected marker poses.")
+            available_ids = [m['id'] for m in self.marker_poses]
+            self.get_logger().info(f"Available marker IDs: {available_ids}")
+            return False
+
+        bad_pos = entry['positionInBase']
+        bad_euler = entry['eulerInBase']
+
+        badPos, badEuler = self._apply_offset_in_marker_frame(bad_pos, bad_euler, offset_pos, offset_ori)
+
+        goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
+        self.get_logger().info(f'Moving to marker ID {marker_id} — marker centre: {bad_pos}, target: {badPos}')
+        self.freeze_markers()
+        self.move_to_pose(goodPos, goodEuler)
+        self.unfreeze_markers()
+        return True
+
+    # ---- Gripper ----
 
     def open_gripper(self):
         if self.gripper_disabled:
@@ -63,7 +118,6 @@ class printerAutomation(ArucoDetectionViewer):
             return
         self.get_logger().info("Opening gripper...")
         self.gripper.open()
-        #self.gripper.wait_until_executed()
 
     def close_gripper(self):
         if self.gripper_disabled:
@@ -71,7 +125,8 @@ class printerAutomation(ArucoDetectionViewer):
             return
         self.get_logger().info("Closing gripper...")
         self.gripper.close()
-        #self.gripper.wait_until_executed()
+
+    # ---- Marker updates ----
 
     def freeze_markers(self):
         """Disable marker pose updates. Call before moving the robot."""
@@ -83,54 +138,29 @@ class printerAutomation(ArucoDetectionViewer):
         self.stream.marker_updates_enabled = True
         self.get_logger().info("Marker pose updates resumed.")
 
+    # ---- Marker registration & scanning ----
+
     def register_estimated_marker(self, marker_id, bad_pos, bad_euler):
         """
         Pre-populate an estimated marker pose in both the TF tree and found_markers.
-        
-        This broadcasts an ``aruco_marker_{id}`` frame in base_link and stores
-        a synthetic entry in ``stream.found_markers`` so that scanToMarker /
-        moveToMarker can work immediately.
-        
+
         Once the camera actually detects this marker, _enrich_marker_pose will
         overwrite both the TF frame and the found_markers entry with the real
         measurement.
-        
-        Parameters:
-            marker_id: ArUco marker ID (int)
-            bad_pos:   np.array([x, y, z]) in base_link
-            bad_euler: np.array([roll, pitch, yaw]) intrinsic XYZ in base_link
         """
         bad_pos = np.array(bad_pos, dtype=float)
         bad_euler = np.array(bad_euler, dtype=float)
-        # Add a random offset of magnitude 0.05 to the estimated marker position
-        rng = np.random.default_rng()
-        random_dir = rng.normal(size=3)
-        random_dir /= np.linalg.norm(random_dir)
-        random_offset = random_dir * 0.05
-        bad_pos = bad_pos + random_offset
-
-        # Add a random orientation offset of magnitude 0.05 radians
-        random_ori_dir = rng.normal(size=3)
-        random_ori_dir /= np.linalg.norm(random_ori_dir)
-        random_ori_offset = random_ori_dir * 0.05
-        bad_euler = bad_euler + random_ori_offset
+        if self.randomize_estimated_markers:
+            rng = np.random.default_rng()
+            random_dir = rng.normal(size=3)
+            random_dir /= np.linalg.norm(random_dir)
+            bad_pos = bad_pos + random_dir * 0.05
+            random_ori_dir = rng.normal(size=3)
+            random_ori_dir /= np.linalg.norm(random_ori_dir)
+            bad_euler = bad_euler + random_ori_dir * 0.05
         tf2Name = f"{self.markerNamePrefix}{marker_id}"
 
-        # Broadcast as a static transform so it persists in the TF buffer
-        # regardless of executor timing (static transforms use latched QoS).
-        t = TransformStamped()
-        t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = "base_link"
-        t.child_frame_id = tf2Name
-        t.transform.translation.x = float(bad_pos[0])
-        t.transform.translation.y = float(bad_pos[1])
-        t.transform.translation.z = float(bad_pos[2])
-        q = R.from_euler("XYZ", bad_euler, degrees=False).as_quat()
-        t.transform.rotation.x = float(q[0])
-        t.transform.rotation.y = float(q[1])
-        t.transform.rotation.z = float(q[2])
-        t.transform.rotation.w = float(q[3])
-        self.tf2_static_broadcaster.sendTransform(t)
+        self._broadcast_static_tf(bad_pos, bad_euler, tf2Name)
 
         # Compute good-frame values for display
         R_BF_GF = R.from_euler("XYZ", self.frameRotationAngles, degrees=False)
@@ -148,12 +178,11 @@ class printerAutomation(ArucoDetectionViewer):
                 'pitch': np.degrees(goodEuler[1]),
                 'yaw': np.degrees(goodEuler[2]),
             },
-            # Dummy camera-frame keys so the HUD panel and enrich_fn don't crash
             'positionFromCamera': np.array([0.0, 0.0, 0.0]),
             'eulerFromCamera': np.array([0.0, 0.0, 0.0]),
             'orientFromCamera': {'roll': 0.0, 'pitch': 0.0, 'yaw': 0.0},
             'distanceFromCamera': 0.0,
-            'estimated': True,  # flag so callers can tell this is not camera-detected
+            'estimated': True,
         }
         self.stream.found_markers[marker_id] = entry
         self.get_logger().info(
@@ -161,189 +190,87 @@ class printerAutomation(ArucoDetectionViewer):
         )
 
     def scanToMarker(self, marker_id=0, viewing_distance=0.15):
-        """
-        Move the camera to face a known/estimated marker using its TF frame.
-        
-        Works with both estimated markers (from register_estimated_marker) and
-        already-detected markers.  The marker must have an entry in
-        ``stream.found_markers`` so that its TF frame ``aruco_marker_{id}``
-        exists.
-        
-        Parameters:
-            marker_id: ArUco marker ID whose TF frame to look up
-            viewing_distance: How far from the marker face to position the camera (m)
-        """
-        tf2Name = f"{self.markerNamePrefix}{marker_id}"
-        markers = self.marker_poses
-        entry = None
-        for m in markers:
-            if m['id'] == marker_id:
-                entry = m
-                break
+        """Move the camera to face a known/estimated marker using its TF frame."""
+        entry = self._find_marker_entry(marker_id)
         if entry is None:
             self.get_logger().error(f"Marker {marker_id} not found in found_markers. Register it first.")
             return False
 
-        bad_pos = entry['positionInBase']
-        bad_euler = entry['eulerInBase']
-
         offsetPos = np.array([0.0, 0.0, viewing_distance])
-        offsetOri = self.offsetOri
-
-        # Re-broadcast and look up TF
-        badPos, badEuler = None, None
-        for attempt in range(20):
-            self.broadcast_marker_transform(bad_pos, bad_euler, child_frame=tf2Name)
-            time.sleep(0.05)
-            try:
-                badPos, badEuler = self.applyFrameChange(
-                    offsetPos, offsetOri,
-                    source_frame="base_link", target_frame=tf2Name,
-                )
-                if badPos is not None:
-                    break
-            except Exception as e:
-                self.get_logger().warn(f"TF lookup attempt {attempt+1}/20 for '{tf2Name}' failed: {e}")
-
-        if badPos is None:
-            self.get_logger().error(f"Failed to resolve TF frame '{tf2Name}' after 20 attempts")
-            return False
+        badPos, badEuler = self._apply_offset_in_marker_frame(
+            entry['positionInBase'], entry['eulerInBase'], offsetPos, self.offsetOri,
+        )
 
         goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
-
         self.get_logger().info(f"Scanning marker {marker_id}: moving to viewing pos={goodPos}")
-        # Only allow marker updates while observing the marker
         self.freeze_markers()
         self.move_to_pose(goodPos, goodEuler)
         self.unfreeze_markers()
+
         # Pause to allow camera to observe the marker
         time.sleep(1.0)
-        # Check if marker is still estimated
-        markers = self.marker_poses
-        observed = False
-        for m in markers:
-            if m['id'] == marker_id and not m.get('estimated', False):
-                observed = True
-                break
-        if not observed:
+        observed_entry = self._find_marker_entry(marker_id)
+        if observed_entry is None or observed_entry.get('estimated', False):
             self.get_logger().warn(f"Marker {marker_id} was not observed by the camera after moving to view it.")
-        self.freeze_markers()
         return True
 
-
     def scanLocationForMarkers(self, estimated_pos, estimated_orient=[0,0,0], viewing_distance=0.15, frame_name=None):
-        """
-        Move the camera to face an estimated marker location.
-        
-        This creates a temporary TF frame at the estimated location and moves
-        the robot to view it, similar to moveToMarker but for positions where
-        we expect to find a marker.
-        
-        Parameters:
-            estimated_pos: [x, y, z] estimated marker position in base_link frame
-            estimated_orient: [roll, pitch, yaw] estimated marker orientation (radians).
-                             If None, assumes marker faces toward robot origin.
-            viewing_distance: Distance from marker to position the camera (meters)
-            frame_name: Optional custom frame name. If None, uses "estimated_marker_0"
-        """
-        estimated_pos = np.array(estimated_pos)        
-        
-        # Create frame name
+        """Move the camera to face an estimated marker location."""
+        estimated_pos = np.array(estimated_pos)
         if frame_name is None:
             frame_name = f"{self.estimatedMarkerPrefix}0"
-        
-        # Define offset from marker (position camera at viewing_distance in front, facing the marker)
+
         offsetPos = np.array([0.0, 0.0, viewing_distance])
         offsetOri = np.array([0.0, 0.0, 0.0])
-        
-        # Transform offset from base_link to the estimated marker frame with retry
+
         markerBadPos, markerBadEuler = self.to_bad_frame(estimated_pos, estimated_orient)
 
-        # Ensure the TF broadcaster exists before the retry loop
-        if not hasattr(self, 'tf2_broadcaster'):
-            self.tf2_broadcaster = tf2_ros.TransformBroadcaster(self)
+        badPos, badEuler = self._apply_offset_in_marker_frame(
+            markerBadPos, markerBadEuler, offsetPos, offsetOri,
+        )
 
-        badPos = None
-        badEuler = None
-        for attempt in range(20):
-            # Broadcast the estimated marker frame
-            t = TransformStamped()
-            t.header.stamp = self.get_clock().now().to_msg()
-            t.header.frame_id = "base_link"
-            t.child_frame_id = frame_name
-            t.transform.translation.x = float(markerBadPos[0])
-            t.transform.translation.y = float(markerBadPos[1])
-            t.transform.translation.z = float(markerBadPos[2])
-            q = R.from_euler("XYZ", markerBadEuler, degrees=False).as_quat()
-            t.transform.rotation.x = float(q[0])
-            t.transform.rotation.y = float(q[1])
-            t.transform.rotation.z = float(q[2])
-            t.transform.rotation.w = float(q[3])
-            self.tf2_broadcaster.sendTransform(t)
-            
-            # Give the TF buffer time to receive the broadcast via the executor
-            time.sleep(0.2)
-            
-            try:
-                badPos, badEuler = self.applyFrameChange(
-                    offsetPos, offsetOri,
-                    source_frame="base_link", target_frame=frame_name
-                )
-                if badPos is not None:
-                    self.get_logger().info(f"TF lookup succeeded on attempt {attempt+1}")
-                    break
-            except Exception as e:
-                self.get_logger().warn(f"Attempt {attempt+1}/20: TF lookup for '{frame_name}' failed: {e}")
-        
-        if badPos is None:
-            self.get_logger().error(f"Failed to get transform to {frame_name} after 20 attempts")
-            return False
-        
         goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
-        
         self.get_logger().info(f'Scanning for markers at estimated position: {estimated_pos}')
-        self.get_logger().info(f'Moving to viewing position: {goodPos}')
-        
         self.freeze_markers()
         self.move_to_pose(goodPos, goodEuler)
         self.unfreeze_markers()
         return True
-    
+
     def scanMultipleLocations(self, locations, viewing_distance=0.15, pause_duration=2.0):
-        """
-        Scan multiple estimated marker locations sequentially.
-        
-        Parameters:
-            locations: List of [x, y, z] positions or tuples of (pos, orient)
-            viewing_distance: Distance from each marker to position the camera
-            pause_duration: Time to pause at each location for marker detection (seconds)
-        """
+        """Scan multiple estimated marker locations sequentially."""
         for i, location in enumerate(locations):
-            # Handle both position-only and (position, orientation) formats
             if isinstance(location, tuple) and len(location) == 2:
                 pos, orient = location
             else:
                 pos = location
                 orient = None
-            
+
             frame_name = f"{self.estimatedMarkerPrefix}{i}"
             self.get_logger().info(f"Scanning location {i+1}/{len(locations)}: {pos}")
-            
+
             success = self.scanLocationForMarkers(
                 estimated_pos=pos,
                 estimated_orient=orient,
                 viewing_distance=viewing_distance,
                 frame_name=frame_name
             )
-            
+
             if success:
                 time.sleep(pause_duration)
-
-                markers = self.marker_poses  # <-- reads from stream.found_markers
+                markers = self.marker_poses
                 if markers:
                     self.get_logger().info(f"Detected {len(markers)} markers at location {i+1}")
                 else:
                     self.get_logger().info(f"No markers detected at location {i+1}")
+
+    # ---- Plate operations ----
+
+    def moveToMarker(self, markerID=0):
+        self.open_gripper()
+        self._move_to_marker_offset(markerID, self.markerToHandleOffset)
+
+    def liftPlate(self, markerID=0):
+        self._move_to_marker_offset(markerID, self.markerToPickupOffset)
 
     def pickupPlate(self, markerID=0):
         self.moveToMarker(markerID)
@@ -352,194 +279,14 @@ class printerAutomation(ArucoDetectionViewer):
         self.liftPlate(markerID)
 
     def placePlate(self, markerID=0):
-        """
-        Place a held build plate at the specified marker location.
-
-        Mirrors pickupPlate in reverse: move above the destination using the
-        pickup offset, lower to the handle offset (without releasing the gripper),
-        open the gripper to release the plate, then lift back up.
-
-        Parameters:
-            markerID: ArUco marker ID at the destination location
-        """
-        # Step 1: move above destination (same motion as liftPlate)
+        """Place a held build plate at the specified marker location."""
+        # Move above destination
         self.liftPlate(markerID)
-
-        # Step 2: lower to handle position without touching the gripper
-        offsetPos = self.markerToHandleOffset
-        offsetOri = self.offsetOri
-        markers = self.marker_poses
-        if markers:
-            for entry in markers:
-                if entry['id'] == markerID:
-                    bad_pos = entry['positionInBase']
-                    bad_euler = entry['eulerInBase']
-                    tf2Name = entry['tf2Name']
-
-                    badPos, badEuler = None, None
-                    for attempt in range(20):
-                        self.broadcast_marker_transform(bad_pos, bad_euler, child_frame=tf2Name)
-                        time.sleep(0.05)
-                        try:
-                            badPos, badEuler = self.applyFrameChange(offsetPos, offsetOri, source_frame="base_link", target_frame=tf2Name)
-                            break
-                        except Exception as e:
-                            self.get_logger().warn(f"TF lookup attempt {attempt+1}/20 for '{tf2Name}' failed: {e}")
-                    if badPos is None:
-                        self.get_logger().error(f"Could not resolve TF frame '{tf2Name}' after 20 attempts")
-                        return
-                    goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
-
-                    self.get_logger().info(f'Placing plate at marker ID {markerID}: lowering to handle pos={bad_pos}')
-                    self.freeze_markers()
-                    self.move_to_pose(goodPos, goodEuler)
-                    self.unfreeze_markers()
-
-                    # Step 3: release
-                    self.open_gripper()
-                    time.sleep(1.0)
-
-                    return
-
-            self.get_logger().warn(f"Marker ID {markerID} not found in detected marker poses.")
-        else:
-            self.get_logger().warn("No marker poses available to place plate.")
-
-    def moveToMarker(self, markerID=0):
+        # Lower to handle position
+        self._move_to_marker_offset(markerID, self.markerToHandleOffset)
+        # Release
         self.open_gripper()
-        foundMarker = 0
-        print(f"Moving to marker ID {markerID}...")
-        offsetPos = self.markerToHandleOffset
-        offsetOri = self.offsetOri
-        markers = self.marker_poses
-        if markers:
-            for entry in markers:
-                if entry['id'] == markerID:
-                    is_estimated = entry.get('estimated', False)
-                    bad_pos = entry['positionInBase']
-                    bad_euler = entry['eulerInBase']
-                    tf2Name = entry['tf2Name']
-                    self.get_logger().warn(
-                        f"[moveToMarker] ID={markerID} "
-                        f"estimated={is_estimated} "
-                        f"positionInBase={np.round(bad_pos, 4)}"
-                    )
-
-                    # Re-broadcast marker TF and poll until the frame is available
-                    badPos, badEuler = None, None
-                    for attempt in range(20):
-                        self.broadcast_marker_transform(bad_pos, bad_euler, child_frame=tf2Name)
-                        time.sleep(0.05)
-                        try:
-                            badPos, badEuler = self.applyFrameChange(offsetPos, offsetOri, source_frame="base_link", target_frame=tf2Name)
-                            break
-                        except Exception as e:
-                            self.get_logger().warn(f"TF lookup attempt {attempt+1}/20 for '{tf2Name}' failed: {e}")
-                    if badPos is None:
-                        self.get_logger().error(f"Could not resolve TF frame '{tf2Name}' after 20 attempts")
-                        return
-                    goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
-
-                    self.get_logger().info(f'Moving to marker ID {markerID} at pose: {bad_pos}')
-                    self.get_logger().warn(
-                        f"[moveToMarker] TF-based handle pos in base_link: {np.round(badPos, 4)} "
-                        f"(marker base_link pos was {np.round(bad_pos, 4)}, "
-                        f"expected handle ~= marker + offset {np.round(offsetPos, 4)})"
-                    )
-                    print(f"Computed target pose: pos={goodPos}, orient={goodEuler}")
-                    self.freeze_markers()
-                    self.move_to_pose(goodPos, goodEuler)
-                    self.unfreeze_markers()
-                    foundMarker = 1
-                    return
-
-            if not foundMarker:
-                self.get_logger().warn(f"Marker ID {markerID} not found in detected marker poses.")
-                available_ids = [entry['id'] for entry in markers]
-                self.get_logger().info(f"Available marker IDs: {available_ids}")
-        else:
-            self.get_logger().warn("No marker poses available to move to marker.")
-
-    def liftPlate(self, markerID=0):
-        offsetPos = self.markerToPickupOffset
-        offsetOri = self.offsetOri
-        markers = self.marker_poses
-        if markers:
-            for entry in markers:
-                if entry['id'] == markerID:
-                    bad_pos = entry['positionInBase']
-                    bad_euler = entry['eulerInBase']
-                    tf2Name = entry['tf2Name']
-
-                    # Re-broadcast marker TF and poll until the frame is available
-                    badPos, badEuler = None, None
-                    for attempt in range(20):
-                        self.broadcast_marker_transform(bad_pos, bad_euler, child_frame=tf2Name)
-                        time.sleep(0.05)
-                        try:
-                            badPos, badEuler = self.applyFrameChange(offsetPos, offsetOri, source_frame="base_link", target_frame=tf2Name)
-                            break
-                        except Exception as e:
-                            self.get_logger().warn(f"TF lookup attempt {attempt+1}/20 for '{tf2Name}' failed: {e}")
-                    if badPos is None:
-                        self.get_logger().error(f"Could not resolve TF frame '{tf2Name}' after 20 attempts")
-                        return
-                    goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
-
-                    self.get_logger().info(f'Moving to marker ID {markerID} at pose: {bad_pos}')
-                    self.freeze_markers()
-                    self.move_to_pose(goodPos, goodEuler)
-                    self.unfreeze_markers()
-                    return
-
-    def add_movement_constraint(self, constraint_type, value):
-        """
-        Add a path constraint without moving.
-        constraint_type: 'orientation' or 'x', 'y', 'z'
-        value: for 'orientation', tuple (x,y,z,w) quaternion
-               for 'x','y','z', float value to constrain to
-        """
-        if constraint_type == 'orientation':
-            # Assume value is (x,y,z,w) quaternion tuple
-            self.poseReader.moveit2.set_path_orientation_constraint(
-                quat_xyzw=value,
-                frame_id="base_link",
-                target_link=self.poseReader.end_effector_name,
-                tolerance=0.15
-            )
-        elif constraint_type in ['x', 'y', 'z']:
-            # Get current position
-            self.poseReader.get_fk()
-            current_pos = self.poseReader.pose[:3]  # [x, y, z]
-            axis_index = {'x': 0, 'y': 1, 'z': 2}[constraint_type]
-            
-            # Set constrained position
-            constrained_pos = current_pos.copy()
-            constrained_pos[axis_index] = value
-            
-            # Create position constraint with box for anisotropic tolerance
-            constraint = PositionConstraint()
-            constraint.header.frame_id = "base_link"
-            constraint.link_name = self.poseReader.end_effector_name
-            constraint.constraint_region = BoundingVolume()
-            constraint.constraint_region.primitives.append(SolidPrimitive())
-            constraint.constraint_region.primitives[0].type = 1  # BOX
-            # Dimensions: half-sizes
-            tol_small = 0.001  # tight constraint on the axis
-            tol_large = 10.0   # loose on others
-            dimensions = [tol_large, tol_large, tol_large]
-            dimensions[axis_index] = tol_small
-            constraint.constraint_region.primitives[0].dimensions = dimensions
-            constraint.constraint_region.primitive_poses.append(Pose())
-            constraint.constraint_region.primitive_poses[0].position.x = constrained_pos[0]
-            constraint.constraint_region.primitive_poses[0].position.y = constrained_pos[1]
-            constraint.constraint_region.primitive_poses[0].position.z = constrained_pos[2]
-            constraint.weight = 1.0
-            
-            # Append to path constraints
-            self.poseReader.moveit2._MoveIt2__move_action_goal.request.path_constraints.position_constraints.append(constraint)
-        else:
-            self.get_logger().error(f"Unknown constraint type: {constraint_type}")
+        time.sleep(1.0)
 
 
 def _print_menu():
@@ -553,11 +300,10 @@ def _print_menu():
     print(" 11) Place plate at marker")
     print("  4) Move to pose (manual)")
     print("  5) List detected markers")
-    print("  6) Add movement constraint")
-    print("  7) Print current end-effector pose")
-    print("  8) Set marker offsets")
-    print("  9) Toggle marker updates")
-    print(" 10) Scan to marker (by ID, uses TF)")
+    print("  6) Print current end-effector pose")
+    print("  7) Set marker offsets")
+    print("  8) Toggle marker updates")
+    print("  9) Scan to marker (by ID, uses TF)")
     print("  0) Quit")
     print("=" * 50)
 
@@ -631,7 +377,7 @@ def _input_thread(node):
             node.move_to_pose(np.array(pos), np.array(orient))
 
         elif choice == "5":
-            markers = node.marker_poses  # <-- reads from stream.found_markers
+            markers = node.marker_poses
             if markers:
                 print(f"\n  Found {len(markers)} marker(s):")
                 for entry in markers:
@@ -642,25 +388,12 @@ def _input_thread(node):
                 print("  No markers found yet.")
 
         elif choice == "6":
-            ctype = input("  Constraint type (orientation / x / y / z): ").strip()
-            if ctype == "orientation":
-                val = _parse_floats("  Quaternion (x y z w): ", 4)
-                if val:
-                    node.add_movement_constraint('orientation', tuple(val))
-            elif ctype in ['x', 'y', 'z']:
-                val = _parse_floats(f"  {ctype} value: ", 1)
-                if val:
-                    node.add_movement_constraint(ctype, val[0])
-            else:
-                print(f"  Unknown constraint type: {ctype}")
-
-        elif choice == "7":
             if hasattr(node, 'pose') and node.pose is not None:
                 print(f"  Current EEF pose: {node.pose}")
             else:
                 print("  Pose not yet available (waiting for joint_states).")
 
-        elif choice == "8":
+        elif choice == "7":
             print(f"  Current handle offset:  {node.markerToHandleOffset}")
             print(f"  Current pickup offset:  {node.markerToPickupOffset}")
             which = input("  Edit (h)andle offset, (p)ickup offset, or (b)oth? ").strip().lower()
@@ -677,7 +410,7 @@ def _input_thread(node):
             if which not in ('h', 'p', 'b'):
                 print("  Unknown selection.")
 
-        elif choice == "9":
+        elif choice == "8":
             if node.stream.marker_updates_enabled:
                 node.freeze_markers()
                 print("  Marker updates FROZEN.")
@@ -685,7 +418,7 @@ def _input_thread(node):
                 node.unfreeze_markers()
                 print("  Marker updates RESUMED.")
 
-        elif choice == "10":
+        elif choice == "9":
             mid = _parse_floats("  Marker ID [0]: ", 1)
             mid = int(mid[0]) if mid else 0
             dist = _parse_floats("  Viewing distance [0.15]: ", 1)
@@ -710,12 +443,13 @@ def _input_thread(node):
 
 def main():
     rclpy.init()
-    runVirtual = 1
+    runVirtual = 0
 
     if runVirtual:
         stream_source = "ros"  # Use ROS topic stream for simulated environment
         node = printerAutomation(calibration_mode=False,stream_source=stream_source)
         node.gripper_disabled = True  # Workaround: gripper causes joint drift in simulation
+        node.randomize_estimated_markers = True
 
         # Source printer: marker ID 0 (left side)
         printer_source = Simulated3DPrinter(
@@ -743,7 +477,7 @@ def main():
         # Single physical printer
         printer = Simulated3DPrinter(
             node=node,
-            pos=[0.37, -0.2, 0.21],
+            pos=[0.37, -0.17, 0.21],
             orient=[0.0, 0.0, np.pi],
         )
 

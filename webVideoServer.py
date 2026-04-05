@@ -334,9 +334,6 @@ class WebVideoStream:
                             entry = enriched
                             # Update found_markers with the enriched version
                             self.found_markers[marker_id] = entry
-                            _log = self.log_fn or print
-                            _log(f"[detect] ID={marker_id} found_markers updated with enriched pose: "
-                                 f"posInBase={np.round(entry.get('positionInBase', [None]), 4)}")
                         else:
                             # enrich_fn failed but we still have the base entry
                             _log = self.log_fn or print

@@ -84,10 +84,6 @@ class ArucoDetectionViewer(PoseReader):
             return entry
         # Clear the estimated flag now that we have a real detection
         entry.pop('estimated', None)
-        self.get_logger().info(
-            f"[enrich] ID={entry['id']} real camera detection: "
-            f"posFromCamera={np.round(entry['positionFromCamera'], 3)}"
-        )
         badPos, badEuler = self.cameraToBase(entry['positionFromCamera'], entry['eulerFromCamera'],
                                               markerID=entry['id'])
         if badPos is None:
@@ -96,9 +92,6 @@ class ArucoDetectionViewer(PoseReader):
                 f"TF lookup returned None. found_markers will NOT be updated with real pose."
             )
             return None
-        self.get_logger().info(
-            f"[enrich] ID={entry['id']} cameraToBase succeeded: posInBase={np.round(badPos, 3)}"
-        )
         entry['tf2Name'] = f"{self.markerNamePrefix}{entry['id']}"
 
         # Store base_link frame values (from TF2) for RViz and TF operations
