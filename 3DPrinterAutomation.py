@@ -31,8 +31,8 @@ class printerAutomation(ArucoDetectionViewer):
         # When True, register_estimated_marker adds random noise to test scan robustness
         self.randomize_estimated_markers = False
 
-        self.markerToHandleOffset = np.array([0.0, 0.06, 0.06])
-        self.markerToPickupOffset = np.array([0.0, 0.11, 0.06])
+        self.markerToHandleOffset = np.array([0.0, 0.05, 0.06])
+        self.markerToPickupOffset = np.array([0.0, 0.20, 0.06])
         self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
 
         # Gripper interface
@@ -40,7 +40,7 @@ class printerAutomation(ArucoDetectionViewer):
             node=self,
             gripper_joint_names=["gripper_jaw1_joint"],
             open_gripper_joint_positions=[0.012],
-            closed_gripper_joint_positions=[0.025],
+            closed_gripper_joint_positions=[0.030],
             gripper_group_name="ar_gripper",
             callback_group=self._cb_group,
             gripper_command_action_name="gripper_controller/gripper_cmd",
@@ -288,6 +288,40 @@ class printerAutomation(ArucoDetectionViewer):
         self.open_gripper()
         time.sleep(1.0)
 
+    def go_home(self, velocity_scaling=0.2):
+        """
+        Move all joints to their zero (home) position.
+
+        Because MoveIt plans from the actual current joint state reported by the
+        hardware (Teensy encoder counts), this corrects any positional drift that
+        accumulated from lost stepper steps during gripping or other stall events.
+        A low velocity_scaling is used so the recovery move is slow and less
+        likely to cause further stalls.
+        """
+        self.get_logger().warn(
+            f"go_home: resyncing to home position (velocity_scaling={velocity_scaling}). "
+            "Planning from actual encoder state to correct any step-loss drift."
+        )
+        # Brief settle so the robot is truly stationary before we read its pose.
+        time.sleep(0.5)
+
+        home_joints = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+        prev_velocity = self.moveit2.max_velocity
+        prev_acceleration = self.moveit2.max_acceleration
+        try:
+            self.moveit2.max_velocity = velocity_scaling
+            self.moveit2.max_acceleration = velocity_scaling
+            self.freeze_markers()
+            self.moveit2.move_to_configuration(joint_positions=home_joints)
+            self.moveit2.wait_until_executed()
+        finally:
+            self.moveit2.max_velocity = prev_velocity
+            self.moveit2.max_acceleration = prev_acceleration
+            self.unfreeze_markers()
+
+        self.get_logger().info("go_home: reached home position.")
+
 
 def _print_menu():
     """Print the interactive command menu."""
@@ -304,6 +338,7 @@ def _print_menu():
     print("  7) Set marker offsets")
     print("  8) Toggle marker updates")
     print("  9) Scan to marker (by ID, uses TF)")
+    print(" 10) Go home & resync (correct step-loss drift)")
     print("  0) Quit")
     print("=" * 50)
 
@@ -425,6 +460,12 @@ def _input_thread(node):
             dist = dist[0] if dist else 0.15
             node.get_logger().info(f"User requested scanToMarker({mid}, dist={dist})")
             node.scanToMarker(marker_id=mid, viewing_distance=dist)
+
+        elif choice == "10":
+            scale = _parse_floats("  Velocity scaling [0.2]: ", 1)
+            scale = scale[0] if scale else 0.2
+            node.get_logger().info(f"User requested go_home(velocity_scaling={scale})")
+            node.go_home(velocity_scaling=scale)
 
         elif choice == "11":
             mid = _parse_floats("  Marker ID [0]: ", 1)
