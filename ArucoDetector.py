@@ -31,7 +31,8 @@ class ArucoDetectionViewer(PoseReader):
                  color_topic="/rgbd_camera/image",
                  depth_topic="/rgbd_camera/depth_image",
                  camera_info_topic="/rgbd_camera/camera_info",
-                 feed_rotation_deg=0.0):
+                 feed_rotation_deg=0.0,
+                 marker_sizes=None):
         super().__init__('aruco_detection_viewer', enable_pose_print=False)
 
         self.fps = 30.0
@@ -44,13 +45,15 @@ class ArucoDetectionViewer(PoseReader):
 
         # Single object handles web server + aruco detection + frame compositing.
         # Pass through source / camera options so caller can choose "ros" or "webcam"
+        if marker_sizes is None:
+            marker_sizes = [0.03, 0.05]
         self.stream = WebVideoStream(
             source=source,
             port=5000,
             fps=self.fps,
             display_scale=2.0,
             depth_colormap="turbo",
-            marker_sizes=[0.03, 0.05],
+            marker_sizes=marker_sizes,
             dict_names=['DICT_4X4_50', 'DICT_6X6_50'],
             enrich_fn=self._enrich_marker_pose,
             log_fn=lambda msg: self.get_logger().info(msg),
@@ -292,9 +295,9 @@ class ArucoDetectionViewer(PoseReader):
             # --- Debug: show raw coordinates used for this marker ---
             euler_deg = np.degrees(euler_rad)
             debug_lines = [
-                f'p=[{pos[0]:.2f},{pos[1]:.2f},{pos[2]:.2f}]',
-                f'[{euler_deg[0]:.0f},{euler_deg[1]:.0f},{euler_deg[2]:.0f}]',
-                f'q=[{q[0]:.2f},{q[1]:.2f},{q[2]:.2f},{q[3]:.2f}]',
+                f'p=[{pos[0]:.3g},{pos[1]:.3g},{pos[2]:.3g}]',
+                f'[{euler_deg[0]:.3g},{euler_deg[1]:.3g},{euler_deg[2]:.3g}]',
+                f'q=[{q[0]:.3g},{q[1]:.3g},{q[2]:.3g},{q[3]:.3g}]',
             ]
             line_spacing = 0.018
             base_z = float(pos[2]) - float(size) - 0.01

@@ -124,6 +124,9 @@ class WebVideoStream:
         # Scale factor applied to ArUco tvec (translation) to correct
         # systematic distance bias.  1.0 = no correction.
         self.distance_scale = 1.0
+        # Per-axis scale applied on top of distance_scale.
+        # Adjust xy_scale to fix x/y drift when the camera moves laterally.
+        self.xy_scale = 0.75
         self.fps = fps
         self.display_scale = display_scale
         self.depth_colormap = depth_colormap
@@ -306,6 +309,8 @@ class WebVideoStream:
                     corner, marker_size, self.camera_matrix, self.dist_coeffs)
 
                 position_cam = tvec[0][0] * self.distance_scale
+                position_cam[0] *= self.xy_scale
+                position_cam[1] *= self.xy_scale
                 distance = float(np.linalg.norm(position_cam))
                 rot_mat, _ = cv2.Rodrigues(rvec[0])
                 roll, pitch, yaw = R.from_matrix(rot_mat).as_euler('XYZ', degrees=False)

@@ -13,14 +13,15 @@ import threading
 class printerAutomation(ArucoDetectionViewer):
     def __init__(self, calibration_mode=False, stream_source="webcam", camera_index=None, camera_keyword="GENERAL WEBCAM",
                  color_topic="/rgbd_camera/image", depth_topic="/rgbd_camera/depth_image", camera_info_topic="/rgbd_camera/camera_info",
-                 feed_rotation_deg=0.0):
+                 feed_rotation_deg=0.0, marker_sizes=None):
         super().__init__(source=stream_source,
                          camera_index=camera_index,
                          camera_keyword=camera_keyword,
                          color_topic=color_topic,
                          depth_topic=depth_topic,
                          camera_info_topic=camera_info_topic,
-                         feed_rotation_deg=feed_rotation_deg)
+                         feed_rotation_deg=feed_rotation_deg,
+                         marker_sizes=marker_sizes)
         self.get_logger().info(f"printerAutomation initialized, calibration_mode={calibration_mode}")
 
         # Estimated marker frame name prefix
@@ -31,9 +32,20 @@ class printerAutomation(ArucoDetectionViewer):
         # When True, register_estimated_marker adds random noise to test scan robustness
         self.randomize_estimated_markers = False
 
-        self.markerToHandleOffset = np.array([0.0, 0.05, 0.06])
-        self.markerToPickupOffset = np.array([0.0, 0.20, 0.06])
+        ## For the small handle
+        #self.markerToHandleOffset = np.array([0.0, 0.05, 0.06])
+        #self.markerToPickupOffset = np.array([0.0, 0.20, 0.06])
+        
+        ## For the big handle
+        self.markerToHandleOffset = np.array([0.0, 0.055, 0.09])
+        self.markerToPickupOffset = np.array([0.0, 0.175, 0.09])
+
+        
         self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
+
+        # The camera is mounted below the gripper. Raise the end effector by this
+        # amount (metres, base-link Z) when scanning so the camera aligns with the marker.
+        self.camera_z_offset = 0.05
 
         # Gripper interface
         self.gripper = GripperInterface(
@@ -200,6 +212,8 @@ class printerAutomation(ArucoDetectionViewer):
         badPos, badEuler = self._apply_offset_in_marker_frame(
             entry['positionInBase'], entry['eulerInBase'], offsetPos, self.offsetOri,
         )
+        # Shift up in base-link Z so the camera (below the gripper) faces the marker
+        badPos = badPos + np.array([0.0, 0.0, self.camera_z_offset])
 
         goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
         self.get_logger().info(f"Scanning marker {marker_id}: moving to viewing pos={goodPos}")
@@ -228,6 +242,8 @@ class printerAutomation(ArucoDetectionViewer):
         badPos, badEuler = self._apply_offset_in_marker_frame(
             markerBadPos, markerBadEuler, offsetPos, offsetOri,
         )
+        # Shift up in base-link Z so the camera (below the gripper) faces the marker
+        badPos = badPos + np.array([0.0, 0.0, self.camera_z_offset])
 
         goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
         self.get_logger().info(f'Scanning for markers at estimated position: {estimated_pos}')
@@ -331,14 +347,10 @@ def _print_menu():
     print("  1) Scan location for markers (manual pos/orient)")
     print("  2) Move to marker")
     print("  3) Pickup plate (move + lift)")
-    print(" 11) Place plate at marker")
-    print("  4) Move to pose (manual)")
+    print("  4) Place plate at marker")
     print("  5) List detected markers")
-    print("  6) Print current end-effector pose")
-    print("  7) Set marker offsets")
-    print("  8) Toggle marker updates")
-    print("  9) Scan to marker (by ID, uses TF)")
-    print(" 10) Go home & resync (correct step-loss drift)")
+    print("  6) Scan to marker (by ID, uses TF)")
+    print("  7) Go home & resync (correct step-loss drift)")
     print("  0) Quit")
     print("=" * 50)
 
@@ -373,6 +385,14 @@ def _input_thread(node):
         except EOFError:
             break
 
+        # ROS log messages can interleave with terminal input, causing extra
+        # characters to be buffered before the intended option digit(s).
+        # e.g. user types "1" then a log line prints, then they type "9" → "19"
+        # If the choice is unrecognised, try stripping one leading character.
+        _valid_choices = {"0", "1", "2", "3", "4", "5", "6", "7"}
+        if choice not in _valid_choices and len(choice) >= 2 and choice[1:] in _valid_choices:
+            choice = choice[1:]
+
         if choice == "1":
             pos = _parse_floats("  Enter estimated pos (x y z): ", 3)
             if pos is None:
@@ -402,14 +422,10 @@ def _input_thread(node):
             node.pickupPlate(markerID=mid)
 
         elif choice == "4":
-            pos = _parse_floats("  Enter target pos (x y z): ", 3)
-            if pos is None:
-                continue
-            orient = _parse_floats("  Enter target orient (roll pitch yaw): ", 3)
-            if orient is None:
-                orient = [0.0, 0.0, 0.0]
-            node.get_logger().info(f"User requested move_to_pose({pos}, {orient})")
-            node.move_to_pose(np.array(pos), np.array(orient))
+            mid = _parse_floats("  Marker ID [0]: ", 1)
+            mid = int(mid[0]) if mid else 0
+            node.get_logger().info(f"User requested placePlate({mid})")
+            node.placePlate(markerID=mid)
 
         elif choice == "5":
             markers = node.marker_poses
@@ -423,37 +439,6 @@ def _input_thread(node):
                 print("  No markers found yet.")
 
         elif choice == "6":
-            if hasattr(node, 'pose') and node.pose is not None:
-                print(f"  Current EEF pose: {node.pose}")
-            else:
-                print("  Pose not yet available (waiting for joint_states).")
-
-        elif choice == "7":
-            print(f"  Current handle offset:  {node.markerToHandleOffset}")
-            print(f"  Current pickup offset:  {node.markerToPickupOffset}")
-            which = input("  Edit (h)andle offset, (p)ickup offset, or (b)oth? ").strip().lower()
-            if which in ('h', 'b'):
-                val = _parse_floats("  New handle offset (x y z): ", 3)
-                if val:
-                    node.markerToHandleOffset = np.array(val)
-                    print(f"  Handle offset set to {node.markerToHandleOffset}")
-            if which in ('p', 'b'):
-                val = _parse_floats("  New pickup offset (x y z): ", 3)
-                if val:
-                    node.markerToPickupOffset = np.array(val)
-                    print(f"  Pickup offset set to {node.markerToPickupOffset}")
-            if which not in ('h', 'p', 'b'):
-                print("  Unknown selection.")
-
-        elif choice == "8":
-            if node.stream.marker_updates_enabled:
-                node.freeze_markers()
-                print("  Marker updates FROZEN.")
-            else:
-                node.unfreeze_markers()
-                print("  Marker updates RESUMED.")
-
-        elif choice == "9":
             mid = _parse_floats("  Marker ID [0]: ", 1)
             mid = int(mid[0]) if mid else 0
             dist = _parse_floats("  Viewing distance [0.15]: ", 1)
@@ -461,17 +446,11 @@ def _input_thread(node):
             node.get_logger().info(f"User requested scanToMarker({mid}, dist={dist})")
             node.scanToMarker(marker_id=mid, viewing_distance=dist)
 
-        elif choice == "10":
+        elif choice == "7":
             scale = _parse_floats("  Velocity scaling [0.2]: ", 1)
             scale = scale[0] if scale else 0.2
             node.get_logger().info(f"User requested go_home(velocity_scaling={scale})")
             node.go_home(velocity_scaling=scale)
-
-        elif choice == "11":
-            mid = _parse_floats("  Marker ID [0]: ", 1)
-            mid = int(mid[0]) if mid else 0
-            node.get_logger().info(f"User requested placePlate({mid})")
-            node.placePlate(markerID=mid)
 
         elif choice == "0":
             print("  Shutting down...")
@@ -512,13 +491,13 @@ def main():
 
     else:
         stream_source = "webcam"  # Use webcam for real environment
-        node = printerAutomation(calibration_mode=False,stream_source=stream_source, feed_rotation_deg=90.0)
+        node = printerAutomation(calibration_mode=False,stream_source=stream_source, feed_rotation_deg=90.0,marker_sizes=[0.03, 0.025])
         node.stream.distance_scale = 1.0/0.702  # Correct webcam distance underestimation (~50%)
 
         # Single physical printer
         printer = Simulated3DPrinter(
             node=node,
-            pos=[0.37, -0.17, 0.21],
+            pos=[0.37, -0.17, 0.16],
             orient=[0.0, 0.0, np.pi],
         )
 
@@ -593,7 +572,11 @@ def main():
         node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
         # Move camera to view the marker from 15 cm away
         node.scanToMarker(marker_id=0, viewing_distance=0.20)
-
+        time.sleep(1.0)  
+        node.scanToMarker(marker_id=0, viewing_distance=0.20)
+        time.sleep(1.0)  
+        node.scanToMarker(marker_id=0, viewing_distance=0.20)
+        time.sleep(1.0)  
         # Pick up the plate and place it back at the same marker
         #node.pickupPlate(markerID=0)
         #node.placePlate(markerID=0)
