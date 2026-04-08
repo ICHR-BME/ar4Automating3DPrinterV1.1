@@ -111,6 +111,7 @@ class WebVideoStream:
                  log_fn=None,
                  camera_index=None,
                  camera_keyword="GENERAL WEBCAM",
+                 calibration_file=None,
                  color_topic="/rgbd_camera/image",
                  depth_topic="/rgbd_camera/depth_image",
                  camera_info_topic="/rgbd_camera/camera_info",
@@ -121,12 +122,6 @@ class WebVideoStream:
         # calibration differences between simulation and the real camera.
         # Only applied when source is "webcam".
         self.feed_rotation_deg = float(feed_rotation_deg) if self.source == "webcam" else 0.0
-        # Scale factor applied to ArUco tvec (translation) to correct
-        # systematic distance bias.  1.0 = no correction.
-        self.distance_scale = 1.0
-        # Per-axis scale applied on top of distance_scale.
-        # Adjust xy_scale to fix x/y drift when the camera moves laterally.
-        self.xy_scale = 0.75
         self.fps = fps
         self.display_scale = display_scale
         self.depth_colormap = depth_colormap
@@ -189,8 +184,28 @@ class WebVideoStream:
             assert ret, "Could not read initial frame"
             h, w = frame.shape[:2]
             print(f"Camera: {w}x{h} (index {camera_index})")
-            if enable_aruco and self.camera_matrix is None:
-                self._set_default_calibration(w, h)
+            if enable_aruco:
+                # Search for calibration file: explicit arg, then next to this
+                # script, then current working directory.
+                import pathlib
+                _candidates = [
+                    calibration_file,
+                    pathlib.Path(__file__).parent / "camera_matrix.npz",
+                    pathlib.Path("camera_matrix.npz"),
+                ]
+                _loaded = False
+                for _path in _candidates:
+                    if _path is not None and pathlib.Path(_path).exists():
+                        _data = np.load(_path)
+                        self.camera_matrix = _data["camera_matrix"]
+                        self.dist_coeffs = _data["dist_coeffs"]
+                        print(f"Loaded calibration from '{_path}'")
+                        _loaded = True
+                        break
+                if not _loaded:
+                    raise RuntimeError(
+                        "Camera calibration file not found. "
+                        "Run CameraCalibration.py first to generate 'camera_matrix.npz'.")
 
         else:  # ros
             self._rclpy = rclpy
@@ -308,9 +323,7 @@ class WebVideoStream:
                 rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
                     corner, marker_size, self.camera_matrix, self.dist_coeffs)
 
-                position_cam = tvec[0][0] * self.distance_scale
-                position_cam[0] *= self.xy_scale
-                position_cam[1] *= self.xy_scale
+                position_cam = tvec[0][0].copy()
                 distance = float(np.linalg.norm(position_cam))
                 rot_mat, _ = cv2.Rodrigues(rvec[0])
                 roll, pitch, yaw = R.from_matrix(rot_mat).as_euler('XYZ', degrees=False)
