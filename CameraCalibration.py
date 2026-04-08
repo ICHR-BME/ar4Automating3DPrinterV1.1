@@ -15,8 +15,9 @@ MARKER_LENGTH = 0.011   # meters (length of one ArUco marker)
 ARUCO_DICT = cv2.aruco.DICT_4X4_50
 
 # --- Image source ---
-IMAGE_GLOB = "calibration_images/*.jpg"   # path glob to your saved calibration images
-OUTPUT_FILE = "camera_matrix.npz"
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+IMAGE_GLOB = os.path.join(_SCRIPT_DIR, "calibration_images", "*.jpg")
+OUTPUT_FILE = os.path.join(_SCRIPT_DIR, "camera_matrix.npz")
 
 
 def _detect_charuco(gray, board, aruco_dict, detector_params):
@@ -36,7 +37,7 @@ def collect_calibration_images(num_images: int = 30, camera_index: int = None):
     """Capture calibration frames from a live camera and save them to disk."""
     if camera_index is None:
         camera_index = select_camera(preset_keyword="GENERAL WEBCAM")
-    os.makedirs("calibration_images", exist_ok=True)
+    os.makedirs(os.path.join(_SCRIPT_DIR, "calibration_images"), exist_ok=True)
     cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open camera {camera_index}")
@@ -69,7 +70,7 @@ def collect_calibration_images(num_images: int = 30, camera_index: int = None):
         if key == 27:   # ESC
             break
         if key == 32 and charuco_corners is not None and len(charuco_corners) >= 4:
-            path = f"calibration_images/frame_{saved:03d}.jpg"
+            path = os.path.join(_SCRIPT_DIR, "calibration_images", f"frame_{saved:03d}.jpg")
             cv2.imwrite(path, frame)
             print(f"  Saved {path}")
             saved += 1
@@ -220,6 +221,78 @@ def diagnose_detection(image_glob: str = IMAGE_GLOB, num_images: int = 3):
             break
 
 
+def generate_board_pdf(output_pdf: str = "charuco_board.pdf", dpi: int = 300,
+                       paper: str = "A4"):
+    """
+    Render the ChArUco board centred on a standard sheet of paper so it can be
+    sent directly to a printer.
+
+    IMPORTANT: print at 100% / actual size — disable any 'fit to page' or
+    'shrink to printable area' option so the square dimensions are preserved.
+
+    Parameters
+    ----------
+    output_pdf : str   Output PDF path.
+    dpi        : int   Rasterisation resolution (300 is sufficient).
+    paper      : str   Paper size — 'A4' or 'Letter'.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    paper_sizes_mm = {"A4": (210.0, 297.0), "Letter": (215.9, 279.4)}
+    if paper not in paper_sizes_mm:
+        raise ValueError(f"Unknown paper '{paper}'. Choose from: {list(paper_sizes_mm)}")
+    page_w_mm, page_h_mm = paper_sizes_mm[paper]
+
+    aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
+    board = cv2.aruco.CharucoBoard_create(
+        SQUARES_X, SQUARES_Y, SQUARE_LENGTH, MARKER_LENGTH, aruco_dict
+    )
+
+    board_w_mm = SQUARES_X * SQUARE_LENGTH * 1000.0
+    board_h_mm = SQUARES_Y * SQUARE_LENGTH * 1000.0
+    if board_w_mm > page_w_mm or board_h_mm > page_h_mm:
+        raise RuntimeError(
+            f"Board ({board_w_mm:.1f} x {board_h_mm:.1f} mm) does not fit on "
+            f"{paper} ({page_w_mm:.1f} x {page_h_mm:.1f} mm)"
+        )
+
+    def mm_to_px(mm):
+        return int(round(mm / 25.4 * dpi))
+
+    page_px_w = mm_to_px(page_w_mm)
+    page_px_h = mm_to_px(page_h_mm)
+    board_px_w = mm_to_px(board_w_mm)
+    board_px_h = mm_to_px(board_h_mm)
+
+    board_img = board.draw((board_px_w, board_px_h))
+    if board_img is None or board_img.size == 0:
+        raise RuntimeError("board.draw() returned an empty image — check board parameters")
+
+    # White page; board centred horizontally, centred vertically
+    page = Image.new("L", (page_px_w, page_px_h), color=255)
+    paste_x = (page_px_w - board_px_w) // 2
+    paste_y = (page_px_h - board_px_h) // 2
+    page.paste(Image.fromarray(board_img), (paste_x, paste_y))
+
+    # Label below the board with board parameters and print reminder
+    draw = ImageDraw.Draw(page)
+    font = ImageFont.load_default(size=28)
+    label = (
+        f"ChArUco {SQUARES_X}x{SQUARES_Y}  "
+        f"square={SQUARE_LENGTH*1000:.1f} mm  marker={MARKER_LENGTH*1000:.1f} mm  |  "
+        f"Print at ACTUAL SIZE / 100% — do NOT scale or fit-to-page"
+    )
+    text_y = paste_y + board_px_h + mm_to_px(4)   # 4 mm gap below board
+    draw.text((paste_x, text_y), label, fill=0, font=font)
+
+    page.save(output_pdf, "PDF", resolution=dpi)
+    print(
+        f"Board PDF saved to '{output_pdf}'  "
+        f"({board_w_mm:.1f} x {board_h_mm:.1f} mm centred on {paper}, {dpi} dpi)\n"
+        f"  -> Print at 100% actual size — disable 'fit to page'"
+    )
+
+
 def load_calibration(file: str = OUTPUT_FILE) -> tuple[np.ndarray, np.ndarray]:
     data = np.load(file)
     return data["camera_matrix"], data["dist_coeffs"]
@@ -231,8 +304,11 @@ if __name__ == "__main__":
     # If they look scrambled, swap SQUARES_X and SQUARES_Y.
     #diagnose_detection(IMAGE_GLOB, num_images=3)
 
+    # Step 0: generate (or regenerate) the printable board PDF.
+    #generate_board_pdf("charuco_board.pdf", dpi=300, paper="A4")
+
     # Step 1 (optional): capture fresh calibration images from a live camera.
-    collect_calibration_images(num_images=30)
+    #collect_calibration_images(num_images=30)
 
     # Step 2: compute the camera matrix from the saved images.
     camera_matrix, dist_coeffs, rms = calibrate_from_images(IMAGE_GLOB)
