@@ -32,7 +32,8 @@ class ArucoDetectionViewer(PoseReader):
                  depth_topic="/rgbd_camera/depth_image",
                  camera_info_topic="/rgbd_camera/camera_info",
                  feed_rotation_deg=0.0,
-                 marker_sizes=None):
+                 marker_sizes=None,
+                 calibration_file=None):
         super().__init__('aruco_detection_viewer', enable_pose_print=False)
 
         self.fps = 30.0
@@ -63,6 +64,7 @@ class ArucoDetectionViewer(PoseReader):
             depth_topic=depth_topic,
             camera_info_topic=camera_info_topic,
             feed_rotation_deg=feed_rotation_deg,
+            calibration_file=calibration_file,
         )
 
         self.tf2_buffer = tf2_ros.Buffer()
@@ -141,7 +143,7 @@ class ArucoDetectionViewer(PoseReader):
             return None, None
 
         # Low-pass filter (position: linear lerp, orientation: quaternion SLERP)
-        fCutoff = 3.0
+        fCutoff = 1.0
         RC = 1 / (2 * np.pi * fCutoff)
         alpha = self.dt / (RC + self.dt)
         prev = self.filterStates[markerID, :]

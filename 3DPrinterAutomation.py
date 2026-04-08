@@ -1,6 +1,7 @@
 from ArucoDetector import ArucoDetectionViewer
 import rclpy
 import numpy as np
+import os
 from pymoveit2 import GripperInterface
 from scipy.spatial.transform import Rotation as R
 from geometry_msgs.msg import TransformStamped
@@ -8,6 +9,9 @@ import tf2_ros
 from simulated3DPrinter import Simulated3DPrinter
 import time
 import threading
+
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
 class printerAutomation(ArucoDetectionViewer):
@@ -21,7 +25,8 @@ class printerAutomation(ArucoDetectionViewer):
                          depth_topic=depth_topic,
                          camera_info_topic=camera_info_topic,
                          feed_rotation_deg=feed_rotation_deg,
-                         marker_sizes=marker_sizes)
+                         marker_sizes=marker_sizes,
+                         calibration_file=os.path.join(_SCRIPT_DIR, "camera_matrix.npz"))
         self.get_logger().info(f"printerAutomation initialized, calibration_mode={calibration_mode}")
 
         # Estimated marker frame name prefix
@@ -37,8 +42,8 @@ class printerAutomation(ArucoDetectionViewer):
         #self.markerToPickupOffset = np.array([0.0, 0.20, 0.06])
         
         ## For the big handle
-        self.markerToHandleOffset = np.array([0.0, 0.055, 0.09])
-        self.markerToPickupOffset = np.array([0.0, 0.175, 0.09])
+        self.markerToHandleOffset = np.array([0.0, 0.033, 0.1])
+        self.markerToPickupOffset = np.array([0.0, 0.125, 0.1])
 
         
         self.offsetOri = np.array([0.0, np.pi, np.pi / 2])

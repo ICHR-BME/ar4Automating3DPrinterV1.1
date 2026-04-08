@@ -305,7 +305,7 @@ if __name__ == "__main__":
     #diagnose_detection(IMAGE_GLOB, num_images=3)
 
     # Step 0: generate (or regenerate) the printable board PDF.
-    #generate_board_pdf("charuco_board.pdf", dpi=300, paper="A4")
+    generate_board_pdf("charuco_board.pdf", dpi=300, paper="A4")
 
     # Step 1 (optional): capture fresh calibration images from a live camera.
     #collect_calibration_images(num_images=30)

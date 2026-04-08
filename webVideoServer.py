@@ -185,27 +185,17 @@ class WebVideoStream:
             h, w = frame.shape[:2]
             print(f"Camera: {w}x{h} (index {camera_index})")
             if enable_aruco:
-                # Search for calibration file: explicit arg, then next to this
-                # script, then current working directory.
                 import pathlib
-                _candidates = [
-                    calibration_file,
-                    pathlib.Path(__file__).parent / "camera_matrix.npz",
-                    pathlib.Path("camera_matrix.npz"),
-                ]
-                _loaded = False
-                for _path in _candidates:
-                    if _path is not None and pathlib.Path(_path).exists():
-                        _data = np.load(_path)
-                        self.camera_matrix = _data["camera_matrix"]
-                        self.dist_coeffs = _data["dist_coeffs"]
-                        print(f"Loaded calibration from '{_path}'")
-                        _loaded = True
-                        break
-                if not _loaded:
+                _default = pathlib.Path(__file__).parent / "camera_matrix.npz"
+                _cal_path = pathlib.Path(calibration_file) if calibration_file is not None else _default
+                if not _cal_path.exists():
                     raise RuntimeError(
-                        "Camera calibration file not found. "
+                        f"Camera calibration file not found at '{_cal_path}'. "
                         "Run CameraCalibration.py first to generate 'camera_matrix.npz'.")
+                _data = np.load(_cal_path)
+                self.camera_matrix = _data["camera_matrix"]
+                self.dist_coeffs = _data["dist_coeffs"]
+                print(f"Loaded calibration from '{_cal_path}'")
 
         else:  # ros
             self._rclpy = rclpy
