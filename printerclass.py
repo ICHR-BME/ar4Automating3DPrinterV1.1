@@ -317,3 +317,19 @@ class BambuPrinter:
             return False
         finally:
             socket.setdefaulttimeout(None)
+
+if __name__ == "__main__":
+    my_a1_mini = BambuPrinter("172.20.10.2", "14668855", "0309CA460401528")
+    my_a1_mini.connect()
+    time.sleep(1)  # Allow MQTT connection to stabilize
+
+    # Home all axes first to establish a reference position
+    my_a1_mini.send_gcode("G28")
+    time.sleep(10)  # Wait for homing to complete
+
+    # Move print head to maximum X and Z (180mm on the A1 Mini)
+    my_a1_mini.send_gcode("G0 X180 Z180 F1200")
+    print("Moving to max X and Z position (180mm, 180mm)")
+
+    time.sleep(5)
+    my_a1_mini.disconnect()
