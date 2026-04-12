@@ -143,7 +143,7 @@ class ArucoDetectionViewer(PoseReader):
             return None, None
 
         # Low-pass filter (position: linear lerp, orientation: quaternion SLERP)
-        fCutoff = 1.0
+        fCutoff = 0.3
         RC = 1 / (2 * np.pi * fCutoff)
         alpha = self.dt / (RC + self.dt)
         prev = self.filterStates[markerID, :]

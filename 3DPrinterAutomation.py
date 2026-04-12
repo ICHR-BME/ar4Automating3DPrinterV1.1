@@ -42,22 +42,30 @@ class printerAutomation(ArucoDetectionViewer):
         #self.markerToPickupOffset = np.array([0.0, 0.20, 0.06])
         
         ## For the big handle
-        self.markerToHandleOffset = np.array([0.0, 0.033, 0.1])
-        self.markerToPickupOffset = np.array([0.0, 0.125, 0.1])
+        #self.markerToHandleOffset = np.array([0.0, 0.033, 0.1])
+        #self.markerToPickupOffset = np.array([0.0, 0.125, 0.1])
 
+        ## For the 3D printer with the marker to the side]
+        #self.markerToHandleOffset = np.array([0.09, 0.05, 0.22])
+        #self.markerToPickupOffset = np.array([0.09, 0.155, 0.22])
+
+
+        ## For the printer with the handle above the marker
+        self.markerToHandleOffset = np.array([0.0, 0.11, 0.08])
+        self.markerToPickupOffset = self.markerToHandleOffset+ np.array([0.0, 0.1, 0.0])
         
         self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
 
         # The camera is mounted below the gripper. Raise the end effector by this
         # amount (metres, base-link Z) when scanning so the camera aligns with the marker.
-        self.camera_z_offset = 0.05
+        self.camera_z_offset = 0.04
 
         # Gripper interface
         self.gripper = GripperInterface(
             node=self,
             gripper_joint_names=["gripper_jaw1_joint"],
-            open_gripper_joint_positions=[0.012],
-            closed_gripper_joint_positions=[0.030],
+            open_gripper_joint_positions=[0.011],
+            closed_gripper_joint_positions=[0.026],
             gripper_group_name="ar_gripper",
             callback_group=self._cb_group,
             gripper_command_action_name="gripper_controller/gripper_cmd",
@@ -206,7 +214,7 @@ class printerAutomation(ArucoDetectionViewer):
             f"Registered estimated marker {marker_id} at base_link pos={bad_pos}, euler={bad_euler}"
         )
 
-    def scanToMarker(self, marker_id=0, viewing_distance=0.15):
+    def scanToMarker(self, marker_id=0, viewing_distance=0.20):
         """Move the camera to face a known/estimated marker using its TF frame."""
         entry = self._find_marker_entry(marker_id)
         if entry is None:
@@ -500,12 +508,21 @@ def main():
         node.stream.distance_scale = 1.0/0.702  # Correct webcam distance underestimation (~50%)
 
         # Single physical printer
-        printer = Simulated3DPrinter(
+        '''printer = Simulated3DPrinter(
             node=node,
             pos=[0.37, -0.17, 0.16],
             orient=[0.0, 0.0, np.pi],
+        )'''
+        printer = Simulated3DPrinter(
+            node=node,
+            pos=[0.33, -0.1, 0.02],
+            orient=[0.3, 0.0, np.pi],
         )
-
+        extraBuildPlate = Simulated3DPrinter(
+            node=node,
+            pos=[0.60, 0.05, 0.07],
+            orient=[0.0, 0.0, 3*np.pi/2],
+        )
     # Spin both the ROS node and the stream's internal ROS node
     executor = rclpy.executors.MultiThreadedExecutor()
     executor.add_node(node)
@@ -573,15 +590,37 @@ def main():
         )
         node.register_estimated_marker(marker_id=0, bad_pos=est_pos, bad_euler=est_euler)
         node.scanToMarker(marker_id=0, viewing_distance=0.0)'''
-        bad_pos, bad_euler = printer.get_door_marker_pose_in_base()
+        
+        bad_pos, bad_euler = extraBuildPlate.get_door_marker_pose_in_base()
+        node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
+        # Move camera to view the marker from 15 cm away
+        node.scanToMarker(marker_id=1, viewing_distance=0.2)
+        time.sleep(2.0)  
+        node.scanToMarker(marker_id=1, viewing_distance=0.2)
+        time.sleep(1.0)  
+        node.scanToMarker(marker_id=1, viewing_distance=0.2)
+        time.sleep(1.0)  
+        node.scanToMarker(marker_id=1, viewing_distance=0.2)
+        time.sleep(1.0)  
+        node.scanToMarker(marker_id=1, viewing_distance=0.2)
+        time.sleep(1.0) 
+        
+        
+        
+        
+        '''bad_pos, bad_euler = printer.get_door_marker_pose_in_base()
         node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
         # Move camera to view the marker from 15 cm away
-        node.scanToMarker(marker_id=0, viewing_distance=0.20)
+        node.scanToMarker(marker_id=0, viewing_distance=0.30)
+        time.sleep(2.0)  
+        node.scanToMarker(marker_id=0, viewing_distance=0.25)
         time.sleep(1.0)  
-        node.scanToMarker(marker_id=0, viewing_distance=0.20)
+        node.scanToMarker(marker_id=0, viewing_distance=0.25)
         time.sleep(1.0)  
-        node.scanToMarker(marker_id=0, viewing_distance=0.20)
+        node.scanToMarker(marker_id=0, viewing_distance=0.25)
         time.sleep(1.0)  
+        node.scanToMarker(marker_id=0, viewing_distance=0.25)
+        time.sleep(1.0)  '''
         # Pick up the plate and place it back at the same marker
         #node.pickupPlate(markerID=0)
         #node.placePlate(markerID=0)
