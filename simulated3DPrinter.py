@@ -8,10 +8,8 @@ import re
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from rclpy.callback_groups import ReentrantCallbackGroup
 from tf2_ros import TransformBroadcaster, Buffer, TransformListener
 from geometry_msgs.msg import TransformStamped, PointStamped, PoseStamped, Pose, Point, Quaternion
-from std_msgs.msg import Header
 import tf_transformations
 import tf2_geometry_msgs
 import tf2_ros
@@ -53,7 +51,6 @@ class Simulated3DPrinter:
     
     # Default paths
     DEFAULT_MODEL_DIR = '/home/koghalai/ar4_ws/src/ar4Automating3DPrinter/models/aruco_marker/'
-    DEFAULT_ARUCO_SDF = '/home/koghalai/ar4_ws/src/ar4Automating3DPrinter/models/aruco_marker/model.sdf'
     
     def __init__(
         self,
@@ -74,7 +71,6 @@ class Simulated3DPrinter:
         static_marker_local_pos=None,
         enable_door_flapping_animation=False,
         model_dir=None,
-        aruco_sdf_path=None,
         use_bad_frame=True
     ):
         # Create node if not provided
@@ -105,7 +101,6 @@ class Simulated3DPrinter:
         self.door_frequency = door_frequency
         self.door_amplitude = door_amplitude
         self.model_dir = model_dir or self.DEFAULT_MODEL_DIR
-        self.aruco_sdf_path = aruco_sdf_path or self.DEFAULT_ARUCO_SDF
         
         # Marker configuration
         self.door_marker_texture = door_marker_texture
@@ -115,6 +110,13 @@ class Simulated3DPrinter:
         self.static_marker_size = static_marker_size
         self.static_marker_local_pos = static_marker_local_pos
         self.enable_door_flapping_animation = enable_door_flapping_animation
+
+        # Derive a unique instance ID from the trailing number in the door marker texture
+        # filename (e.g. "marker6x6_0.png" → "0", "marker6x6_1.png" → "1").
+        # Falls back to the full stem if no trailing digits are found.
+        _stem = os.path.basename(door_marker_texture).rsplit('.', 1)[0]
+        _match = re.search(r'(\d+)$', _stem)
+        self._instance_id = _match.group(1) if _match else _stem
         
         # TF components
         self.tf_broadcaster = TransformBroadcaster(self.node)
@@ -179,7 +181,7 @@ class Simulated3DPrinter:
         transform = TransformStamped()
         transform.header.stamp = self.node.get_clock().now().to_msg()
         transform.header.frame_id = "world"
-        transform.child_frame_id = f"printer_frame"
+        transform.child_frame_id = f"printer_frame_{self._instance_id}"
         transform.transform.translation.x = float(self.pos[0])
         transform.transform.translation.y = float(self.pos[1])
         transform.transform.translation.z = float(self.pos[2])
@@ -206,13 +208,13 @@ class Simulated3DPrinter:
     def _transform_point_to_world(self, local_x, local_y, local_z):
         """Transform a point from printer frame to world frame."""
         point_stamped = PointStamped()
-        point_stamped.header.frame_id = "printer_frame"
+        point_stamped.header.frame_id = f"printer_frame_{self._instance_id}"
         point_stamped.header.stamp = self.node.get_clock().now().to_msg()
         point_stamped.point.x = float(local_x)
         point_stamped.point.y = float(local_y)
         point_stamped.point.z = float(local_z)
-        
-        transform = self._get_transform_with_retry("world", "printer_frame")
+
+        transform = self._get_transform_with_retry("world", f"printer_frame_{self._instance_id}")
         transformed = tf2_geometry_msgs.do_transform_point(point_stamped, transform)
         return transformed.point.x, transformed.point.y, transformed.point.z
 
@@ -231,147 +233,6 @@ class Simulated3DPrinter:
             pass  # Entity might not exist
         except Exception as e:
             self.node.get_logger().warn(f'Delete exception for {name}: {e}')
-
-    def spawn_aruco_marker(self, texture_path, marker_size, local_pos, name_prefix="marker"):
-        """
-        Spawn an ArUco marker relative to the printer.
-        
-        Parameters:
-            texture_path: Path to the marker texture
-            marker_size: Size of the marker
-            local_pos: [x, y, z] position in printer frame
-            name_prefix: Prefix for the marker name
-        
-        Returns:
-            name: The spawned marker's name
-        """
-        name = os.path.basename(texture_path).split('.')[0]
-        self._delete_entity(name)
-        
-        # Read and modify SDF
-        with open(self.aruco_sdf_path, 'r') as f:
-            sdf_content = f.read()
-        
-        # Replace texture
-        old_texture_line = '              <albedo_map>materials/textures/marker.png</albedo_map>'
-        new_texture_line = f'              <albedo_map>{texture_path}</albedo_map>'
-        modified_sdf = sdf_content.replace(old_texture_line, new_texture_line)
-        
-        # Replace size
-        old_size_line = f'            <size>0.0001 {0.05} {0.05}</size>'
-        new_size_line = f'            <size>0.0001 {marker_size} {marker_size}</size>'
-        modified_sdf = modified_sdf.replace(old_size_line, new_size_line)
-        
-        # Make non-static and remove collisions
-        modified_sdf = modified_sdf.replace('<static>true</static>', '<static>false</static>')
-        modified_sdf = re.sub(r'<collision[^>]*>.*?</collision>', '', modified_sdf, flags=re.DOTALL)
-        
-        # Write temp file and spawn
-        with tempfile.NamedTemporaryFile(dir=self.model_dir, mode='w', suffix='.sdf', delete=False) as temp_file:
-            temp_file.write(modified_sdf)
-            temp_sdf_path = temp_file.name
-        
-        # Transform position to world
-        x, y, z = self._transform_point_to_world(*local_pos)
-        roll, pitch = float(self.orient[0]), float(self.orient[1])
-        yaw = float(self.orient[2]) + math.pi/2
-        
-        cmd = [
-            'ros2', 'run', 'ros_gz_sim', 'create',
-            '-file', temp_sdf_path, '-name', name,
-            '-x', str(x), '-y', str(y), '-z', str(z),
-            '-R', str(roll), '-P', str(pitch), '-Y', str(yaw)
-        ]
-        
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            self.node.get_logger().info(f'Spawned marker: {name}')
-            self.spawned_entities.append(name)
-            self.markers[name] = {'local_pos': local_pos, 'size': marker_size, 'world_pos': [x, y, z]}
-        except subprocess.CalledProcessError as e:
-            self.node.get_logger().error(f'Failed to spawn marker {name}: {e.stderr or e.stdout}')
-        finally:
-            os.unlink(temp_sdf_path)
-        
-        return name
-
-    def spawn_wall(self, name, size, local_pos):
-        """
-        Spawn a wall relative to the printer.
-        
-        Parameters:
-            name: Wall name
-            size: [size_x, size_y, size_z]
-            local_pos: [x, y, z] position in printer frame
-        
-        Returns:
-            World position [x, y, z]
-        """
-        self._delete_entity(name)
-        
-        # Create SDF (no collision for visual-only walls)
-        sdf_content = f"""<?xml version="1.0"?>
-<sdf version="1.6">
-  <model name="{name}">
-    <static>false</static>
-    <link name="link">
-      <visual name="visual">
-        <geometry>
-          <box>
-            <size>{size[0]} {size[1]} {size[2]}</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>0.5 0.5 0.5 1</ambient>
-          <diffuse>0.5 0.5 0.5 1</diffuse>
-        </material>
-      </visual>
-    </link>
-  </model>
-</sdf>"""
-        
-        with tempfile.NamedTemporaryFile(dir=self.model_dir, mode='w', suffix='.sdf', delete=False) as temp_file:
-            temp_file.write(sdf_content)
-            temp_sdf_path = temp_file.name
-        
-        x, y, z = self._transform_point_to_world(*local_pos)
-        roll, pitch, yaw = float(self.orient[0]), float(self.orient[1]), float(self.orient[2])
-        
-        cmd = [
-            'ros2', 'run', 'ros_gz_sim', 'create',
-            '-file', temp_sdf_path, '-name', name,
-            '-x', str(x), '-y', str(y), '-z', str(z),
-            '-R', str(roll), '-P', str(pitch), '-Y', str(yaw)
-        ]
-        
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-            self.node.get_logger().info(f'Spawned wall: {name}')
-            self.spawned_entities.append(name)
-            self.walls[name] = {'local_pos': local_pos, 'size': size, 'world_pos': [x, y, z]}
-        except subprocess.CalledProcessError as e:
-            self.node.get_logger().error(f'Failed to spawn wall {name}: {e.stderr or e.stdout}')
-        finally:
-            os.unlink(temp_sdf_path)
-        
-        return [x, y, z]
-
-    def spawn_all_walls(self):
-        """Spawn all printer walls (bottom, top, left, right, front, back)."""
-        t = self.wall_thickness
-        w, d, h = self.width, self.depth, self.height
-        
-        wall_configs = [
-            ("bottom", [w, d, t], [0, 0, -h/2]),
-            ("top", [w, d, t], [0, 0, h/2]),
-            ("left", [t, d, h], [-w/2, 0, 0]),
-            ("right", [t, d, h], [w/2, 0, 0]),
-            ("front", [w, t, h], [0, -d/2, 0]),
-            ("back", [w, t, h], [0, d/2, 0]),
-        ]
-        
-        for name, size, local_pos in wall_configs:
-            self.spawn_wall(name, size, local_pos)
 
     def _generate_combined_sdf(self, model_name, include_door=True):
         """
@@ -546,29 +407,33 @@ class Simulated3DPrinter:
   </model>
 </sdf>"""
 
-    def spawn_fast(self, body_name="printer_body"):
+    def spawn_fast(self, body_name=None):
         """
         Fast spawn: static parts as one model, door + marker separate for animation.
-        
+
         This reduces spawn commands from 8+ to just 3, while still allowing door animation.
         Use this instead of spawn_complete() for faster, more reliable spawning.
-        
+
         Parameters:
-            body_name: Name for the static body model
+            body_name: Name for the static body model (defaults to printer_body_<id>)
         """
+        if body_name is None:
+            body_name = f"printer_body_{self._instance_id}"
+        door_name = f"door_{self._instance_id}"
+
         # Setup pose service for animations
         self._setup_pose_service()
-        
+
         # Broadcast printer frame and ensure TF is ready
         for _ in range(10):
             self._broadcast_printer_frame()
             rclpy.spin_once(self.node, timeout_sec=0.1)
-        
+
         # Delete existing entities (both from spawn_fast and spawn_complete)
         self._delete_entity(body_name)
-        self._delete_entity("door")
+        self._delete_entity(door_name)
         for wall_name in ["bottom", "top", "left", "right", "front", "back"]:
-            self._delete_entity(wall_name)
+            self._delete_entity(f"{wall_name}_{self._instance_id}")
         
         # 1. Spawn static body (5 walls + static marker) as single model
         # Link positions are in model's local frame, spawn at printer's world position
@@ -600,28 +465,28 @@ class Simulated3DPrinter:
         
         # 2. Spawn door as separate model (for animation)
         roll, pitch, yaw = float(self.orient[0]), float(self.orient[1]), float(self.orient[2])
-        
-        door_sdf = self._generate_door_sdf("door")
+
+        door_sdf = self._generate_door_sdf(door_name)
         with tempfile.NamedTemporaryFile(dir=self.model_dir, mode='w', suffix='.sdf', delete=False) as f:
             f.write(door_sdf)
             door_sdf_path = f.name
-        
+
         # Door initial position (at front, centered)
         door_local = [0, -self.depth/2, 0]
         door_x, door_y, door_z = self._transform_point_to_world(*door_local)
-        
+
         cmd = [
             'ros2', 'run', 'ros_gz_sim', 'create',
-            '-file', door_sdf_path, '-name', 'door',
+            '-file', door_sdf_path, '-name', door_name,
             '-x', str(door_x), '-y', str(door_y), '-z', str(door_z),
             '-R', str(roll), '-P', str(pitch), '-Y', str(yaw)
         ]
-        
+
         try:
             subprocess.run(cmd, capture_output=True, text=True, check=True)
-            self.node.get_logger().info('Spawned door')
-            self.spawned_entities.append('door')
-            self._door_name = 'door'  # Store door name for animation
+            self.node.get_logger().info(f'Spawned door: {door_name}')
+            self.spawned_entities.append(door_name)
+            self._door_name = door_name  # Store door name for animation
         except subprocess.CalledProcessError as e:
             self.node.get_logger().error(f'Failed to spawn door: {e.stderr or e.stdout}')
         finally:
@@ -672,7 +537,7 @@ class Simulated3DPrinter:
             self.start_door_flapping_animation(marker_name)
         
         self.node.get_logger().info('Fast printer spawn complete (3 models)')
-        return body_name, 'door', marker_name
+        return body_name, door_name, marker_name
 
     def get_door_marker_pose_in_base(self):
         """
@@ -716,34 +581,6 @@ class Simulated3DPrinter:
 
         # world == base_link (both are the Gazebo fixed frame)
         return marker_world_pos, marker_euler_world
-
-    def spawn_door_marker(self, texture_path, marker_size, door_relative_pos=None):
-        """
-        Spawn a marker attached to the front door.
-        
-        Parameters:
-            texture_path: Path to the marker texture
-            marker_size: Size of the marker
-            door_relative_pos: [x, y, z] offset from door front face center (y- is outward)
-        
-        Returns:
-            Marker name
-        """
-        # Default position: at door front face center
-        if door_relative_pos is None:
-            door_relative_pos = [0, 0, 0]
-        
-        # Convert door front face position to printer frame for initial spawn
-        # Door front face in printer frame (when closed): [0, -depth/2 - wall_thickness/2, 0]
-        # Add offset to place marker outside the door surface
-        marker_surface_offset = -0.005  # 5mm outside the door
-        door_front_face_local = [0, -self.depth/2 - self.wall_thickness/2 + marker_surface_offset, 0]
-        local_pos = [
-            door_front_face_local[0] + door_relative_pos[0],
-            door_front_face_local[1] + door_relative_pos[1],
-            door_front_face_local[2] + door_relative_pos[2]
-        ]
-        return self.spawn_aruco_marker(texture_path, marker_size, local_pos, "door_marker")
 
     def _animate_door(self, door_name, marker_name, local_marker_pos):
         """Animation loop for the swinging door."""
@@ -1022,57 +859,6 @@ class Simulated3DPrinter:
         if self.animation_thread:
             self.animation_thread.join(timeout=1.0)
         self.node.get_logger().info('Door animation stopped')
-
-    def spawn(self):
-        """Spawn the printer walls and initialize TF."""
-        # Broadcast printer frame and wait for TF
-        for _ in range(10):
-            self._broadcast_printer_frame()
-            rclpy.spin_once(self.node, timeout_sec=0.1)
-        
-        # Spawn all walls
-        self.spawn_all_walls()
-        
-        self.node.get_logger().info(f'Printer spawned at position {self.pos}')
-
-    def spawn_complete(self):
-        """
-        Spawn the complete printer setup with walls, markers, and door animation.
-        
-        This is the simplest way to use the printer - just call this method
-        and everything will be set up with default configurations.
-        """
-        # Setup pose service for animations
-        self._setup_pose_service()
-        
-        # Spawn walls
-        self.spawn()
-        
-        # Spawn static marker if configured
-        if self.static_marker_texture:
-            static_local_pos = self.static_marker_local_pos
-            if static_local_pos is None:
-                static_local_pos = [0, -self.depth/2 - self.wall_thickness + 0.05, 0]
-            self.spawn_aruco_marker(
-                self.static_marker_texture,
-                self.static_marker_size,
-                static_local_pos
-            )
-        
-        # Store door name for animation (spawn_complete uses "front" wall as door)
-        self._door_name = "front"
-        
-        # Spawn door marker and store name for open/close functions
-        self._door_marker_name = self.spawn_door_marker(
-            self.door_marker_texture,
-            self.door_marker_size,
-            self.door_marker_local_pos
-        )
-        
-        if self.enable_door_flapping_animation:
-            self.start_door_flapping_animation(self._door_marker_name)
-        
-        self.node.get_logger().info('Printer setup complete')
 
     def spin(self):
         """Convenience method to spin the node."""

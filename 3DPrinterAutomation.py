@@ -160,6 +160,9 @@ class printerAutomation(ArucoDetectionViewer):
 
     def unfreeze_markers(self):
         """Re-enable marker pose updates. Call after the robot has stopped."""
+        # Delay to discard frames that were captured during movement (camera has
+        # a slight pipeline delay, so in-flight frames arrive after the move ends).
+        time.sleep(0.5)
         self.stream.marker_updates_enabled = True
         self.get_logger().info("Marker pose updates resumed.")
 
@@ -487,7 +490,7 @@ def main():
         # Source printer: marker ID 0 (left side)
         printer_source = Simulated3DPrinter(
             node=node,
-            pos=[0.42, -0.2, 0.21],
+            pos=[0.47, -0.2, 0.21],
             orient=[0.0, 0.1, np.pi],
             door_marker_texture='materials/textures/marker6x6_0.png',
         )
@@ -496,7 +499,7 @@ def main():
         # Destination printer: marker ID 1 (right side)
         printer_dest = Simulated3DPrinter(
             node=node,
-            pos=[0.27, -0.2, 0.21],
+            pos=[0.22, -0.2, 0.21],
             orient=[0.0, 0.0, np.pi],
             door_marker_texture='materials/textures/marker6x6_1.png',
         )
@@ -566,19 +569,19 @@ def main():
         node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
 
         # Scan to source marker so the camera gets a real detection
-        node.get_logger().info("Scanning source printer (marker 0)...")
-        node.scanToMarker(marker_id=0, viewing_distance=0.20)
+        #node.get_logger().info("Scanning source printer (marker 0)...")
+        #node.scanToMarker(marker_id=0, viewing_distance=0.20)
 
         # Scan to destination marker so the camera gets a real detection
-        node.get_logger().info("Scanning destination printer (marker 1)...")
-        node.scanToMarker(marker_id=1, viewing_distance=0.20)
+        #node.get_logger().info("Scanning destination printer (marker 1)...")
+        #node.scanToMarker(marker_id=1, viewing_distance=0.20)
 
         # Pick up the plate from the source printer and place it on the destination
-        node.get_logger().info("Picking up plate from source printer (marker 0)...")
-        node.pickupPlate(markerID=0)
+        #node.get_logger().info("Picking up plate from source printer (marker 0)...")
+        #node.pickupPlate(markerID=0)
 
-        node.get_logger().info("Placing plate on destination printer (marker 1)...")
-        node.placePlate(markerID=1)
+        #node.get_logger().info("Placing plate on destination printer (marker 1)...")
+        #node.placePlate(markerID=1)
 
     else:
         # For the physical setup, provide a rough estimate of where the marker is.
