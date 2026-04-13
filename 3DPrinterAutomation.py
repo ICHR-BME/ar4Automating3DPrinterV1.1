@@ -476,7 +476,7 @@ def _input_thread(node):
 
 def main():
     rclpy.init()
-    runVirtual = 0
+    runVirtual = 1
 
     if runVirtual:
         stream_source = "ros"  # Use ROS topic stream for simulated environment
@@ -487,7 +487,7 @@ def main():
         # Source printer: marker ID 0 (left side)
         printer_source = Simulated3DPrinter(
             node=node,
-            pos=[0.37, -0.2, 0.21],
+            pos=[0.42, -0.2, 0.21],
             orient=[0.0, 0.1, np.pi],
             door_marker_texture='materials/textures/marker6x6_0.png',
         )
@@ -496,8 +496,8 @@ def main():
         # Destination printer: marker ID 1 (right side)
         printer_dest = Simulated3DPrinter(
             node=node,
-            pos=[0.37, 0.2, 0.21],
-            orient=[0.0, 0.0, 0.0],
+            pos=[0.27, -0.2, 0.21],
+            orient=[0.0, 0.0, np.pi],
             door_marker_texture='materials/textures/marker6x6_1.png',
         )
         printer_dest.spawn_fast()
