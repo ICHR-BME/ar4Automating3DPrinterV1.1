@@ -182,7 +182,7 @@ class printerAutomation(ArucoDetectionViewer):
             rng = np.random.default_rng()
             random_dir = rng.normal(size=3)
             random_dir /= np.linalg.norm(random_dir)
-            bad_pos = bad_pos + random_dir * 0.05
+            bad_pos = bad_pos + random_dir * 0.03
             random_ori_dir = rng.normal(size=3)
             random_ori_dir /= np.linalg.norm(random_ori_dir)
             bad_euler = bad_euler + random_ori_dir * 0.05
@@ -487,23 +487,31 @@ def main():
         node.gripper_disabled = True  # Workaround: gripper causes joint drift in simulation
         node.randomize_estimated_markers = True
 
-        # Source printer: marker ID 0 (left side)
-        printer_source = Simulated3DPrinter(
+        # Source printer: marker ID 0 
+        printer1 = Simulated3DPrinter(
             node=node,
-            pos=[0.47, -0.2, 0.21],
+            pos=[0.44, -0.2, 0.21],
             orient=[0.0, 0.1, np.pi],
             door_marker_texture='materials/textures/marker6x6_0.png',
         )
-        printer_source.spawn_fast()
+        printer1.spawn_fast()
 
-        # Destination printer: marker ID 1 (right side)
-        printer_dest = Simulated3DPrinter(
+        # Destination printer: marker ID 1 
+        printer2 = Simulated3DPrinter(
             node=node,
             pos=[0.22, -0.2, 0.21],
             orient=[0.0, 0.0, np.pi],
             door_marker_texture='materials/textures/marker6x6_1.png',
         )
-        printer_dest.spawn_fast()
+        printer2.spawn_fast()
+
+        printer3 = Simulated3DPrinter(
+            node=node,
+            pos=[0.60, 0.1, 0.21],
+            orient=[0.0, 0.0, 3/2*np.pi],
+            door_marker_texture='materials/textures/marker6x6_2.png',
+        )
+        printer3.spawn_fast()
 
     else:
         stream_source = "webcam"  # Use webcam for real environment
@@ -516,12 +524,12 @@ def main():
             pos=[0.37, -0.17, 0.16],
             orient=[0.0, 0.0, np.pi],
         )'''
-        printer = Simulated3DPrinter(
+        printer1 = Simulated3DPrinter(
             node=node,
             pos=[0.33, -0.1, 0.02],
             orient=[0.3, 0.0, np.pi],
         )
-        extraBuildPlate = Simulated3DPrinter(
+        printer2 = Simulated3DPrinter(
             node=node,
             pos=[0.60, 0.05, 0.07],
             orient=[0.0, 0.0, 3*np.pi/2],
@@ -562,11 +570,15 @@ def main():
     node.get_logger().info("Starting initial scan for markers...")
     if runVirtual:
         # Register both printer door markers using their known spawn poses
-        bad_pos, bad_euler = printer_source.get_door_marker_pose_in_base()
+        bad_pos, bad_euler = printer1.get_door_marker_pose_in_base()
         node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
 
-        bad_pos, bad_euler = printer_dest.get_door_marker_pose_in_base()
+        bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
         node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
+
+
+        bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
+        node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
 
         # Scan to source marker so the camera gets a real detection
         #node.get_logger().info("Scanning source printer (marker 0)...")
@@ -594,7 +606,7 @@ def main():
         node.register_estimated_marker(marker_id=0, bad_pos=est_pos, bad_euler=est_euler)
         node.scanToMarker(marker_id=0, viewing_distance=0.0)'''
         
-        bad_pos, bad_euler = extraBuildPlate.get_door_marker_pose_in_base()
+        bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
         node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
         # Move camera to view the marker from 15 cm away
         node.scanToMarker(marker_id=1, viewing_distance=0.2)
