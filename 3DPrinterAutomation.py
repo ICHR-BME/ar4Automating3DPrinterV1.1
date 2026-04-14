@@ -50,15 +50,28 @@ class printerAutomation(ArucoDetectionViewer):
         #self.markerToPickupOffset = np.array([0.09, 0.155, 0.22])
 
 
-        ## For the printer with the handle above the marker
-        self.markerToHandleOffset = np.array([0.0, 0.11, 0.08])
-        self.markerToPickupOffset = self.markerToHandleOffset+ np.array([0.0, 0.1, 0.0])
+        ## Named offset configs: each entry maps a name to handle and pickup offsets
+        ## in the marker's local frame. Add new entries here for different printer types.
+        self.offset_configs = {
+            # Printer with the handle above the marker
+            'printer_offset': {
+                'handleOffset': np.array([0.0, 0.07, 0.09]),
+                'pickupOffset': np.array([0.0, 0.175, 0.09]),
+            },
+            # Printer with the marker to the side
+            'box_offset': {
+                'handleOffset': np.array([0.0, 0.045, 0.105]),
+                'pickupOffset': np.array([0.0, 0.145, 0.105]),
+            },
+        }
+        ## Map marker_id -> config name. IDs not listed fall back to 'box_offset'.
+        self.marker_offset_config = {}
         
         self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
 
         # The camera is mounted below the gripper. Raise the end effector by this
         # amount (metres, base-link Z) when scanning so the camera aligns with the marker.
-        self.camera_z_offset = 0.04
+        self.camera_z_offset = 0.06
 
         # Gripper interface
         self.gripper = GripperInterface(
@@ -134,6 +147,12 @@ class printerAutomation(ArucoDetectionViewer):
         self.move_to_pose(goodPos, goodEuler)
         self.unfreeze_markers()
         return True
+
+    def _get_offsets_for_marker(self, marker_id):
+        """Return (handleOffset, pickupOffset) for the given marker ID."""
+        config_name = self.marker_offset_config.get(marker_id, 'box_offset')
+        config = self.offset_configs[config_name]
+        return config['handleOffset'], config['pickupOffset']
 
     # ---- Gripper ----
 
@@ -299,10 +318,12 @@ class printerAutomation(ArucoDetectionViewer):
 
     def moveToMarker(self, markerID=0):
         self.open_gripper()
-        self._move_to_marker_offset(markerID, self.markerToHandleOffset)
+        handle_offset, _ = self._get_offsets_for_marker(markerID)
+        self._move_to_marker_offset(markerID, handle_offset)
 
     def liftPlate(self, markerID=0):
-        self._move_to_marker_offset(markerID, self.markerToPickupOffset)
+        _, pickup_offset = self._get_offsets_for_marker(markerID)
+        self._move_to_marker_offset(markerID, pickup_offset)
 
     def pickupPlate(self, markerID=0):
         self.moveToMarker(markerID)
@@ -312,10 +333,55 @@ class printerAutomation(ArucoDetectionViewer):
 
     def placePlate(self, markerID=0):
         """Place a held build plate at the specified marker location."""
+        handle_offset, _ = self._get_offsets_for_marker(markerID)
         # Move above destination
         self.liftPlate(markerID)
         # Lower to handle position
-        self._move_to_marker_offset(markerID, self.markerToHandleOffset)
+        self._move_to_marker_offset(markerID, handle_offset)
+
+    def transferPlate(self, source_id, dest_id, rescan_id, scan_distance=0.15):
+        """
+        Full plate-transfer sequence across three printers.
+
+        1. Pick up plate from source_id  (moveToMarker + close + liftPlate)
+        2. Place plate at dest_id        (liftPlate approach + lower + open)
+        3. Scan dest_id marker           (scanToMarker at scan_distance)
+        4. Scan rescan_id marker         (scanToMarker at scan_distance)
+        5. Pick up plate from rescan_id  (moveToMarker + close + liftPlate)
+        6. Place plate back at rescan_id (liftPlate approach + lower + open)
+        """
+        self.get_logger().info(
+            f"transferPlate: source={source_id}, dest={dest_id}, rescan={rescan_id}"
+        )
+
+        # Step 1 – pick up from source
+        self.get_logger().info(f"Step 1: picking up plate from marker {source_id}")
+        self.scanToMarker(marker_id=source_id, viewing_distance=scan_distance)
+
+        self.moveToMarker(markerID=source_id)
+        self.pickupPlate(markerID=source_id)
+
+        # Step 2 – place at destination
+        self.get_logger().info(f"Step 2: placing plate at marker {dest_id}")
+        self.placePlate(markerID=dest_id)
+
+        # Step 3 – re-observe destination marker
+        self.get_logger().info(f"Step 3: scanning marker {dest_id} at {scan_distance} m")
+        self.scanToMarker(marker_id=dest_id, viewing_distance=scan_distance)
+
+        # Step 4 – observe the third printer marker
+        self.get_logger().info(f"Step 4: scanning marker {rescan_id} at {scan_distance} m")
+        self.scanToMarker(marker_id=rescan_id, viewing_distance=scan_distance)
+
+        # Step 5 – pick up from third printer
+        self.get_logger().info(f"Step 5: picking up plate from marker {rescan_id}")
+        self.pickupPlate(markerID=rescan_id)
+
+        # Step 6 – place at third printer
+        self.get_logger().info(f"Step 6: placing plate at marker {rescan_id}")
+        self.placePlate(markerID=rescan_id)
+
+        self.get_logger().info("transferPlate: sequence complete.")
         # Release
         self.open_gripper()
         time.sleep(1.0)
@@ -346,7 +412,7 @@ class printerAutomation(ArucoDetectionViewer):
             self.moveit2.max_acceleration = velocity_scaling
             self.freeze_markers()
             self.moveit2.move_to_configuration(joint_positions=home_joints)
-            self.moveit2.wait_until_executed()
+            self._wait_for_motion_done()
         finally:
             self.moveit2.max_velocity = prev_velocity
             self.moveit2.max_acceleration = prev_acceleration
@@ -367,6 +433,7 @@ def _print_menu():
     print("  5) List detected markers")
     print("  6) Scan to marker (by ID, uses TF)")
     print("  7) Go home & resync (correct step-loss drift)")
+    print("  8) Transfer plate (source → dest, rescan → place)")
     print("  0) Quit")
     print("=" * 50)
 
@@ -405,7 +472,7 @@ def _input_thread(node):
         # characters to be buffered before the intended option digit(s).
         # e.g. user types "1" then a log line prints, then they type "9" → "19"
         # If the choice is unrecognised, try stripping one leading character.
-        _valid_choices = {"0", "1", "2", "3", "4", "5", "6", "7"}
+        _valid_choices = {"0", "1", "2", "3", "4", "5", "6", "7", "8"}
         if choice not in _valid_choices and len(choice) >= 2 and choice[1:] in _valid_choices:
             choice = choice[1:]
 
@@ -468,6 +535,18 @@ def _input_thread(node):
             node.get_logger().info(f"User requested go_home(velocity_scaling={scale})")
             node.go_home(velocity_scaling=scale)
 
+        elif choice == "8":
+            ids = _parse_floats("  Source, dest, rescan marker IDs (e.g. 0 1 2): ", 3)
+            if ids is None:
+                continue
+            source_id, dest_id, rescan_id = int(ids[0]), int(ids[1]), int(ids[2])
+            dist = _parse_floats("  Scan distance [0.15]: ", 1)
+            dist = dist[0] if dist else 0.15
+            node.get_logger().info(
+                f"User requested transferPlate({source_id}, {dest_id}, {rescan_id}, scan_distance={dist})"
+            )
+            node.transferPlate(source_id=source_id, dest_id=dest_id, rescan_id=rescan_id, scan_distance=dist)
+
         elif choice == "0":
             print("  Shutting down...")
             rclpy.shutdown()
@@ -479,7 +558,7 @@ def _input_thread(node):
 
 def main():
     rclpy.init()
-    runVirtual = 1
+    runVirtual = 0
 
     if runVirtual:
         stream_source = "ros"  # Use ROS topic stream for simulated environment
@@ -487,23 +566,25 @@ def main():
         node.gripper_disabled = True  # Workaround: gripper causes joint drift in simulation
         node.randomize_estimated_markers = True
 
-        # Source printer: marker ID 0 
+        # Destination printer: marker ID 0
         printer1 = Simulated3DPrinter(
             node=node,
-            pos=[0.44, -0.2, 0.21],
-            orient=[0.0, 0.1, np.pi],
+            pos=[0.22, -0.2, 0.21],
+            orient=[0.0, 0.0, np.pi],
             door_marker_texture='materials/textures/marker6x6_0.png',
         )
         printer1.spawn_fast()
 
-        # Destination printer: marker ID 1 
+        # Source printer: marker ID 1
         printer2 = Simulated3DPrinter(
             node=node,
-            pos=[0.22, -0.2, 0.21],
-            orient=[0.0, 0.0, np.pi],
+            pos=[0.44, -0.2, 0.21],
+            orient=[0.0, 0.1, np.pi],
             door_marker_texture='materials/textures/marker6x6_1.png',
         )
         printer2.spawn_fast()
+
+        
 
         printer3 = Simulated3DPrinter(
             node=node,
@@ -518,13 +599,37 @@ def main():
         node = printerAutomation(calibration_mode=False,stream_source=stream_source, feed_rotation_deg=90.0,marker_sizes=[0.03, 0.025])
         node.stream.distance_scale = 1.0/0.702  # Correct webcam distance underestimation (~50%)
 
-        # Single physical printer
+        # Destination printer: marker ID 0
+        # No spawn_fast() on physical robot – that calls ros_gz_sim create which blocks
+        # indefinitely when Gazebo is not running, preventing the executor from ever starting.
+        # get_door_marker_pose_in_base() is pure geometry; it doesn't need Gazebo.
+        printer1 = Simulated3DPrinter(
+            node=node,
+            pos=[0.26, -0.3, 0.07],
+            orient=[0.0, 0.0, np.pi],
+            door_marker_texture='materials/textures/marker6x6_0.png',
+        )
+
+        # Source printer: marker ID 1
+        printer2 = Simulated3DPrinter(
+            node=node,
+            pos=[0.48, -0.3, 0.07],
+            orient=[0.0, 0.1, np.pi],
+            door_marker_texture='materials/textures/marker6x6_1.png',
+        )
+
+        printer3 = Simulated3DPrinter(
+            node=node,
+            pos=[0.65, 0.1, 0.07],
+            orient=[0.0, 0.0, 3/2*np.pi],
+            door_marker_texture='materials/textures/marker6x6_2.png',
+        )
         '''printer = Simulated3DPrinter(
             node=node,
             pos=[0.37, -0.17, 0.16],
             orient=[0.0, 0.0, np.pi],
         )'''
-        printer1 = Simulated3DPrinter(
+        '''printer1 = Simulated3DPrinter(
             node=node,
             pos=[0.33, -0.1, 0.02],
             orient=[0.3, 0.0, np.pi],
@@ -533,7 +638,7 @@ def main():
             node=node,
             pos=[0.60, 0.05, 0.07],
             orient=[0.0, 0.0, 3*np.pi/2],
-        )
+        )'''
     # Spin both the ROS node and the stream's internal ROS node
     executor = rclpy.executors.MultiThreadedExecutor()
     executor.add_node(node)
@@ -561,10 +666,12 @@ def main():
 
     # Wait for joint_states to arrive before scanning
     node.get_logger().info("Waiting for joint_states before initial scan...")
-    for _ in range(50):  # up to 5 seconds
-        if hasattr(node, 'pose') and node.pose is not None:
+    for _ in range(100):  # up to 10 seconds
+        if node._last_joint_msg is not None:
             break
         time.sleep(0.1)
+    else:
+        node.get_logger().warn("Timed out waiting for joint_states - proceeding anyway")
 
     # Run the initial scan (blocks until move_to_pose completes)
     node.get_logger().info("Starting initial scan for markers...")
@@ -605,37 +712,66 @@ def main():
         )
         node.register_estimated_marker(marker_id=0, bad_pos=est_pos, bad_euler=est_euler)
         node.scanToMarker(marker_id=0, viewing_distance=0.0)'''
+        viewing_distance = 0.15
+        node.marker_offset_config[0] = 'box_offset'
+        node.marker_offset_config[1] = 'box_offset'
+        node.marker_offset_config[2] = 'printer_offset'
         
+        bad_pos, bad_euler = printer1.get_door_marker_pose_in_base()
+        node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
         bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
         node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
-        # Move camera to view the marker from 15 cm away
-        node.scanToMarker(marker_id=1, viewing_distance=0.2)
+
+        bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
+        node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
+
+        
+        # View marker 0
+        node.scanToMarker(marker_id=0, viewing_distance=1.75*viewing_distance)
         time.sleep(2.0)  
-        node.scanToMarker(marker_id=1, viewing_distance=0.2)
+        node.scanToMarker(marker_id=0, viewing_distance=1.5*viewing_distance)
         time.sleep(1.0)  
-        node.scanToMarker(marker_id=1, viewing_distance=0.2)
+        node.scanToMarker(marker_id=0, viewing_distance=1.25*viewing_distance)
+        time.sleep(1.0) 
+        
+        node.scanToMarker(marker_id=0, viewing_distance=viewing_distance)
         time.sleep(1.0)  
-        node.scanToMarker(marker_id=1, viewing_distance=0.2)
-        time.sleep(1.0)  
-        node.scanToMarker(marker_id=1, viewing_distance=0.2)
+        node.scanToMarker(marker_id=0, viewing_distance=viewing_distance)
         time.sleep(1.0) 
         
         
         
         
-        '''bad_pos, bad_euler = printer.get_door_marker_pose_in_base()
-        node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
-        # Move camera to view the marker from 15 cm away
-        node.scanToMarker(marker_id=0, viewing_distance=0.30)
+        # View marker 1
+        node.scanToMarker(marker_id=1, viewing_distance=1.75*viewing_distance)
         time.sleep(2.0)  
-        node.scanToMarker(marker_id=0, viewing_distance=0.25)
+        node.scanToMarker(marker_id=1, viewing_distance=1.5*viewing_distance)
         time.sleep(1.0)  
-        node.scanToMarker(marker_id=0, viewing_distance=0.25)
+        node.scanToMarker(marker_id=1, viewing_distance=1.25*viewing_distance)
         time.sleep(1.0)  
-        node.scanToMarker(marker_id=0, viewing_distance=0.25)
+        
+        node.scanToMarker(marker_id=1, viewing_distance=viewing_distance)
         time.sleep(1.0)  
-        node.scanToMarker(marker_id=0, viewing_distance=0.25)
-        time.sleep(1.0)  '''
+        node.scanToMarker(marker_id=1, viewing_distance=viewing_distance)
+        time.sleep(1.0)  
+        
+        # View marker 2
+        node.scanToMarker(marker_id=2, viewing_distance=1.75*viewing_distance)
+        time.sleep(2.0)  
+        node.scanToMarker(marker_id=2, viewing_distance=1.5*viewing_distance)
+        time.sleep(1.0)  
+        node.scanToMarker(marker_id=2, viewing_distance=1.25*viewing_distance)
+        time.sleep(1.0)  
+        
+        node.scanToMarker(marker_id=2, viewing_distance=viewing_distance)
+        time.sleep(1.0)  
+        node.scanToMarker(marker_id=2, viewing_distance=viewing_distance)
+        time.sleep(1.0)  
+        
+        
+        
+        
+        
         # Pick up the plate and place it back at the same marker
         #node.pickupPlate(markerID=0)
         #node.placePlate(markerID=0)

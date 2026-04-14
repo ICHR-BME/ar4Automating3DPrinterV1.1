@@ -26,7 +26,7 @@ def quat_to_euler(x: float, y: float, z: float, w: float):
 
 import sys
 sys.path.insert(0, "/home/koghalai/ar4_ws/src/ar4Automating3DPrinter")
-from moveit2 import MoveIt2
+from moveit2 import MoveIt2, MoveIt2State
 
 class PoseReader(Node):
 	"""ROS 2 node that prints the gripper pose every second using pymoveit2."""
@@ -58,6 +58,16 @@ class PoseReader(Node):
 			use_move_group_action=True,  # Use action instead of service
 			callback_group=self._cb_group,
 		)
+
+		# Default speed limits (0.0 causes MoveIt to warn and fall back to 1.0)
+		self.moveit2.max_velocity = 0.5
+		self.moveit2.max_acceleration = 0.5
+
+		# Seconds to pause after motion completes so MoveIt's TrajectoryExecutionManager
+		# fully releases before the next command is sent.
+		self.move_settle_delay = 0.3
+		# How many times to retry a failed move before giving up.
+		self.move_retries = 2
 
 		# Keep local references for frames
 		self.base_link_name = base_link_name
@@ -91,6 +101,20 @@ class PoseReader(Node):
 		self.frameRotationAngles = np.array([0, 0, np.pi/2])  # Rotation from Bad Frame to Good Frame
 		self.frameOffsetAngles = np.array([-0.6162, -1.5706, -2.1870])  # No translation offset
 
+	def _wait_for_motion_done(self):
+		"""Poll moveit2 state until IDLE without calling spin_once.
+
+		spin_once conflicts with the MultiThreadedExecutor already spinning
+		this node in a background thread and can cause wait_until_executed()
+		to return prematurely, leading to 'Cannot push a new trajectory while
+		another is being executed' errors on MoveIt's side.
+		"""
+		while self.moveit2.query_state() != MoveIt2State.IDLE:
+			time.sleep(0.05)
+		# Extra margin: MoveIt's TrajectoryExecutionManager finishes cleanup
+		# slightly after the action result is sent to the client.
+		time.sleep(self.move_settle_delay)
+
 	def move_to_pose(self, pos, euler):
 
 		bad_pos, bad_euler = self.to_bad_frame(pos, euler)
@@ -101,8 +125,17 @@ class PoseReader(Node):
 			f"pos=[{bad_pos[0]:.4f}, {bad_pos[1]:.4f}, {bad_pos[2]:.4f}] "
 			f"quat=[{q[0]:.3f}, {q[1]:.3f}, {q[2]:.3f}, {q[3]:.3f}]"
 		)
-		self.moveit2.move_to_pose(position=Point(x=bad_pos[0], y=bad_pos[1], z=bad_pos[2]), quat_xyzw=q_msg)
-		self.moveit2.wait_until_executed()
+		for attempt in range(self.move_retries):
+			self.moveit2.move_to_pose(position=Point(x=bad_pos[0], y=bad_pos[1], z=bad_pos[2]), quat_xyzw=q_msg)
+			self._wait_for_motion_done()
+			if self.moveit2.motion_suceeded:
+				return
+			if attempt < self.move_retries - 1:
+				self.get_logger().warn(
+					f"[move_to_pose] attempt {attempt + 1} failed, retrying in 1 s..."
+				)
+				time.sleep(1.0)
+		self.get_logger().error("[move_to_pose] failed after all retry attempts.")
 
 
 	def to_good_frame(self, bad_position, bad_euler_angles):
