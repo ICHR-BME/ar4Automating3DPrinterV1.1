@@ -144,6 +144,7 @@ class PoseReader(Node):
 		time.sleep(self.move_settle_delay)
 		if not self.moveit2.motion_suceeded:
 			self.get_logger().error("[move_to_pose] motion failed or timed out — planning may have been unsuccessful.")
+		return self.moveit2.motion_suceeded
 
 
 	def to_good_frame(self, bad_position, bad_euler_angles):

@@ -144,9 +144,9 @@ class printerAutomation(ArucoDetectionViewer):
         goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
         self.get_logger().info(f'Moving to marker ID {marker_id} — marker centre: {bad_pos}, target: {badPos}')
         self.freeze_markers()
-        self.move_to_pose(goodPos, goodEuler)
+        move_ok = self.move_to_pose(goodPos, goodEuler)
         self.unfreeze_markers()
-        return True
+        return move_ok
 
     def _get_offsets_for_marker(self, marker_id):
         """Return (handleOffset, pickupOffset) for the given marker ID."""
@@ -253,18 +253,21 @@ class printerAutomation(ArucoDetectionViewer):
         goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
         self.get_logger().info(f"Scanning marker {marker_id}: moving to viewing pos={goodPos}")
         self.freeze_markers()
-        self.move_to_pose(goodPos, goodEuler)
+        move_ok = self.move_to_pose(goodPos, goodEuler)
         self.unfreeze_markers()
 
         # Pause to allow camera to observe the marker
         time.sleep(1.0)
         observed_entry = self._find_marker_entry(marker_id)
-        if observed_entry is None or observed_entry.get('estimated', False):
+        marker_spotted = observed_entry is not None and not observed_entry.get('estimated', False)
+        if not move_ok:
+            print(f"[SCAN] Marker {marker_id}: movement FAILED (pose unreachable).")
+        elif not marker_spotted:
             print(f"[SCAN] Marker {marker_id}: NOT detected after moving to view position.")
         else:
             pos = observed_entry.get('positionInWorld', 'N/A')
             print(f"[SCAN] Marker {marker_id}: detected at {pos}")
-        return True
+        return move_ok, marker_spotted
 
     def scanLocationForMarkers(self, estimated_pos, estimated_orient=[0,0,0], viewing_distance=0.15, frame_name=None):
         """Move the camera to face an estimated marker location."""
@@ -322,76 +325,161 @@ class printerAutomation(ArucoDetectionViewer):
     def moveToMarker(self, markerID=0):
         self.open_gripper()
         handle_offset, _ = self._get_offsets_for_marker(markerID)
-        self._move_to_marker_offset(markerID, handle_offset)
+        return self._move_to_marker_offset(markerID, handle_offset)
 
     def liftPlate(self, markerID=0):
         _, pickup_offset = self._get_offsets_for_marker(markerID)
-        self._move_to_marker_offset(markerID, pickup_offset)
+        return self._move_to_marker_offset(markerID, pickup_offset)
 
     def pickupPlate(self, markerID=0):
-        self.moveToMarker(markerID)
+        if not self.moveToMarker(markerID):
+            self.get_logger().error(f"pickupPlate: moveToMarker failed for marker {markerID}.")
+            return False
         self.close_gripper()
         time.sleep(3.0)
-        self.liftPlate(markerID)
+        if not self.liftPlate(markerID):
+            self.get_logger().error(f"pickupPlate: liftPlate failed for marker {markerID}.")
+            return False
+        return True
 
     def placePlate(self, markerID=0):
         """Place a held build plate at the specified marker location."""
         handle_offset, _ = self._get_offsets_for_marker(markerID)
         # Move above destination
-        self.liftPlate(markerID)
+        if not self.liftPlate(markerID):
+            self.get_logger().error(f"placePlate: liftPlate failed for marker {markerID}.")
+            return False
         # Lower to handle position
-        self._move_to_marker_offset(markerID, handle_offset)
+        if not self._move_to_marker_offset(markerID, handle_offset):
+            self.get_logger().error(f"placePlate: move to handle failed for marker {markerID}.")
+            return False
         self.open_gripper()
+        return True
 
     def transferPlate(self, source_id, dest_id, rescan_id, scan_distance=0.15):
         """
         Full plate-transfer sequence across three printers.
 
-        1. Pick up plate from source_id  (moveToMarker + close + liftPlate)
-        2. Place plate at dest_id        (liftPlate approach + lower + open)
-        3. Scan dest_id marker           (scanToMarker at scan_distance)
-        4. Scan rescan_id marker         (scanToMarker at scan_distance)
-        5. Pick up plate from rescan_id  (moveToMarker + close + liftPlate)
-        6. Place plate back at rescan_id (liftPlate approach + lower + open)
+        1. Scan source marker  — retries at 0.85x and 0.70x if movement fails; aborts if all fail
+        2. Pick up plate from source_id  — aborts on failure
+        3. Place plate at dest_id        — aborts on failure
+        4. Scan dest_id marker           — retries on movement failure (no abort)
+        5. Scan rescan_id marker         — retries on movement failure; aborts if all fail
+        6. Pick up plate from rescan_id  — aborts on failure
+        7. Place plate back at source_id — aborts on failure
         """
         self.get_logger().info(
             f"transferPlate: source={source_id}, dest={dest_id}, rescan={rescan_id}"
         )
 
-        # Step 1 – pick up from source
-        self.get_logger().info(f"Step 1: picking up plate from marker {source_id}")
-        self.scanToMarker(marker_id=source_id, viewing_distance=scan_distance)
+        # Step 1 – scan source; retry at closer distances only if movement fails
+        self.get_logger().info(f"Step 1: scanning source marker {source_id}")
+        move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=scan_distance)
+        if not move_ok:
+            move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=0.85 * scan_distance)
+        if not move_ok:
+            move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=0.70 * scan_distance)
+        if not move_ok:
+            self.get_logger().error(
+                f"transferPlate: could not reach source marker {source_id}. Aborting."
+            )
+            return False
 
+        # Step 2 – pick up from source
+        self.get_logger().info(f"Step 2: picking up plate from marker {source_id}")
         self.moveToMarker(markerID=source_id)
         time.sleep(2)
-        self.pickupPlate(markerID=source_id)
+        if not self.pickupPlate(markerID=source_id):
+            self.get_logger().error(
+                f"transferPlate: pickupPlate failed for marker {source_id}. Aborting."
+            )
+            return False
 
-        # Step 2 – place at destination
-        self.get_logger().info(f"Step 2: placing plate at marker {dest_id}")
-        self.placePlate(markerID=dest_id)
+        # Step 3 – place at destination
+        self.get_logger().info(f"Step 3: placing plate at marker {dest_id}")
+        if not self.placePlate(markerID=dest_id):
+            self.get_logger().error(
+                f"transferPlate: placePlate failed for marker {dest_id}. Aborting."
+            )
+            return False
 
-        # Step 3 – re-observe destination marker
-        self.get_logger().info(f"Step 3: scanning marker {dest_id} at {scan_distance} m")
-        self.scanToMarker(marker_id=dest_id, viewing_distance=scan_distance)
+        # Step 4 – re-observe destination marker; retry on movement failure (no abort)
+        self.get_logger().info(f"Step 4: scanning marker {dest_id} at {scan_distance} m")
+        move_ok, _ = self.scanToMarker(marker_id=dest_id, viewing_distance=scan_distance)
+        if not move_ok:
+            move_ok, _ = self.scanToMarker(marker_id=dest_id, viewing_distance=0.85 * scan_distance)
+        if not move_ok:
+            self.scanToMarker(marker_id=dest_id, viewing_distance=0.70 * scan_distance)
 
-        # Step 4 – observe the third printer marker
-        self.get_logger().info(f"Step 4: scanning marker {rescan_id} at {scan_distance} m")
-        self.scanToMarker(marker_id=rescan_id, viewing_distance=scan_distance)
+        # Step 5 – scan rescan marker; retry at closer distances only if movement fails
+        self.get_logger().info(f"Step 5: scanning marker {rescan_id} at {scan_distance} m")
+        move_ok, _ = self.scanToMarker(marker_id=rescan_id, viewing_distance=scan_distance)
+        if not move_ok:
+            move_ok, _ = self.scanToMarker(marker_id=rescan_id, viewing_distance=0.85 * scan_distance)
+        if not move_ok:
+            move_ok, _ = self.scanToMarker(marker_id=rescan_id, viewing_distance=0.70 * scan_distance)
+        if not move_ok:
+            self.get_logger().error(
+                f"transferPlate: could not reach rescan marker {rescan_id}. Aborting."
+            )
+            return False
 
-        # Step 5 – pick up from third printer
-        self.get_logger().info(f"Step 5: picking up plate from marker {rescan_id}")
-        self.pickupPlate(markerID=rescan_id)
+        # Step 6 – pick up from rescan printer
+        self.get_logger().info(f"Step 6: picking up plate from marker {rescan_id}")
+        if not self.pickupPlate(markerID=rescan_id):
+            self.get_logger().error(
+                f"transferPlate: pickupPlate failed for marker {rescan_id}. Aborting."
+            )
+            return False
 
-        # Step 6 – place at third printer
-        self.get_logger().info(f"Step 6: placing plate at marker {source_id}")
-        self.placePlate(markerID=source_id)
-        self.scanToMarker(marker_id=source_id, viewing_distance=scan_distance)
+        # Step 7 – place back at source
+        self.get_logger().info(f"Step 7: placing plate at marker {source_id}")
+        if not self.placePlate(markerID=source_id):
+            self.get_logger().error(
+                f"transferPlate: placePlate failed for marker {source_id}. Aborting."
+            )
+            return False
 
+        # Final scan of source marker; retry on movement failure (no abort)
+        move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=scan_distance)
+        if not move_ok:
+            move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=0.85 * scan_distance)
+        if not move_ok:
+            self.scanToMarker(marker_id=source_id, viewing_distance=0.70 * scan_distance)
 
         self.get_logger().info("transferPlate: sequence complete.")
-        # Release
         self.open_gripper()
         time.sleep(1.0)
+        return True
+
+    def scanMarkerApproach(self, marker_id, viewing_distance=0.15):
+        """
+        Scan a marker at progressively closer distances.
+
+        Starts at 1.75x the given viewing_distance and steps down to 1.0x.
+        If the marker is not spotted at the longest distance (1.75x), the
+        approach is aborted and the method returns False immediately.
+        Returns True if the marker was seen at least once, False otherwise.
+        """
+        distances = [
+            (1.75 * viewing_distance, 2.0),
+            (1.50 * viewing_distance, 1.0),
+            (1.25 * viewing_distance, 1.0),
+            (1.00 * viewing_distance, 1.0),
+            (1.00 * viewing_distance, 1.0),
+        ]
+
+        for i, (dist, pause) in enumerate(distances):
+            move_ok, spotted = self.scanToMarker(marker_id=marker_id, viewing_distance=dist)
+            time.sleep(pause)
+            if i == 0 and not spotted:
+                self.get_logger().warn(
+                    f"scanMarkerApproach: marker {marker_id} not seen at max distance "
+                    f"({dist:.3f} m) — aborting approach."
+                )
+                return False
+
+        return True
 
     def go_home(self, velocity_scaling=0.2):
         """
@@ -728,47 +816,10 @@ def main():
         node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
 
         
-        # View marker 0
-        node.scanToMarker(marker_id=0, viewing_distance=1.75*viewing_distance)
-        time.sleep(2.0)  
-        node.scanToMarker(marker_id=0, viewing_distance=1.5*viewing_distance)
-        time.sleep(1.0)  
-        node.scanToMarker(marker_id=0, viewing_distance=1.25*viewing_distance)
-        time.sleep(1.0) 
-        
-        node.scanToMarker(marker_id=0, viewing_distance=viewing_distance)
-        time.sleep(1.0)  
-        node.scanToMarker(marker_id=0, viewing_distance=viewing_distance)
-        time.sleep(1.0) 
-        
-        
-        
-        
-        # View marker 1
-        node.scanToMarker(marker_id=1, viewing_distance=1.75*viewing_distance)
-        time.sleep(2.0)  
-        node.scanToMarker(marker_id=1, viewing_distance=1.5*viewing_distance)
-        time.sleep(1.0)  
-        node.scanToMarker(marker_id=1, viewing_distance=1.25*viewing_distance)
-        time.sleep(1.0)  
-        
-        node.scanToMarker(marker_id=1, viewing_distance=viewing_distance)
-        time.sleep(1.0)  
-        node.scanToMarker(marker_id=1, viewing_distance=viewing_distance)
-        time.sleep(1.0)  
-        
-        # View marker 2
-        node.scanToMarker(marker_id=2, viewing_distance=1.75*viewing_distance)
-        time.sleep(2.0)  
-        node.scanToMarker(marker_id=2, viewing_distance=1.5*viewing_distance)
-        time.sleep(1.0)  
-        node.scanToMarker(marker_id=2, viewing_distance=1.25*viewing_distance)
-        time.sleep(1.0)  
-        
-        node.scanToMarker(marker_id=2, viewing_distance=viewing_distance)
-        time.sleep(1.0)  
-        node.scanToMarker(marker_id=2, viewing_distance=viewing_distance)
-        time.sleep(1.0)  
+        # View markers 0, 1, 2 — abort approach if not seen at max distance
+        node.scanMarkerApproach(marker_id=0, viewing_distance=viewing_distance)
+        node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
+        node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
         
         
         
