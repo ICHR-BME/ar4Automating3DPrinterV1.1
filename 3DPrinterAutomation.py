@@ -77,8 +77,8 @@ class printerAutomation(ArucoDetectionViewer):
         self.gripper = GripperInterface(
             node=self,
             gripper_joint_names=["gripper_jaw1_joint"],
-            open_gripper_joint_positions=[0.011],
-            closed_gripper_joint_positions=[0.026],
+            open_gripper_joint_positions=[0.00],
+            closed_gripper_joint_positions=[0.014],
             gripper_group_name="ar_gripper",
             callback_group=self._cb_group,
             gripper_command_action_name="gripper_controller/gripper_cmd",
@@ -260,7 +260,10 @@ class printerAutomation(ArucoDetectionViewer):
         time.sleep(1.0)
         observed_entry = self._find_marker_entry(marker_id)
         if observed_entry is None or observed_entry.get('estimated', False):
-            self.get_logger().warn(f"Marker {marker_id} was not observed by the camera after moving to view it.")
+            print(f"[SCAN] Marker {marker_id}: NOT detected after moving to view position.")
+        else:
+            pos = observed_entry.get('positionInWorld', 'N/A')
+            print(f"[SCAN] Marker {marker_id}: detected at {pos}")
         return True
 
     def scanLocationForMarkers(self, estimated_pos, estimated_orient=[0,0,0], viewing_distance=0.15, frame_name=None):
@@ -338,6 +341,7 @@ class printerAutomation(ArucoDetectionViewer):
         self.liftPlate(markerID)
         # Lower to handle position
         self._move_to_marker_offset(markerID, handle_offset)
+        self.open_gripper()
 
     def transferPlate(self, source_id, dest_id, rescan_id, scan_distance=0.15):
         """
@@ -379,8 +383,10 @@ class printerAutomation(ArucoDetectionViewer):
         self.pickupPlate(markerID=rescan_id)
 
         # Step 6 – place at third printer
-        self.get_logger().info(f"Step 6: placing plate at marker {rescan_id}")
-        self.placePlate(markerID=rescan_id)
+        self.get_logger().info(f"Step 6: placing plate at marker {source_id}")
+        self.placePlate(markerID=source_id)
+        self.scanToMarker(marker_id=source_id, viewing_distance=scan_distance)
+
 
         self.get_logger().info("transferPlate: sequence complete.")
         # Release
@@ -436,7 +442,6 @@ def _print_menu():
     print("  6) Scan to marker (by ID, uses TF)")
     print("  7) Go home & resync (correct step-loss drift)")
     print("  8) Transfer plate (source → dest, rescan → place)")
-    print("  0) Quit")
     print("=" * 50)
 
 
@@ -474,7 +479,7 @@ def _input_thread(node):
         # characters to be buffered before the intended option digit(s).
         # e.g. user types "1" then a log line prints, then they type "9" → "19"
         # If the choice is unrecognised, try stripping one leading character.
-        _valid_choices = {"0", "1", "2", "3", "4", "5", "6", "7", "8"}
+        _valid_choices = {"1", "2", "3", "4", "5", "6", "7", "8"}
         if choice not in _valid_choices and len(choice) >= 2 and choice[1:] in _valid_choices:
             choice = choice[1:]
 
@@ -548,11 +553,6 @@ def _input_thread(node):
                 f"User requested transferPlate({source_id}, {dest_id}, {rescan_id}, scan_distance={dist})"
             )
             node.transferPlate(source_id=source_id, dest_id=dest_id, rescan_id=rescan_id, scan_distance=dist)
-
-        elif choice == "0":
-            print("  Shutting down...")
-            rclpy.shutdown()
-            break
 
         else:
             print("  Unknown option. Try again.")

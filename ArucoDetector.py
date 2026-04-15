@@ -57,7 +57,7 @@ class ArucoDetectionViewer(PoseReader):
             marker_sizes=marker_sizes,
             dict_names=['DICT_4X4_50', 'DICT_6X6_50'],
             enrich_fn=self._enrich_marker_pose,
-            log_fn=lambda msg: self.get_logger().info(msg),
+            log_fn=lambda msg: None,  # suppress per-frame detection noise
             camera_index=camera_index,
             camera_keyword=camera_keyword,
             color_topic=color_topic,

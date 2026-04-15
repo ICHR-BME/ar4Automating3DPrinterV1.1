@@ -13,6 +13,7 @@ from sensor_msgs.msg import JointState
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 from geometry_msgs.msg import Point, Quaternion, Pose
+from std_msgs.msg import String
 from tf_transformations import quaternion_from_euler, euler_from_quaternion
 
 import math
@@ -65,7 +66,7 @@ class PoseReader(Node):
 
 		# Seconds to pause after motion completes so MoveIt's TrajectoryExecutionManager
 		# fully releases before the next command is sent.
-		self.move_settle_delay = 0.3
+		self.move_settle_delay = 0.5
 
 
 		# Keep local references for frames
@@ -100,6 +101,9 @@ class PoseReader(Node):
 		self.frameRotationAngles = np.array([0, 0, np.pi/2])  # Rotation from Bad Frame to Good Frame
 		self.frameOffsetAngles = np.array([-0.6162, -1.5706, -2.1870])  # No translation offset
 
+		# Publisher used to cancel any in-progress MoveIt trajectory before sending a new one.
+		self._cancellation_pub = self.create_publisher(String, '/trajectory_execution_event', 1)
+
 	def move_to_pose(self, pos, euler):
 
 		bad_pos, bad_euler = self.to_bad_frame(pos, euler)
@@ -110,8 +114,33 @@ class PoseReader(Node):
 			f"pos=[{bad_pos[0]:.4f}, {bad_pos[1]:.4f}, {bad_pos[2]:.4f}] "
 			f"quat=[{q[0]:.3f}, {q[1]:.3f}, {q[2]:.3f}, {q[3]:.3f}]"
 		)
+		# Cancel any trajectory MoveIt may still be executing (including from a previous
+		# run that was interrupted). Also reset the local state flags, which are already
+		# False after a restart but may be stale if a move was aborted mid-flight.
+		_stop = String()
+		_stop.data = 'stop'
+		self._cancellation_pub.publish(_stop)
+		self.moveit2._MoveIt2__is_motion_requested = False
+		self.moveit2._MoveIt2__is_executing = False
+		# Brief pause for MoveIt's TrajectoryExecutionManager to process the stop.
+		# The stop command is fire-and-forget; 0.3 s is enough for the server to
+		# release the trajectory lock before the new goal arrives.
+		time.sleep(0.3)
 		self.moveit2.move_to_pose(position=Point(x=bad_pos[0], y=bad_pos[1], z=bad_pos[2]), quat_xyzw=q_msg)
-		self.moveit2.wait_until_executed()
+		# wait_until_executed() can return early when a MultiThreadedExecutor is
+		# running: the goal-accepted callback clears __is_motion_requested before
+		# wait_until_executed() checks it, so it bails out while __is_executing is
+		# still True. Poll both flags directly until both are False.
+		_timeout = 10.0
+		_deadline = time.time() + _timeout
+		while (getattr(self.moveit2, '_MoveIt2__is_motion_requested', False) or
+		       getattr(self.moveit2, '_MoveIt2__is_executing', False)):
+			if time.time() > _deadline:
+				self.get_logger().error(
+					f"[move_to_pose] timed out after {_timeout}s waiting for trajectory to finish."
+				)
+				break
+			time.sleep(0.05)
 		time.sleep(self.move_settle_delay)
 		if not self.moveit2.motion_suceeded:
 			self.get_logger().error("[move_to_pose] motion failed or timed out — planning may have been unsuccessful.")
