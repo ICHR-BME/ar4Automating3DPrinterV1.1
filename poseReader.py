@@ -100,38 +100,6 @@ class PoseReader(Node):
 		self.frameRotationAngles = np.array([0, 0, np.pi/2])  # Rotation from Bad Frame to Good Frame
 		self.frameOffsetAngles = np.array([-0.6162, -1.5706, -2.1870])  # No translation offset
 
-	def _wait_for_motion_done(self, timeout_sec=60.0):
-		"""Poll pymoveit2 internal flags until the motion completes or the timeout expires."""
-		deadline = time.time() + timeout_sec
-		# Phase 1: wait for the goal to be accepted (planning phase).
-		while time.time() < deadline:
-			if not self.moveit2._MoveIt2__is_motion_requested:
-				break
-			time.sleep(0.05)
-		else:
-			self.get_logger().warn(
-				f"[_wait_for_motion_done] timed out waiting for goal acceptance after {timeout_sec:.0f}s — "
-				"resetting motion state to unblock future calls"
-			)
-			self.moveit2._MoveIt2__is_motion_requested = False
-			self.moveit2._MoveIt2__is_executing = False
-			time.sleep(self.move_settle_delay)
-			return
-
-		# Phase 2: wait for trajectory execution to finish.
-		while time.time() < deadline:
-			if not self.moveit2._MoveIt2__is_executing:
-				break
-			time.sleep(0.05)
-		else:
-			self.get_logger().warn(
-				f"[_wait_for_motion_done] timed out waiting for execution to finish after {timeout_sec:.0f}s — "
-				"resetting motion state to unblock future calls"
-			)
-			self.moveit2._MoveIt2__is_executing = False
-
-		time.sleep(self.move_settle_delay)
-
 	def move_to_pose(self, pos, euler):
 
 		bad_pos, bad_euler = self.to_bad_frame(pos, euler)
@@ -143,7 +111,8 @@ class PoseReader(Node):
 			f"quat=[{q[0]:.3f}, {q[1]:.3f}, {q[2]:.3f}, {q[3]:.3f}]"
 		)
 		self.moveit2.move_to_pose(position=Point(x=bad_pos[0], y=bad_pos[1], z=bad_pos[2]), quat_xyzw=q_msg)
-		self._wait_for_motion_done()
+		self.moveit2.wait_until_executed()
+		time.sleep(self.move_settle_delay)
 		if not self.moveit2.motion_suceeded:
 			self.get_logger().error("[move_to_pose] motion failed or timed out — planning may have been unsuccessful.")
 

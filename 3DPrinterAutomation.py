@@ -413,7 +413,8 @@ class printerAutomation(ArucoDetectionViewer):
             self.moveit2.max_acceleration = velocity_scaling
             self.freeze_markers()
             self.moveit2.move_to_configuration(joint_positions=home_joints)
-            self._wait_for_motion_done()
+            self.moveit2.wait_until_executed()
+            time.sleep(self.move_settle_delay)
         finally:
             self.moveit2.max_velocity = prev_velocity
             self.moveit2.max_acceleration = prev_acceleration
