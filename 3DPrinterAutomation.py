@@ -359,6 +359,7 @@ class printerAutomation(ArucoDetectionViewer):
         self.scanToMarker(marker_id=source_id, viewing_distance=scan_distance)
 
         self.moveToMarker(markerID=source_id)
+        time.sleep(2)
         self.pickupPlate(markerID=source_id)
 
         # Step 2 – place at destination
@@ -614,7 +615,7 @@ def main():
         printer2 = Simulated3DPrinter(
             node=node,
             pos=[0.48, -0.3, 0.07],
-            orient=[0.0, 0.1, np.pi],
+            orient=[0.0, 0.0, np.pi],
             door_marker_texture='materials/textures/marker6x6_1.png',
         )
 

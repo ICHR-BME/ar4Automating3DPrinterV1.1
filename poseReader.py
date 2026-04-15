@@ -26,7 +26,7 @@ def quat_to_euler(x: float, y: float, z: float, w: float):
 
 import sys
 sys.path.insert(0, "/home/koghalai/ar4_ws/src/ar4Automating3DPrinter")
-from moveit2 import MoveIt2, MoveIt2State
+from moveit2 import MoveIt2
 
 class PoseReader(Node):
 	"""ROS 2 node that prints the gripper pose every second using pymoveit2."""
@@ -60,14 +60,13 @@ class PoseReader(Node):
 		)
 
 		# Default speed limits (0.0 causes MoveIt to warn and fall back to 1.0)
-		self.moveit2.max_velocity = 0.5
-		self.moveit2.max_acceleration = 0.5
+		self.moveit2.max_velocity = 0.9
+		self.moveit2.max_acceleration = 0.9
 
 		# Seconds to pause after motion completes so MoveIt's TrajectoryExecutionManager
 		# fully releases before the next command is sent.
 		self.move_settle_delay = 0.3
-		# How many times to retry a failed move before giving up.
-		self.move_retries = 2
+
 
 		# Keep local references for frames
 		self.base_link_name = base_link_name
@@ -101,18 +100,36 @@ class PoseReader(Node):
 		self.frameRotationAngles = np.array([0, 0, np.pi/2])  # Rotation from Bad Frame to Good Frame
 		self.frameOffsetAngles = np.array([-0.6162, -1.5706, -2.1870])  # No translation offset
 
-	def _wait_for_motion_done(self):
-		"""Poll moveit2 state until IDLE without calling spin_once.
-
-		spin_once conflicts with the MultiThreadedExecutor already spinning
-		this node in a background thread and can cause wait_until_executed()
-		to return prematurely, leading to 'Cannot push a new trajectory while
-		another is being executed' errors on MoveIt's side.
-		"""
-		while self.moveit2.query_state() != MoveIt2State.IDLE:
+	def _wait_for_motion_done(self, timeout_sec=60.0):
+		"""Poll pymoveit2 internal flags until the motion completes or the timeout expires."""
+		deadline = time.time() + timeout_sec
+		# Phase 1: wait for the goal to be accepted (planning phase).
+		while time.time() < deadline:
+			if not self.moveit2._MoveIt2__is_motion_requested:
+				break
 			time.sleep(0.05)
-		# Extra margin: MoveIt's TrajectoryExecutionManager finishes cleanup
-		# slightly after the action result is sent to the client.
+		else:
+			self.get_logger().warn(
+				f"[_wait_for_motion_done] timed out waiting for goal acceptance after {timeout_sec:.0f}s — "
+				"resetting motion state to unblock future calls"
+			)
+			self.moveit2._MoveIt2__is_motion_requested = False
+			self.moveit2._MoveIt2__is_executing = False
+			time.sleep(self.move_settle_delay)
+			return
+
+		# Phase 2: wait for trajectory execution to finish.
+		while time.time() < deadline:
+			if not self.moveit2._MoveIt2__is_executing:
+				break
+			time.sleep(0.05)
+		else:
+			self.get_logger().warn(
+				f"[_wait_for_motion_done] timed out waiting for execution to finish after {timeout_sec:.0f}s — "
+				"resetting motion state to unblock future calls"
+			)
+			self.moveit2._MoveIt2__is_executing = False
+
 		time.sleep(self.move_settle_delay)
 
 	def move_to_pose(self, pos, euler):
@@ -125,17 +142,10 @@ class PoseReader(Node):
 			f"pos=[{bad_pos[0]:.4f}, {bad_pos[1]:.4f}, {bad_pos[2]:.4f}] "
 			f"quat=[{q[0]:.3f}, {q[1]:.3f}, {q[2]:.3f}, {q[3]:.3f}]"
 		)
-		for attempt in range(self.move_retries):
-			self.moveit2.move_to_pose(position=Point(x=bad_pos[0], y=bad_pos[1], z=bad_pos[2]), quat_xyzw=q_msg)
-			self._wait_for_motion_done()
-			if self.moveit2.motion_suceeded:
-				return
-			if attempt < self.move_retries - 1:
-				self.get_logger().warn(
-					f"[move_to_pose] attempt {attempt + 1} failed, retrying in 1 s..."
-				)
-				time.sleep(1.0)
-		self.get_logger().error("[move_to_pose] failed after all retry attempts.")
+		self.moveit2.move_to_pose(position=Point(x=bad_pos[0], y=bad_pos[1], z=bad_pos[2]), quat_xyzw=q_msg)
+		self._wait_for_motion_done()
+		if not self.moveit2.motion_suceeded:
+			self.get_logger().error("[move_to_pose] motion failed or timed out — planning may have been unsuccessful.")
 
 
 	def to_good_frame(self, bad_position, bad_euler_angles):

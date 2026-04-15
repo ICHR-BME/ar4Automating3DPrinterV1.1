@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-ros2 launch annin_ar4_gazebo gazebo.launch.py &
+ros2 launch annin_ar4_gazebo gazebo.launch.py 
 sleep 6
 
 # Camera is now included directly in the world file (empty.world)
