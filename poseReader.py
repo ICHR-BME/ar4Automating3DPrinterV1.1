@@ -104,8 +104,44 @@ class PoseReader(Node):
 		# Publisher used to cancel any in-progress MoveIt trajectory before sending a new one.
 		self._cancellation_pub = self.create_publisher(String, '/trajectory_execution_event', 1)
 
-	def move_to_pose(self, pos, euler):
+	def _cancel_and_wait(self, wait_timeout=3.0):
+		"""Cancel any in-flight MoveIt trajectory and wait for execution to stop.
 
+		Publishes a stop event, then waits up to *wait_timeout* seconds for
+		MoveIt's result callback to fire (which clears __is_executing).  After
+		the wait the flags are force-cleared so the next goal starts from a
+		clean state, followed by a brief pause for MoveIt's
+		TrajectoryExecutionManager to fully release the trajectory lock.
+		"""
+		_stop = String()
+		_stop.data = 'stop'
+		self._cancellation_pub.publish(_stop)
+		# Wait for any active trajectory's result callback to fire naturally
+		# (it will set __is_executing = False).  This prevents the next goal
+		# from arriving while MoveIt is still busy.
+		_deadline = time.time() + wait_timeout
+		while (getattr(self.moveit2, '_MoveIt2__is_executing', False) or
+		       getattr(self.moveit2, '_MoveIt2__is_motion_requested', False)):
+			if time.time() > _deadline:
+				break
+			time.sleep(0.05)
+		# Force-clear flags regardless (handles the case where the action server
+		# never sent a result, e.g. after a hard timeout or server restart).
+		self.moveit2._MoveIt2__is_motion_requested = False
+		self.moveit2._MoveIt2__is_executing = False
+		# Brief pause so TrajectoryExecutionManager has released the lock.
+		time.sleep(0.3)
+
+	def move_to_pose(self, pos, euler, max_retries=2):
+		"""Move to *pos* / *euler* with automatic retry on transient failures.
+
+		A "transient failure" is one where MoveIt aborted or timed out because
+		it was still busy executing a previous trajectory.  On failure the
+		in-flight trajectory is properly cancelled before the next attempt so
+		that MoveIt is in a clean idle state.
+
+		Returns True if the motion succeeded, False if all attempts failed.
+		"""
 		bad_pos, bad_euler = self.to_bad_frame(pos, euler)
 		q = R.from_euler("XYZ", bad_euler, degrees=False).as_quat()  # [x, y, z, w]
 		q_msg = Quaternion(x=float(q[0]), y=float(q[1]), z=float(q[2]), w=float(q[3]))
@@ -114,37 +150,60 @@ class PoseReader(Node):
 			f"pos=[{bad_pos[0]:.4f}, {bad_pos[1]:.4f}, {bad_pos[2]:.4f}] "
 			f"quat=[{q[0]:.3f}, {q[1]:.3f}, {q[2]:.3f}, {q[3]:.3f}]"
 		)
-		# Cancel any trajectory MoveIt may still be executing (including from a previous
-		# run that was interrupted). Also reset the local state flags, which are already
-		# False after a restart but may be stale if a move was aborted mid-flight.
-		_stop = String()
-		_stop.data = 'stop'
-		self._cancellation_pub.publish(_stop)
-		self.moveit2._MoveIt2__is_motion_requested = False
-		self.moveit2._MoveIt2__is_executing = False
-		# Brief pause for MoveIt's TrajectoryExecutionManager to process the stop.
-		# The stop command is fire-and-forget; 0.3 s is enough for the server to
-		# release the trajectory lock before the new goal arrives.
-		time.sleep(0.3)
-		self.moveit2.move_to_pose(position=Point(x=bad_pos[0], y=bad_pos[1], z=bad_pos[2]), quat_xyzw=q_msg)
-		# wait_until_executed() can return early when a MultiThreadedExecutor is
-		# running: the goal-accepted callback clears __is_motion_requested before
-		# wait_until_executed() checks it, so it bails out while __is_executing is
-		# still True. Poll both flags directly until both are False.
+
 		_timeout = 10.0
-		_deadline = time.time() + _timeout
-		while (getattr(self.moveit2, '_MoveIt2__is_motion_requested', False) or
-		       getattr(self.moveit2, '_MoveIt2__is_executing', False)):
-			if time.time() > _deadline:
-				self.get_logger().error(
-					f"[move_to_pose] timed out after {_timeout}s waiting for trajectory to finish."
+
+		for attempt in range(max_retries + 1):
+			if attempt > 0:
+				self.get_logger().warn(
+					f"[move_to_pose] Retry {attempt}/{max_retries}…"
 				)
-				break
-			time.sleep(0.05)
-		time.sleep(self.move_settle_delay)
-		if not self.moveit2.motion_suceeded:
-			self.get_logger().error("[move_to_pose] motion failed or timed out — planning may have been unsuccessful.")
-		return self.moveit2.motion_suceeded
+
+			# Cancel any in-flight trajectory and wait for MoveIt to go idle
+			# before sending a new goal.  This is the key fix: without waiting
+			# for the previous trajectory to finish, the new goal is aborted
+			# immediately with STATUS_ABORTED.
+			self._cancel_and_wait()
+			# Reset the success flag so a stale result from a previous
+			# trajectory cannot be mistaken for this attempt's outcome.
+			self.moveit2.motion_suceeded = False
+
+			self.moveit2.move_to_pose(
+				position=Point(x=bad_pos[0], y=bad_pos[1], z=bad_pos[2]),
+				quat_xyzw=q_msg,
+			)
+
+			# Poll both flags until the action server reports a final result.
+			# (wait_until_executed() can return early under MultiThreadedExecutor
+			# because the goal-accepted callback clears __is_motion_requested
+			# before wait_until_executed checks it.)
+			_deadline = time.time() + _timeout
+			timed_out = False
+			while (getattr(self.moveit2, '_MoveIt2__is_motion_requested', False) or
+			       getattr(self.moveit2, '_MoveIt2__is_executing', False)):
+				if time.time() > _deadline:
+					self.get_logger().error(
+						f"[move_to_pose] timed out after {_timeout}s waiting for trajectory to finish."
+					)
+					timed_out = True
+					break
+				time.sleep(0.05)
+
+			if self.moveit2.motion_suceeded:
+				time.sleep(self.move_settle_delay)
+				return True
+
+			reason = f"timed out after {_timeout}s" if timed_out else "motion aborted/failed"
+			if attempt < max_retries:
+				self.get_logger().warn(
+					f"[move_to_pose] {reason} on attempt {attempt + 1} — retrying…"
+				)
+			else:
+				self.get_logger().error(
+					f"[move_to_pose] {reason} — planning may have been unsuccessful."
+				)
+
+		return False
 
 
 	def to_good_frame(self, bad_position, bad_euler_angles):

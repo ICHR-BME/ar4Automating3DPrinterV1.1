@@ -2,6 +2,7 @@ from ArucoDetector import ArucoDetectionViewer
 import rclpy
 import numpy as np
 import os
+import json
 from pymoveit2 import GripperInterface
 from scipy.spatial.transform import Rotation as R
 from geometry_msgs.msg import TransformStamped
@@ -73,6 +74,10 @@ class printerAutomation(ArucoDetectionViewer):
         # amount (metres, base-link Z) when scanning so the camera aligns with the marker.
         self.camera_z_offset = 0.06
 
+        # Persistent state save file — written every 5 s and loaded at startup
+        self._state_save_path = os.path.join(_SCRIPT_DIR, "printer_state.json")
+        self.create_timer(5.0, self._auto_save_state)
+
         # Gripper interface
         self.gripper = GripperInterface(
             node=self,
@@ -83,6 +88,90 @@ class printerAutomation(ArucoDetectionViewer):
             callback_group=self._cb_group,
             gripper_command_action_name="gripper_controller/gripper_cmd",
         )
+
+    # ---- State persistence ----
+
+    def save_state(self):
+        """Serialise detected marker poses, offset config, and printer configs to JSON."""
+        data = {
+            "marker_offset_config": {str(k): v for k, v in self.marker_offset_config.items()},
+            "markers": [],
+            "printers": getattr(self, '_saved_printer_configs', []),
+        }
+        for entry in self.stream.found_markers.values():
+            if 'positionInBase' not in entry or 'eulerInBase' not in entry:
+                continue
+            data["markers"].append({
+                "id": int(entry['id']),
+                "positionInBase": entry['positionInBase'].tolist(),
+                "eulerInBase": entry['eulerInBase'].tolist(),
+                "dict_name": entry.get('dict_name', 'unknown'),
+                "marker_size": float(entry.get('marker_size', 0.03)),
+                "estimated": bool(entry.get('estimated', False)),
+            })
+        try:
+            with open(self._state_save_path, 'w') as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            self.get_logger().warn(f"save_state: could not write {self._state_save_path}: {e}")
+
+    def register_printers(self, printers):
+        """Store printer configs so they are included in every save_state() call.
+
+        *printers* is a list of dicts, each with keys:
+          marker_id, pos, orient, door_marker_texture
+        """
+        self._saved_printer_configs = [
+            {
+                "marker_id": int(p["marker_id"]),
+                "pos": list(p["pos"]),
+                "orient": list(p["orient"]),
+                "door_marker_texture": p["door_marker_texture"],
+            }
+            for p in printers
+        ]
+
+    def load_state(self):
+        """Restore marker poses and offset config from a previous save file.
+
+        Each saved marker is registered as an estimated pose so the camera
+        will overwrite it with a real detection on the next scan.  Returns
+        True if a file was found and loaded, False otherwise.
+        """
+        if not os.path.exists(self._state_save_path):
+            self.get_logger().info(f"load_state: no save file at {self._state_save_path} — starting fresh")
+            return False
+        try:
+            with open(self._state_save_path, 'r') as f:
+                data = json.load(f)
+        except Exception as e:
+            self.get_logger().warn(f"load_state: could not read {self._state_save_path}: {e}")
+            return False
+
+        # Restore offset config (JSON keys are always strings)
+        for k, v in data.get("marker_offset_config", {}).items():
+            self.marker_offset_config[int(k)] = v
+
+        # Restore marker poses as estimated entries
+        for m in data.get("markers", []):
+            marker_id = int(m["id"])
+            pos = np.array(m["positionInBase"], dtype=float)
+            euler = np.array(m["eulerInBase"], dtype=float)
+            self.register_estimated_marker(marker_id=marker_id, bad_pos=pos, bad_euler=euler)
+
+        # Restore printer configs so future save_state() calls preserve them
+        if data.get("printers"):
+            self._saved_printer_configs = data["printers"]
+
+        n = len(data.get("markers", []))
+        self.get_logger().info(
+            f"load_state: restored {n} marker(s) and offset config from {self._state_save_path}"
+        )
+        return True
+
+    def _auto_save_state(self):
+        """Timer callback: persist state to disk every 5 s."""
+        self.save_state()
 
     # ---- Helpers ----
 
@@ -322,9 +411,15 @@ class printerAutomation(ArucoDetectionViewer):
 
     # ---- Plate operations ----
 
-    def moveToMarker(self, markerID=0):
+    def moveToMarker(self, markerID=0, approach_standoff=0.15):
         self.open_gripper()
         handle_offset, _ = self._get_offsets_for_marker(markerID)
+        # Move to approach pose: same X,Y as handle in marker frame, but at standoff
+        # distance on the marker Z axis.  This guarantees the final move to the handle
+        # is purely along the marker's Z axis, avoiding collisions with the handle.
+        approach_offset = np.array([handle_offset[0], handle_offset[1], approach_standoff])
+        if not self._move_to_marker_offset(markerID, approach_offset):
+            return False
         return self._move_to_marker_offset(markerID, handle_offset)
 
     def liftPlate(self, markerID=0):
@@ -765,6 +860,7 @@ def main():
 
     # Run the initial scan (blocks until move_to_pose completes)
     node.get_logger().info("Starting initial scan for markers...")
+    node.load_state()
     if runVirtual:
         # Register both printer door markers using their known spawn poses
         bad_pos, bad_euler = printer1.get_door_marker_pose_in_base()
@@ -806,7 +902,7 @@ def main():
         node.marker_offset_config[0] = 'box_offset'
         node.marker_offset_config[1] = 'box_offset'
         node.marker_offset_config[2] = 'printer_offset'
-        
+
         bad_pos, bad_euler = printer1.get_door_marker_pose_in_base()
         node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
         bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
@@ -814,6 +910,16 @@ def main():
 
         bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
         node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
+
+        # Record printer configs so they are persisted in every save
+        node.register_printers([
+            {"marker_id": 0, "pos": [0.26, -0.3, 0.07], "orient": [0.0, 0.0, np.pi],
+             "door_marker_texture": 'materials/textures/marker6x6_0.png'},
+            {"marker_id": 1, "pos": [0.48, -0.3, 0.07], "orient": [0.0, 0.0, np.pi],
+             "door_marker_texture": 'materials/textures/marker6x6_1.png'},
+            {"marker_id": 2, "pos": [0.65, 0.1, 0.07],  "orient": [0.0, 0.0, 3/2*np.pi],
+             "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+        ])
 
         
         # View markers 0, 1, 2 — abort approach if not seen at max distance
