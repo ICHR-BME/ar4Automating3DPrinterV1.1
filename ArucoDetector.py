@@ -165,12 +165,25 @@ class ArucoDetectionViewer(PoseReader):
         self.filterStates[markerID, :7] = np.hstack((filteredPos, filteredQuat))
         filteredEuler = R.from_quat(filteredQuat).as_euler("XYZ", degrees=False)
 
+        # Notify subclasses of the raw (pre-filter) measurement every frame
+        try:
+            q_raw = R.from_euler("XYZ", badEuler, degrees=False).as_quat()
+            q_cam = R.from_euler("XYZ", eulerInFrame, degrees=False).as_quat()
+            self._on_raw_marker_measurement(markerID, badPos, q_raw, posInFrame, q_cam)
+        except Exception:
+            pass
+
         try:
             self.broadcast_marker_transform(filteredPos, filteredEuler,
                                             child_frame=f"{self.markerNamePrefix}{markerID}")
         except Exception:
             pass  # TF broadcast failure is non-fatal
         return filteredPos, filteredEuler
+
+    def _on_raw_marker_measurement(self, marker_id, pos_in_base, quat_in_base,
+                                    pos_in_camera, quat_in_camera):
+        """Hook called with each raw (pre-filter) camera detection. Override in subclasses."""
+        pass
 
     def broadcast_marker_transform(self, marker_pos, marker_orient,
                                    parent_frame="base_link", child_frame="aruco_marker"):

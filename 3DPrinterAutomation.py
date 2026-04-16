@@ -3,6 +3,7 @@ import rclpy
 import numpy as np
 import os
 import json
+import csv
 from pymoveit2 import GripperInterface
 from scipy.spatial.transform import Rotation as R
 from geometry_msgs.msg import TransformStamped
@@ -37,6 +38,9 @@ class printerAutomation(ArucoDetectionViewer):
         self.gripper_disabled = False
         # When True, register_estimated_marker adds random noise to test scan robustness
         self.randomize_estimated_markers = False
+        # When True, scanToMarker pauses for 10 s after arriving to collect raw orientation
+        # noise data instead of the normal 1 s observation window.
+        self.collect_orientation_noise_data = True
 
         ## For the small handle
         #self.markerToHandleOffset = np.array([0.0, 0.05, 0.06])
@@ -56,8 +60,8 @@ class printerAutomation(ArucoDetectionViewer):
         self.offset_configs = {
             # Printer with the handle above the marker
             'printer_offset': {
-                'handleOffset': np.array([0.0, 0.07, 0.09]),
-                'pickupOffset': np.array([0.0, 0.175, 0.09]),
+                'handleOffset': np.array([0.0, 0.065, 0.09]),
+                'pickupOffset': np.array([0.0, 0.165, 0.09]),
             },
             # Printer with the marker to the side
             'box_offset': {
@@ -77,6 +81,21 @@ class printerAutomation(ArucoDetectionViewer):
         # Persistent state save file — written every 5 s and loaded at startup
         self._state_save_path = os.path.join(_SCRIPT_DIR, "printer_state.json")
         self.create_timer(5.0, self._auto_save_state)
+
+        # Raw-measurement scan log (one row per video frame, written immediately).
+        # Opened in write mode so old data is discarded on every restart.
+        self._scan_log_path = os.path.join(_SCRIPT_DIR, "scan_raw_measurements.csv")
+        self._scan_log_marker_id = None   # set by scanToMarker while active
+        self._scan_log_distance = None
+        self._scan_log_movement_id = 0     # increments each time a new scanToMarker observation window starts
+        self._scan_log_file = open(self._scan_log_path, 'w', newline='')
+        self._scan_log_writer = csv.writer(self._scan_log_file)
+        self._scan_log_writer.writerow([
+            'marker_id', 'scan_distance', 'movement_id',
+            'px', 'py', 'pz', 'qx', 'qy', 'qz', 'qw',
+            'cam_px', 'cam_py', 'cam_pz', 'cam_qx', 'cam_qy', 'cam_qz', 'cam_qw',
+        ])
+        self._scan_log_file.flush()
 
         # Gripper interface
         self.gripper = GripperInterface(
@@ -152,12 +171,18 @@ class printerAutomation(ArucoDetectionViewer):
         for k, v in data.get("marker_offset_config", {}).items():
             self.marker_offset_config[int(k)] = v
 
-        # Restore marker poses as estimated entries
+        # Restore marker poses, preserving whether each was a real detection or an estimate
         for m in data.get("markers", []):
             marker_id = int(m["id"])
             pos = np.array(m["positionInBase"], dtype=float)
             euler = np.array(m["eulerInBase"], dtype=float)
             self.register_estimated_marker(marker_id=marker_id, bad_pos=pos, bad_euler=euler)
+            # register_estimated_marker always marks entries as estimated=True.
+            # If the saved entry was a real camera detection, restore that flag so
+            # downstream code (e.g. runDoubleTransfer) won't overwrite it with a
+            # geometric fallback.
+            if not m.get("estimated", True):
+                self.stream.found_markers[marker_id]['estimated'] = False
 
         # Restore printer configs so future save_state() calls preserve them
         if data.get("printers"):
@@ -172,6 +197,40 @@ class printerAutomation(ArucoDetectionViewer):
     def _auto_save_state(self):
         """Timer callback: persist state to disk every 5 s."""
         self.save_state()
+
+    # ---- Raw measurement logging ----
+
+    def _on_raw_marker_measurement(self, marker_id, pos_in_base, quat_in_base,
+                                    pos_in_camera, quat_in_camera):
+        """Called by ArucoDetector for every video frame that detects a marker.
+        Writes one CSV row immediately (no buffering) so data is saved as it arrives.
+        Only logs while a scanToMarker call is active (_scan_log_marker_id is set).
+        """
+        if self._scan_log_marker_id is None:
+            return
+        if marker_id != self._scan_log_marker_id:
+            return
+        row = [
+            marker_id,
+            round(self._scan_log_distance, 6) if self._scan_log_distance is not None else '',
+            self._scan_log_movement_id,
+            round(float(pos_in_base[0]), 6),
+            round(float(pos_in_base[1]), 6),
+            round(float(pos_in_base[2]), 6),
+            round(float(quat_in_base[0]), 6),
+            round(float(quat_in_base[1]), 6),
+            round(float(quat_in_base[2]), 6),
+            round(float(quat_in_base[3]), 6),
+            round(float(pos_in_camera[0]), 6),
+            round(float(pos_in_camera[1]), 6),
+            round(float(pos_in_camera[2]), 6),
+            round(float(quat_in_camera[0]), 6),
+            round(float(quat_in_camera[1]), 6),
+            round(float(quat_in_camera[2]), 6),
+            round(float(quat_in_camera[3]), 6),
+        ]
+        self._scan_log_writer.writerow(row)
+        self._scan_log_file.flush()
 
     # ---- Helpers ----
 
@@ -345,8 +404,17 @@ class printerAutomation(ArucoDetectionViewer):
         move_ok = self.move_to_pose(goodPos, goodEuler)
         self.unfreeze_markers()
 
+        # Activate raw-measurement logging for this marker/distance while the camera
+        # observes.  Logging is stopped as soon as the observation window ends.
+        self._scan_log_movement_id += 1
+        self._scan_log_marker_id = marker_id
+        self._scan_log_distance = viewing_distance
         # Pause to allow camera to observe the marker
-        time.sleep(1.0)
+        observation_pause = 10.0 if self.collect_orientation_noise_data else 1.0
+        time.sleep(observation_pause)
+        self._scan_log_marker_id = None
+        self._scan_log_distance = None
+
         observed_entry = self._find_marker_entry(marker_id)
         marker_spotted = observed_entry is not None and not observed_entry.get('estimated', False)
         if not move_ok:
@@ -410,6 +478,12 @@ class printerAutomation(ArucoDetectionViewer):
                     self.get_logger().info(f"No markers detected at location {i+1}")
 
     # ---- Plate operations ----
+
+    def _move_to_approach(self, markerID, approach_standoff=0.15):
+        """Move to the standoff position along the marker Z axis (no gripper action)."""
+        handle_offset, _ = self._get_offsets_for_marker(markerID)
+        approach_offset = np.array([handle_offset[0], handle_offset[1], approach_standoff])
+        return self._move_to_marker_offset(markerID, approach_offset)
 
     def moveToMarker(self, markerID=0, approach_standoff=0.15):
         self.open_gripper()
@@ -482,8 +556,6 @@ class printerAutomation(ArucoDetectionViewer):
 
         # Step 2 – pick up from source
         self.get_logger().info(f"Step 2: picking up plate from marker {source_id}")
-        self.moveToMarker(markerID=source_id)
-        time.sleep(2)
         if not self.pickupPlate(markerID=source_id):
             self.get_logger().error(
                 f"transferPlate: pickupPlate failed for marker {source_id}. Aborting."
@@ -498,13 +570,9 @@ class printerAutomation(ArucoDetectionViewer):
             )
             return False
 
-        # Step 4 – re-observe destination marker; retry on movement failure (no abort)
-        self.get_logger().info(f"Step 4: scanning marker {dest_id} at {scan_distance} m")
-        move_ok, _ = self.scanToMarker(marker_id=dest_id, viewing_distance=scan_distance)
-        if not move_ok:
-            move_ok, _ = self.scanToMarker(marker_id=dest_id, viewing_distance=0.85 * scan_distance)
-        if not move_ok:
-            self.scanToMarker(marker_id=dest_id, viewing_distance=0.70 * scan_distance)
+        # Step 4 – withdraw to approach standoff of destination marker
+        self.get_logger().info(f"Step 4: withdrawing to approach standoff for marker {dest_id}")
+        self._move_to_approach(dest_id)
 
         # Step 5 – scan rescan marker; retry at closer distances only if movement fails
         self.get_logger().info(f"Step 5: scanning marker {rescan_id} at {scan_distance} m")
@@ -535,12 +603,9 @@ class printerAutomation(ArucoDetectionViewer):
             )
             return False
 
-        # Final scan of source marker; retry on movement failure (no abort)
-        move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=scan_distance)
-        if not move_ok:
-            move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=0.85 * scan_distance)
-        if not move_ok:
-            self.scanToMarker(marker_id=source_id, viewing_distance=0.70 * scan_distance)
+        # Withdraw to approach standoff of source marker
+        self.get_logger().info(f"Withdrawing to approach standoff for marker {source_id}")
+        self._move_to_approach(source_id)
 
         self.get_logger().info("transferPlate: sequence complete.")
         self.open_gripper()
@@ -805,7 +870,7 @@ def main():
 
         printer3 = Simulated3DPrinter(
             node=node,
-            pos=[0.65, 0.1, 0.07],
+            pos=[0.65, 0.1, 0.085],
             orient=[0.0, 0.0, 3/2*np.pi],
             door_marker_texture='materials/textures/marker6x6_2.png',
         )

@@ -112,10 +112,3 @@ def main():
 if __name__ == '__main__':
     main()
 
-
-    node.get_logger().info("All transfers complete.")
-    node.save_state()
-
-
-if __name__ == '__main__':
-    main()
