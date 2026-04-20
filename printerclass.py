@@ -168,6 +168,13 @@ class BambuPrinter:
         self.send_gcode("G28")
         print("Command sent: Homing")
 
+    def prepare_for_pickup(self):
+        """Move the tool head to max X/Y/Z so the build plate is accessible for the robot arm."""
+        self.send_gcode("G0 X180 Y180 Z180 F1200")
+
+        time.sleep(5)
+        print("Printer ready for pickup")
+
     def send_gcode(self, gcode_line):
         """Sends a single line of raw G-code to the printer."""
         cmd = {
@@ -324,12 +331,12 @@ if __name__ == "__main__":
     time.sleep(1)  # Allow MQTT connection to stabilize
 
     # Home all axes first to establish a reference position
-    my_a1_mini.send_gcode("G28")
-    time.sleep(10)  # Wait for homing to complete
+    #my_a1_mini.send_gcode("G28")
+    #time.sleep(10)  # Wait for homing to complete
 
-    # Move print head to maximum X and Z (180mm on the A1 Mini)
-    my_a1_mini.send_gcode("G0 X180 Z180 F1200")
-    print("Moving to max X and Z position (180mm, 180mm)")
+    # Move print head to maximum X, Y and Z (180mm on the A1 Mini)
+    my_a1_mini.send_gcode("G0 X180 Y180 Z180 F1200")
+    print("Moving to max X, Y and Z position (180mm, 180mm, 180mm)")
 
     time.sleep(5)
     my_a1_mini.disconnect()

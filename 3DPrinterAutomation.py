@@ -5,6 +5,7 @@ import os
 import json
 import csv
 from pymoveit2 import GripperInterface
+from printerclass import BambuPrinter
 from scipy.spatial.transform import Rotation as R
 from geometry_msgs.msg import TransformStamped
 import tf2_ros
@@ -40,7 +41,7 @@ class printerAutomation(ArucoDetectionViewer):
         self.randomize_estimated_markers = False
         # When True, scanToMarker pauses for 10 s after arriving to collect raw orientation
         # noise data instead of the normal 1 s observation window.
-        self.collect_orientation_noise_data = True
+        self.collect_orientation_noise_data = False
 
         ## For the small handle
         #self.markerToHandleOffset = np.array([0.0, 0.05, 0.06])
@@ -60,13 +61,13 @@ class printerAutomation(ArucoDetectionViewer):
         self.offset_configs = {
             # Printer with the handle above the marker
             'printer_offset': {
-                'handleOffset': np.array([0.0, 0.065, 0.09]),
-                'pickupOffset': np.array([0.0, 0.165, 0.09]),
+                'handleOffset': np.array([0.0, 0.067, 0.09]),
+                'pickupOffset': np.array([0.0, 0.167, 0.09]),
             },
             # Printer with the marker to the side
             'box_offset': {
-                'handleOffset': np.array([0.0, 0.045, 0.105]),
-                'pickupOffset': np.array([0.0, 0.145, 0.105]),
+                'handleOffset': np.array([0.0, 0.05, 0.102]),
+                'pickupOffset': np.array([0.0, 0.15, 0.102]),
             },
         }
         ## Map marker_id -> config name. IDs not listed fall back to 'box_offset'.
@@ -97,12 +98,16 @@ class printerAutomation(ArucoDetectionViewer):
         ])
         self._scan_log_file.flush()
 
+        # BambuPrinter integration: maps marker_id -> BambuPrinter instance.
+        # Populate via register_bambu_printer() after constructing the node.
+        self._bambu_printers: dict = {}
+
         # Gripper interface
         self.gripper = GripperInterface(
             node=self,
             gripper_joint_names=["gripper_jaw1_joint"],
             open_gripper_joint_positions=[0.00],
-            closed_gripper_joint_positions=[0.014],
+            closed_gripper_joint_positions=[0.0142],
             gripper_group_name="ar_gripper",
             callback_group=self._cb_group,
             gripper_command_action_name="gripper_controller/gripper_cmd",
@@ -301,6 +306,21 @@ class printerAutomation(ArucoDetectionViewer):
         config_name = self.marker_offset_config.get(marker_id, 'box_offset')
         config = self.offset_configs[config_name]
         return config['handleOffset'], config['pickupOffset']
+
+    # ---- BambuPrinter integration ----
+
+    def register_bambu_printer(self, marker_id, printer: BambuPrinter):
+        """Associate an already-connected BambuPrinter instance with a marker ID.
+
+        When enabled, transferPlate will command this physical printer to move
+        its tool head to max X/Z before the robot picks up the build plate,
+        and home it after the plate has been placed and the robot has withdrawn.
+        """
+        self._bambu_printers[marker_id] = printer
+        self.get_logger().info(
+            f"register_bambu_printer: marker {marker_id} → printer {printer.serial} at {printer.ip}"
+        )
+        printer.home()
 
     # ---- Gripper ----
 
@@ -556,6 +576,9 @@ class printerAutomation(ArucoDetectionViewer):
 
         # Step 2 – pick up from source
         self.get_logger().info(f"Step 2: picking up plate from marker {source_id}")
+        _p = self._bambu_printers.get(source_id)
+        if _p:
+            _p.prepare_for_pickup()
         if not self.pickupPlate(markerID=source_id):
             self.get_logger().error(
                 f"transferPlate: pickupPlate failed for marker {source_id}. Aborting."
@@ -573,6 +596,9 @@ class printerAutomation(ArucoDetectionViewer):
         # Step 4 – withdraw to approach standoff of destination marker
         self.get_logger().info(f"Step 4: withdrawing to approach standoff for marker {dest_id}")
         self._move_to_approach(dest_id)
+        _p = self._bambu_printers.get(dest_id)
+        if _p:
+            _p.home()
 
         # Step 5 – scan rescan marker; retry at closer distances only if movement fails
         self.get_logger().info(f"Step 5: scanning marker {rescan_id} at {scan_distance} m")
@@ -589,6 +615,9 @@ class printerAutomation(ArucoDetectionViewer):
 
         # Step 6 – pick up from rescan printer
         self.get_logger().info(f"Step 6: picking up plate from marker {rescan_id}")
+        _p = self._bambu_printers.get(rescan_id)
+        if _p:
+            _p.prepare_for_pickup()
         if not self.pickupPlate(markerID=rescan_id):
             self.get_logger().error(
                 f"transferPlate: pickupPlate failed for marker {rescan_id}. Aborting."
@@ -606,6 +635,9 @@ class printerAutomation(ArucoDetectionViewer):
         # Withdraw to approach standoff of source marker
         self.get_logger().info(f"Withdrawing to approach standoff for marker {source_id}")
         self._move_to_approach(source_id)
+        _p = self._bambu_printers.get(source_id)
+        if _p:
+            _p.home()
 
         self.get_logger().info("transferPlate: sequence complete.")
         self.open_gripper()
@@ -855,7 +887,7 @@ def main():
         # get_door_marker_pose_in_base() is pure geometry; it doesn't need Gazebo.
         printer1 = Simulated3DPrinter(
             node=node,
-            pos=[0.26, -0.3, 0.07],
+            pos=[0.29, -0.3, 0.06],
             orient=[0.0, 0.0, np.pi],
             door_marker_texture='materials/textures/marker6x6_0.png',
         )
@@ -863,14 +895,14 @@ def main():
         # Source printer: marker ID 1
         printer2 = Simulated3DPrinter(
             node=node,
-            pos=[0.48, -0.3, 0.07],
+            pos=[0.50, -0.3, 0.06],
             orient=[0.0, 0.0, np.pi],
             door_marker_texture='materials/textures/marker6x6_1.png',
         )
 
         printer3 = Simulated3DPrinter(
             node=node,
-            pos=[0.65, 0.1, 0.085],
+            pos=[0.65, 0.1, 0.075],
             orient=[0.0, 0.0, 3/2*np.pi],
             door_marker_texture='materials/textures/marker6x6_2.png',
         )
@@ -987,6 +1019,16 @@ def main():
         ])
 
         
+        # Register the physical Bambu printer at marker 2
+        bambu_printer = BambuPrinter(
+            ip="172.20.10.2",
+            access_code="14668855",
+            serial="0309CA460401528",
+        )
+        bambu_printer.connect()
+        node.register_bambu_printer(marker_id=2, printer=bambu_printer)
+        
+
         # View markers 0, 1, 2 — abort approach if not seen at max distance
         node.scanMarkerApproach(marker_id=0, viewing_distance=viewing_distance)
         node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
