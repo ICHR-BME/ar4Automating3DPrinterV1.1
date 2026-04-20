@@ -164,9 +164,16 @@ class BambuPrinter:
         print("Command sent: Stop")
 
     def home(self):
-        """Homes all axes using G28."""
+        """Moves all axes to the home position (X0 Y0 Z0)."""
+        self.send_gcode("G0 X0 Y0 Z0 F1200")
+        print("Command sent: Move to home position")
+
+    def homing(self):
+        """Finds axis limits via G28, then moves to the home position."""
         self.send_gcode("G28")
-        print("Command sent: Homing")
+        print("Command sent: Homing (finding limits)")
+        time.sleep(10)  # Wait for homing to complete
+        self.home()
 
     def prepare_for_pickup(self):
         """Move the tool head to max X/Y/Z so the build plate is accessible for the robot arm."""

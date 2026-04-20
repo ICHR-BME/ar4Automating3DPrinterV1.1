@@ -320,7 +320,7 @@ class printerAutomation(ArucoDetectionViewer):
         self.get_logger().info(
             f"register_bambu_printer: marker {marker_id} → printer {printer.serial} at {printer.ip}"
         )
-        printer.home()
+        printer.homing()
 
     # ---- Gripper ----
 
