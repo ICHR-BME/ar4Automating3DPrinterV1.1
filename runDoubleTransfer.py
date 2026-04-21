@@ -98,21 +98,25 @@ def main():
     for i in range(NUM_REPEATS):
         node.get_logger().info(f"=== Iteration {i + 1}/{NUM_REPEATS} ===")
 
-        # Transfer 1: source=2, dest=0, rescan=1
+        '''# Transfer 1: source=2, dest=0, rescan=1
         node.get_logger().info("=== Transfer 1: source=2, dest=0, rescan=1 ===")
         ok1 = node.transferPlate(source_id=2, dest_id=0, rescan_id=1, scan_distance=0.15)
         node.get_logger().info("Transfer 1 succeeded." if ok1 else "Transfer 1 failed.")
+        '''
 
         # Transfer 2: source=2, dest=1, rescan=0
-        node.get_logger().info("=== Transfer 2: source=2, dest=1, rescan=0 ===")
         ok2 = node.transferPlate(source_id=2, dest_id=1, rescan_id=0, scan_distance=0.15)
-        node.get_logger().info("Transfer 2 succeeded." if ok2 else "Transfer 2 failed.")
+        
+        #ok2 = node.transferPlate(source_id=1, dest_id=2, rescan_id=2, scan_distance=0.15)
+        #node.get_logger().info("Transfer 2 succeeded." if ok2 else "Transfer 2 failed.")
+
+
 
     node.get_logger().info("All transfers complete.")
     node.save_state()
 
 
-NUM_REPEATS = 3  # Number of times to repeat the double transfer
+NUM_REPEATS = 1  # Number of times to repeat the double transfer
 
 if __name__ == '__main__':
     main()

@@ -887,7 +887,7 @@ def main():
         # get_door_marker_pose_in_base() is pure geometry; it doesn't need Gazebo.
         printer1 = Simulated3DPrinter(
             node=node,
-            pos=[0.29, -0.3, 0.06],
+            pos=[0.29, -0.3, 0.065],
             orient=[0.0, 0.0, np.pi],
             door_marker_texture='materials/textures/marker6x6_0.png',
         )
@@ -895,7 +895,7 @@ def main():
         # Source printer: marker ID 1
         printer2 = Simulated3DPrinter(
             node=node,
-            pos=[0.50, -0.3, 0.06],
+            pos=[0.50, -0.3, 0.065],
             orient=[0.0, 0.0, np.pi],
             door_marker_texture='materials/textures/marker6x6_1.png',
         )
@@ -1020,13 +1020,14 @@ def main():
 
         
         # Register the physical Bambu printer at marker 2
-        bambu_printer = BambuPrinter(
+        '''bambu_printer = BambuPrinter(
             ip="172.20.10.2",
             access_code="14668855",
             serial="0309CA460401528",
         )
         bambu_printer.connect()
         node.register_bambu_printer(marker_id=2, printer=bambu_printer)
+        '''
         '''bambu_printer.enable_debug_listener()
         bambu_printer.upload_file_timeout("testPrints/dot6m5s.gcode.3mf") # Use the timeout version or the file might stall, default is 10s use bigger numbers for bigger files
         bambu_printer.start_print("testPrints/dot6m5s.gcode.3mf")
