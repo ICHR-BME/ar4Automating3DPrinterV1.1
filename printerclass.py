@@ -56,6 +56,8 @@ class BambuPrinter:
         self._last_state = None
         
         # SSL configuration for MQTT (Bambu uses self-signed certs)
+        self._print_finished = False
+
         self.client.tls_set(cert_reqs=ssl.CERT_NONE)
         self.client.tls_insecure_set(True)
 
@@ -134,13 +136,23 @@ class BambuPrinter:
                 print(f"--> Printer State Changed: {self._last_state} -> {new_state}")
                 
                 # TRIGGER: When state becomes 'FINISH'
-                if new_state == "FINISH" and self.on_finish_callback:
+                if new_state == "FINISH":
                     print("!!! Print Finished Detected !!!")
-                    self.on_finish_callback()
+                    self._print_finished = True
+                    if self.on_finish_callback:
+                        self.on_finish_callback()
                 
                 # Update the tracker
                 self._last_state = new_state
 
+
+    def waitUntilPrintFinished(self, poll_interval=1.0):
+        """Blocks until the printer reports a FINISH state via MQTT."""
+        print("Waiting for print to finish...")
+        self._print_finished = False
+        while not self._print_finished:
+            time.sleep(poll_interval)
+        print("Print finished. Continuing.")
 
     def _send_command(self, command_dict):
         """Internal helper to package and send JSON payloads over MQTT."""
@@ -203,6 +215,7 @@ class BambuPrinter:
     
     def send_gcode_file(self, gcode_filename):
         """Reads a local file and sends its contents as a G-code command block."""
+        gcode_filename = os.path.join(os.path.dirname(os.path.abspath(__file__)), gcode_filename)
         with open(gcode_filename, 'r') as f:
             data = f.read()
             self.send_gcode(data)
@@ -253,6 +266,7 @@ class BambuPrinter:
         Uploads a file to the SD card via FTPS.
         Note: Known issue where some transfers may hang at 100%.
         """
+        local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), local_path)
         filename = os.path.basename(local_path)
         file_size = os.path.getsize(local_path)
         self.bytes_sent = 0
@@ -289,6 +303,7 @@ class BambuPrinter:
         Uploads file with a socket timeout to mitigate 'hang at 100%' issues.
         Returns: True if successful (or 100% sent), False otherwise.
         """
+        local_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), local_path)
         filename = os.path.basename(local_path)
         file_size = os.path.getsize(local_path)
         self.bytes_sent = 0
@@ -345,5 +360,11 @@ if __name__ == "__main__":
     my_a1_mini.send_gcode("G0 X180 Y180 Z180 F1200")
     print("Moving to max X, Y and Z position (180mm, 180mm, 180mm)")
 
-    time.sleep(5)
+
+    my_a1_mini.enable_debug_listener()
+    my_a1_mini.upload_file_timeout("testPrints/dot6m5s.gcode.3mf") # Use the timeout version or the file might stall, default is 10s use bigger numbers for bigger files
+    my_a1_mini.start_print("testPrints/dot6m5s.gcode.3mf")
+    my_a1_mini.waitUntilPrintFinished()
+    print("done")
+
     my_a1_mini.disconnect()

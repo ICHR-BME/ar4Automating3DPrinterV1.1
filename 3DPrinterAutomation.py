@@ -1027,7 +1027,11 @@ def main():
         )
         bambu_printer.connect()
         node.register_bambu_printer(marker_id=2, printer=bambu_printer)
-        
+        '''bambu_printer.enable_debug_listener()
+        bambu_printer.upload_file_timeout("testPrints/dot6m5s.gcode.3mf") # Use the timeout version or the file might stall, default is 10s use bigger numbers for bigger files
+        bambu_printer.start_print("testPrints/dot6m5s.gcode.3mf")
+        bambu_printer.waitUntilPrintFinished()'''
+
 
         # View markers 0, 1, 2 — abort approach if not seen at max distance
         node.scanMarkerApproach(marker_id=0, viewing_distance=viewing_distance)
