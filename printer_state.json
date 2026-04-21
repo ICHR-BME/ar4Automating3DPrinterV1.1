@@ -1,5 +1,165 @@
 {
-  "marker_offset_config": {},
-  "markers": [],
-  "printers": []
+  "marker_offset_config": {
+    "0": "box_offset",
+    "1": "box_offset",
+    "2": "printer_offset"
+  },
+  "markers": [
+    {
+      "id": 2,
+      "positionInBase": [
+        0.07825127474534026,
+        -0.5769395724674545,
+        0.06190168246703669
+      ],
+      "eulerInBase": [
+        -1.5661524302324636,
+        -0.053823690876732,
+        3.136911416504934
+      ],
+      "dict_name": "DICT_6X6_50",
+      "marker_size": 0.03,
+      "estimated": false
+    },
+    {
+      "id": 0,
+      "positionInBase": [
+        -0.1909394880595785,
+        -0.2943072457299957,
+        0.09554081609365338
+      ],
+      "eulerInBase": [
+        -2.1581619342604634,
+        1.5433343574317404,
+        -2.4995288967276963
+      ],
+      "dict_name": "DICT_6X6_50",
+      "marker_size": 0.03,
+      "estimated": false
+    },
+    {
+      "id": 1,
+      "positionInBase": [
+        -0.2004597792528659,
+        -0.5164924747784959,
+        0.09805898193906308
+      ],
+      "eulerInBase": [
+        1.9215829913778233,
+        1.5643276016724008,
+        -0.33884296211541587
+      ],
+      "dict_name": "DICT_6X6_50",
+      "marker_size": 0.03,
+      "estimated": false
+    },
+    {
+      "id": 37,
+      "positionInBase": [
+        -1.4272411408741696,
+        0.05193995523478212,
+        0.029716085749499438
+      ],
+      "eulerInBase": [
+        -0.030965932292219667,
+        0.08281033134761429,
+        1.3427721043709822
+      ],
+      "dict_name": "DICT_4X4_50",
+      "marker_size": 0.03,
+      "estimated": false
+    },
+    {
+      "id": 24,
+      "positionInBase": [
+        -2.1720360318183594,
+        -0.09694699577468871,
+        -0.13512303822709754
+      ],
+      "eulerInBase": [
+        2.1678425272181094,
+        0.6706439542120934,
+        3.0925201262662796
+      ],
+      "dict_name": "unknown",
+      "marker_size": 0.03,
+      "estimated": false
+    },
+    {
+      "id": 17,
+      "positionInBase": [
+        -3.7892736178981585,
+        -1.812777316435385,
+        0.5587406201460543
+      ],
+      "eulerInBase": [
+        -0.11880178317498169,
+        0.4330364531131674,
+        -2.859061661130184
+      ],
+      "dict_name": "unknown",
+      "marker_size": 0.03,
+      "estimated": false
+    },
+    {
+      "id": 27,
+      "positionInBase": [
+        -0.15925846484017447,
+        -0.33826717197779754,
+        0.05058266478146255
+      ],
+      "eulerInBase": [
+        1.5375467536362528,
+        0.43675009878091275,
+        -3.0284136578815186
+      ],
+      "dict_name": "DICT_4X4_50",
+      "marker_size": 0.03,
+      "estimated": false
+    }
+  ],
+  "printers": [
+    {
+      "marker_id": 0,
+      "pos": [
+        0.26,
+        -0.3,
+        0.07
+      ],
+      "orient": [
+        0.0,
+        0.0,
+        3.141592653589793
+      ],
+      "door_marker_texture": "materials/textures/marker6x6_0.png"
+    },
+    {
+      "marker_id": 1,
+      "pos": [
+        0.48,
+        -0.3,
+        0.07
+      ],
+      "orient": [
+        0.0,
+        0.0,
+        3.141592653589793
+      ],
+      "door_marker_texture": "materials/textures/marker6x6_1.png"
+    },
+    {
+      "marker_id": 2,
+      "pos": [
+        0.65,
+        0.1,
+        0.07
+      ],
+      "orient": [
+        0.0,
+        0.0,
+        4.71238898038469
+      ],
+      "door_marker_texture": "materials/textures/marker6x6_2.png"
+    }
+  ]
 }

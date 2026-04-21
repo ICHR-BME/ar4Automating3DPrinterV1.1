@@ -41,7 +41,7 @@ class printerAutomation(ArucoDetectionViewer):
         self.randomize_estimated_markers = False
         # When True, scanToMarker pauses for 10 s after arriving to collect raw orientation
         # noise data instead of the normal 1 s observation window.
-        self.collect_orientation_noise_data = False
+        self.collect_orientation_noise_data = True
 
         ## For the small handle
         #self.markerToHandleOffset = np.array([0.0, 0.05, 0.06])
@@ -107,7 +107,7 @@ class printerAutomation(ArucoDetectionViewer):
             node=self,
             gripper_joint_names=["gripper_jaw1_joint"],
             open_gripper_joint_positions=[0.00],
-            closed_gripper_joint_positions=[0.0142],
+            closed_gripper_joint_positions=[0.0147],
             gripper_group_name="ar_gripper",
             callback_group=self._cb_group,
             gripper_command_action_name="gripper_controller/gripper_cmd",
@@ -887,7 +887,7 @@ def main():
         # get_door_marker_pose_in_base() is pure geometry; it doesn't need Gazebo.
         printer1 = Simulated3DPrinter(
             node=node,
-            pos=[0.29, -0.3, 0.065],
+            pos=[0.28, -0.3, 0.065],
             orient=[0.0, 0.0, np.pi],
             door_marker_texture='materials/textures/marker6x6_0.png',
         )

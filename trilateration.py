@@ -3,7 +3,7 @@ import csv
 import os
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-RUN_TEST   = True          # True  → synthetic self-test
+RUN_TEST   = False          # True  → synthetic self-test
                             # False → load measurements from CSV_FILE
 CSV_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "buildPlatePlacementErrorMeasurements.csv")
 CORNER_SPACING = 0.198      # L: distance between the two reference corners (meters)
