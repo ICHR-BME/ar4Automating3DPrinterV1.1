@@ -20,7 +20,7 @@ def main():
         node=node,
         gripper_joint_names=["gripper_jaw1_joint"],
         open_gripper_joint_positions=[0.000],
-        closed_gripper_joint_positions=[0.013], # use .026 for full closure
+        closed_gripper_joint_positions=[0.0145], # use .026 for full closure
         gripper_group_name="ar_gripper",
         callback_group=callback_group,
         gripper_command_action_name="gripper_controller/gripper_cmd",

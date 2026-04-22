@@ -72,7 +72,12 @@ class printerAutomation(ArucoDetectionViewer):
         }
         ## Map marker_id -> config name. IDs not listed fall back to 'box_offset'.
         self.marker_offset_config = {}
-        
+
+        ## Offset from the scrape marker origin in the marker's local frame [x, y, z]
+        ## used by scrapePlate().  z is the closest approach distance along the marker's
+        ## outward Z axis; x/y shift the contact point laterally in the marker plane.
+        self.scrape_offset = np.array([0.0, 0.1, 0.102])
+
         self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
 
         # The camera is mounted below the gripper. Raise the end effector by this
@@ -107,7 +112,7 @@ class printerAutomation(ArucoDetectionViewer):
             node=self,
             gripper_joint_names=["gripper_jaw1_joint"],
             open_gripper_joint_positions=[0.00],
-            closed_gripper_joint_positions=[0.0150],
+            closed_gripper_joint_positions=[0.0145],
             gripper_group_name="ar_gripper",
             callback_group=self._cb_group,
             gripper_command_action_name="gripper_controller/gripper_cmd",
@@ -673,6 +678,109 @@ class printerAutomation(ArucoDetectionViewer):
 
         return True
 
+    def scrapePlate(self, source_id, scrape_id, scan_distance=0.15, scrape_standoff=0.15, scrape_offset=None):
+        """
+        Pick up a plate from source_id, scrape it against the scrape_id marker surface,
+        then return it to source_id.
+
+        scrape_offset: 3-element [x, y, z] offset from the scrape marker origin in the
+          marker's local frame at which the scrape is carried out.  Falls back to
+          self.scrape_offset when not provided.
+
+        1. Scan source marker  — retries at 0.85x and 0.70x if movement fails; aborts if all fail
+        2. Pick up plate from source_id  — aborts on failure
+        3. Scan scrape marker  — retries at 0.85x and 0.70x if movement fails; aborts if all fail
+        4. Move to standoff position along the scrape marker's Z axis
+        5. Move to scrape_offset position in the scrape marker's local frame
+        6. Retract back to standoff along the scrape marker's Z axis
+        7. Place plate back at source_id  — aborts on failure
+        """
+        if scrape_offset is None:
+            scrape_offset = self.scrape_offset
+        else:
+            scrape_offset = np.array(scrape_offset, dtype=float)
+        self.get_logger().info(
+            f"scrapePlate: source={source_id}, scrape={scrape_id}, "
+            f"standoff={scrape_standoff}, scrape_offset={scrape_offset}"
+        )
+
+        # Step 1 – scan source marker; retry at closer distances only if movement fails
+        self.get_logger().info(f"Step 1: scanning source marker {source_id}")
+        move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=scan_distance)
+        if not move_ok:
+            move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=0.85 * scan_distance)
+        if not move_ok:
+            move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=0.70 * scan_distance)
+        if not move_ok:
+            self.get_logger().error(
+                f"scrapePlate: could not reach source marker {source_id}. Aborting."
+            )
+            return False
+
+        # Step 2 – pick up plate from source
+        self.get_logger().info(f"Step 2: picking up plate from marker {source_id}")
+        if not self.pickupPlate(markerID=source_id):
+            self.get_logger().error(
+                f"scrapePlate: pickupPlate failed for marker {source_id}. Aborting."
+            )
+            return False
+
+        '''# Step 3 – scan scrape marker; retry at closer distances only if movement fails
+        self.get_logger().info(f"Step 3: scanning scrape marker {scrape_id}")
+        move_ok, _ = self.scanToMarker(marker_id=scrape_id, viewing_distance=scan_distance)
+        if not move_ok:
+            move_ok, _ = self.scanToMarker(marker_id=scrape_id, viewing_distance=0.85 * scan_distance)
+        if not move_ok:
+            move_ok, _ = self.scanToMarker(marker_id=scrape_id, viewing_distance=0.70 * scan_distance)
+        if not move_ok:
+            self.get_logger().error(
+                f"scrapePlate: could not reach scrape marker {scrape_id}. Aborting."
+            )
+            return False
+            '''
+
+        # Step 4 – move to standoff: same x, y as scrape_offset but at standoff Z distance,
+        # so the final approach and retract are purely along the marker's Z axis.
+        self.get_logger().info(f"Step 4: moving to scrape standoff (Z={scrape_standoff} m)")
+        standoff_offset = np.array([scrape_offset[0], scrape_offset[1], scrape_standoff])
+        if not self._move_to_marker_offset(scrape_id, standoff_offset):
+            self.get_logger().error(
+                f"scrapePlate: could not reach scrape standoff for marker {scrape_id}. Aborting."
+            )
+            return False
+
+        # Step 5 – move to scrape_offset position in the marker's local frame
+        self.get_logger().info(f"Step 5: moving to scrape offset {scrape_offset} in marker frame")
+        if not self._move_to_marker_offset(scrape_id, scrape_offset):
+            self.get_logger().error(
+                f"scrapePlate: could not reach scrape depth for marker {scrape_id}. Aborting."
+            )
+            return False
+
+        # Step 6 – retract back along marker Z to standoff
+        self.get_logger().info(f"Step 6: retracting to standoff (Z={scrape_standoff} m)")
+        if not self._move_to_marker_offset(scrape_id, standoff_offset):
+            self.get_logger().error(
+                f"scrapePlate: retraction to standoff failed for marker {scrape_id}. Continuing."
+            )
+
+        # Step 7 – place plate back at source
+        self.get_logger().info(f"Step 7: placing plate back at marker {source_id}")
+        if not self.placePlate(markerID=source_id):
+            self.get_logger().error(
+                f"scrapePlate: placePlate failed for marker {source_id}. Aborting."
+            )
+            return False
+
+        # Withdraw to approach standoff of source marker
+        self.get_logger().info(f"Withdrawing to approach standoff for marker {source_id}")
+        self._move_to_approach(source_id)
+
+        self.get_logger().info("scrapePlate: sequence complete.")
+        self.open_gripper()
+        time.sleep(1.0)
+        return True
+
     def go_home(self, velocity_scaling=0.2):
         """
         Move all joints to their zero (home) position.
@@ -709,350 +817,3 @@ class printerAutomation(ArucoDetectionViewer):
         self.get_logger().info("go_home: reached home position.")
 
 
-def _print_menu():
-    """Print the interactive command menu."""
-    print("\n" + "=" * 50)
-    print("  3D Printer Automation - Command Menu")
-    print("=" * 50)
-    print("  1) Scan location for markers (manual pos/orient)")
-    print("  2) Move to marker")
-    print("  3) Pickup plate (move + lift)")
-    print("  4) Place plate at marker")
-    print("  5) List detected markers")
-    print("  6) Scan to marker (by ID, uses TF)")
-    print("  7) Go home & resync (correct step-loss drift)")
-    print("  8) Transfer plate (source → dest, rescan → place)")
-    print("=" * 50)
-
-
-def _parse_floats(prompt, count=None):
-    """Prompt for space-separated floats. Returns list of floats or None on error."""
-    try:
-        raw = input(prompt).strip()
-        values = [float(v) for v in raw.split()]
-        if count is not None and len(values) != count:
-            print(f"  Expected {count} values, got {len(values)}")
-            return None
-        return values
-    except ValueError:
-        print("  Invalid input. Enter space-separated numbers.")
-        return None
-
-
-def _input_thread(node):
-    """
-    Runs in a background thread. Reads user commands from stdin
-    and dispatches them on the node (which is spinning in the main thread).
-    """
-    # Wait for the system to initialize
-    time.sleep(5.0)
-    print("\n[INFO] System ready. Type a command number.")
-
-    while rclpy.ok():
-        _print_menu()
-        try:
-            choice = input(">> ").strip()
-        except EOFError:
-            break
-
-        # ROS log messages can interleave with terminal input, causing extra
-        # characters to be buffered before the intended option digit(s).
-        # e.g. user types "1" then a log line prints, then they type "9" → "19"
-        # If the choice is unrecognised, try stripping one leading character.
-        _valid_choices = {"1", "2", "3", "4", "5", "6", "7", "8"}
-        if choice not in _valid_choices and len(choice) >= 2 and choice[1:] in _valid_choices:
-            choice = choice[1:]
-
-        if choice == "1":
-            pos = _parse_floats("  Enter estimated pos (x y z): ", 3)
-            if pos is None:
-                continue
-            orient = _parse_floats("  Enter estimated orient (roll pitch yaw) [0 0 0]: ", 3)
-            if orient is None:
-                orient = [0.0, 0.0, 0.0]
-            dist = _parse_floats("  Viewing distance [0.15]: ", 1)
-            dist = dist[0] if dist else 0.15
-            node.get_logger().info(f"User requested scanLocationForMarkers at {pos}")
-            node.scanLocationForMarkers(
-                estimated_pos=pos,
-                estimated_orient=orient,
-                viewing_distance=dist,
-            )
-
-        elif choice == "2":
-            mid = _parse_floats("  Marker ID [0]: ", 1)
-            mid = int(mid[0]) if mid else 0
-            node.get_logger().info(f"User requested moveToMarker({mid})")
-            node.moveToMarker(markerID=mid)
-
-        elif choice == "3":
-            mid = _parse_floats("  Marker ID [0]: ", 1)
-            mid = int(mid[0]) if mid else 0
-            node.get_logger().info(f"User requested pickupPlate({mid})")
-            node.pickupPlate(markerID=mid)
-
-        elif choice == "4":
-            mid = _parse_floats("  Marker ID [0]: ", 1)
-            mid = int(mid[0]) if mid else 0
-            node.get_logger().info(f"User requested placePlate({mid})")
-            node.placePlate(markerID=mid)
-
-        elif choice == "5":
-            markers = node.marker_poses
-            if markers:
-                print(f"\n  Found {len(markers)} marker(s):")
-                for entry in markers:
-                    pos = entry.get('positionInWorld', 'N/A')
-                    ori = entry.get('orientInWorld', 'N/A')
-                    print(f"    ID {entry['id']}: pos={pos}, orient={ori}")
-            else:
-                print("  No markers found yet.")
-
-        elif choice == "6":
-            mid = _parse_floats("  Marker ID [0]: ", 1)
-            mid = int(mid[0]) if mid else 0
-            dist = _parse_floats("  Viewing distance [0.15]: ", 1)
-            dist = dist[0] if dist else 0.15
-            node.get_logger().info(f"User requested scanToMarker({mid}, dist={dist})")
-            node.scanToMarker(marker_id=mid, viewing_distance=dist)
-
-        elif choice == "7":
-            scale = _parse_floats("  Velocity scaling [0.2]: ", 1)
-            scale = scale[0] if scale else 0.2
-            node.get_logger().info(f"User requested go_home(velocity_scaling={scale})")
-            node.go_home(velocity_scaling=scale)
-
-        elif choice == "8":
-            ids = _parse_floats("  Source, dest, rescan marker IDs (e.g. 0 1 2): ", 3)
-            if ids is None:
-                continue
-            source_id, dest_id, rescan_id = int(ids[0]), int(ids[1]), int(ids[2])
-            dist = _parse_floats("  Scan distance [0.15]: ", 1)
-            dist = dist[0] if dist else 0.15
-            node.get_logger().info(
-                f"User requested transferPlate({source_id}, {dest_id}, {rescan_id}, scan_distance={dist})"
-            )
-            node.transferPlate(source_id=source_id, dest_id=dest_id, rescan_id=rescan_id, scan_distance=dist)
-
-        else:
-            print("  Unknown option. Try again.")
-
-
-def main():
-    rclpy.init()
-    runVirtual = 0
-
-    if runVirtual:
-        stream_source = "ros"  # Use ROS topic stream for simulated environment
-        node = printerAutomation(calibration_mode=False,stream_source=stream_source)
-        node.gripper_disabled = True  # Workaround: gripper causes joint drift in simulation
-        node.randomize_estimated_markers = True
-
-        # Destination printer: marker ID 0
-        printer1 = Simulated3DPrinter(
-            node=node,
-            pos=[0.22, -0.2, 0.21],
-            orient=[0.0, 0.0, np.pi],
-            door_marker_texture='materials/textures/marker6x6_0.png',
-        )
-        printer1.spawn_fast()
-
-        # Source printer: marker ID 1
-        printer2 = Simulated3DPrinter(
-            node=node,
-            pos=[0.44, -0.2, 0.21],
-            orient=[0.0, 0.1, np.pi],
-            door_marker_texture='materials/textures/marker6x6_1.png',
-        )
-        printer2.spawn_fast()
-
-        
-
-        printer3 = Simulated3DPrinter(
-            node=node,
-            pos=[0.60, 0.1, 0.21],
-            orient=[0.0, 0.0, 3/2*np.pi],
-            door_marker_texture='materials/textures/marker6x6_2.png',
-        )
-        printer3.spawn_fast()
-
-    else:
-        stream_source = "webcam"  # Use webcam for real environment
-        node = printerAutomation(calibration_mode=False,stream_source=stream_source, feed_rotation_deg=90.0,marker_sizes=[0.03, 0.025])
-        node.stream.distance_scale = 1.0/0.702  # Correct webcam distance underestimation (~50%)
-
-        # Destination printer: marker ID 0
-        # No spawn_fast() on physical robot – that calls ros_gz_sim create which blocks
-        # indefinitely when Gazebo is not running, preventing the executor from ever starting.
-        # get_door_marker_pose_in_base() is pure geometry; it doesn't need Gazebo.
-        printer1 = Simulated3DPrinter(
-            node=node,
-            pos=[0.28, -0.3, 0.065],
-            orient=[0.0, 0.0, np.pi],
-            door_marker_texture='materials/textures/marker6x6_0.png',
-        )
-
-        # Source printer: marker ID 1
-        printer2 = Simulated3DPrinter(
-            node=node,
-            pos=[0.50, -0.3, 0.065],
-            orient=[0.0, 0.0, np.pi],
-            door_marker_texture='materials/textures/marker6x6_1.png',
-        )
-
-        printer3 = Simulated3DPrinter(
-            node=node,
-            pos=[0.65, 0.1, 0.075],
-            orient=[0.0, 0.0, 3/2*np.pi],
-            door_marker_texture='materials/textures/marker6x6_2.png',
-        )
-        '''printer = Simulated3DPrinter(
-            node=node,
-            pos=[0.37, -0.17, 0.16],
-            orient=[0.0, 0.0, np.pi],
-        )'''
-        '''printer1 = Simulated3DPrinter(
-            node=node,
-            pos=[0.33, -0.1, 0.02],
-            orient=[0.3, 0.0, np.pi],
-        )
-        printer2 = Simulated3DPrinter(
-            node=node,
-            pos=[0.60, 0.05, 0.07],
-            orient=[0.0, 0.0, 3*np.pi/2],
-        )'''
-    # Spin both the ROS node and the stream's internal ROS node
-    executor = rclpy.executors.MultiThreadedExecutor()
-    executor.add_node(node)
-    # If the stream provides a ROS Node (source="ros"), add it to the executor.
-    # If using a webcam (no _ros_node), run the stream.run loop in a background thread
-    if hasattr(node.stream, "_ros_node"):
-        executor.add_node(node.stream._ros_node)
-    else:
-        stream_thread = threading.Thread(target=node.stream.run, daemon=True)
-        stream_thread.start()
-
-    # Start the executor in a background thread so TF / joint_states / callbacks work
-    def _resilient_spin(executor):
-        """Keep spinning even if individual callbacks raise exceptions."""
-        while rclpy.ok():
-            try:
-                executor.spin_once(timeout_sec=0.1)
-            except Exception as e:
-                # Log but don't crash the spin thread
-                node.get_logger().warn(f"Executor spin error (recovering): {e}")
-                time.sleep(0.01)
-
-    spin_thread = threading.Thread(target=_resilient_spin, args=(executor,), daemon=True)
-    spin_thread.start()
-
-    # Wait for joint_states to arrive before scanning
-    node.get_logger().info("Waiting for joint_states before initial scan...")
-    for _ in range(100):  # up to 10 seconds
-        if node._last_joint_msg is not None:
-            break
-        time.sleep(0.1)
-    else:
-        node.get_logger().warn("Timed out waiting for joint_states - proceeding anyway")
-
-    # Run the initial scan (blocks until move_to_pose completes)
-    node.get_logger().info("Starting initial scan for markers...")
-    node.load_state()
-    if runVirtual:
-        # Register both printer door markers using their known spawn poses
-        bad_pos, bad_euler = printer1.get_door_marker_pose_in_base()
-        node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
-
-        bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
-        node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
-
-
-        bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
-        node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
-
-        # Scan to source marker so the camera gets a real detection
-        #node.get_logger().info("Scanning source printer (marker 0)...")
-        #node.scanToMarker(marker_id=0, viewing_distance=0.20)
-
-        # Scan to destination marker so the camera gets a real detection
-        #node.get_logger().info("Scanning destination printer (marker 1)...")
-        #node.scanToMarker(marker_id=1, viewing_distance=0.20)
-
-        # Pick up the plate from the source printer and place it on the destination
-        #node.get_logger().info("Picking up plate from source printer (marker 0)...")
-        #node.pickupPlate(markerID=0)
-
-        #node.get_logger().info("Placing plate on destination printer (marker 1)...")
-        #node.placePlate(markerID=1)
-
-    else:
-        # For the physical setup, provide a rough estimate of where the marker is.
-        # register_estimated_marker takes base_link (bad frame) coordinates.
-        # These will be overwritten once the camera detects the real marker.
-        '''est_pos, est_euler = node.to_bad_frame(
-            np.array([0.29, 0.15, 0.16]),   # estimated good-frame position
-            np.array([0.0, 0.0, 0.0]),       # estimated good-frame orientation
-        )
-        node.register_estimated_marker(marker_id=0, bad_pos=est_pos, bad_euler=est_euler)
-        node.scanToMarker(marker_id=0, viewing_distance=0.0)'''
-        viewing_distance = 0.15
-        node.marker_offset_config[0] = 'box_offset'
-        node.marker_offset_config[1] = 'box_offset'
-        node.marker_offset_config[2] = 'printer_offset'
-
-        bad_pos, bad_euler = printer1.get_door_marker_pose_in_base()
-        node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
-        bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
-        node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
-
-        bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
-        node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
-
-        # Record printer configs so they are persisted in every save
-        node.register_printers([
-            {"marker_id": 0, "pos": [0.26, -0.3, 0.07], "orient": [0.0, 0.0, np.pi],
-             "door_marker_texture": 'materials/textures/marker6x6_0.png'},
-            {"marker_id": 1, "pos": [0.48, -0.3, 0.07], "orient": [0.0, 0.0, np.pi],
-             "door_marker_texture": 'materials/textures/marker6x6_1.png'},
-            {"marker_id": 2, "pos": [0.65, 0.1, 0.07],  "orient": [0.0, 0.0, 3/2*np.pi],
-             "door_marker_texture": 'materials/textures/marker6x6_2.png'},
-        ])
-
-        
-        # Register the physical Bambu printer at marker 2
-        '''bambu_printer = BambuPrinter(
-            ip="172.20.10.2",
-            access_code="14668855",
-            serial="0309CA460401528",
-        )
-        bambu_printer.connect()
-        node.register_bambu_printer(marker_id=2, printer=bambu_printer)
-        '''
-        '''bambu_printer.enable_debug_listener()
-        bambu_printer.upload_file_timeout("testPrints/dot6m5s.gcode.3mf") # Use the timeout version or the file might stall, default is 10s use bigger numbers for bigger files
-        bambu_printer.start_print("testPrints/dot6m5s.gcode.3mf")
-        bambu_printer.waitUntilPrintFinished()'''
-
-
-        # View markers 0, 1, 2 — abort approach if not seen at max distance
-        node.scanMarkerApproach(marker_id=0, viewing_distance=viewing_distance)
-        node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
-        node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
-        
-        
-        
-        
-        
-        # Pick up the plate and place it back at the same marker
-        #node.pickupPlate(markerID=0)
-        #node.placePlate(markerID=0)
-
-    node.get_logger().info("Initial scan complete.")
-
-    # Now start the interactive input loop on the main thread
-    _input_thread(node)
-
-
-
-if __name__ == '__main__':
-    main()
