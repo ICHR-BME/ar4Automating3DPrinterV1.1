@@ -99,11 +99,11 @@ def main():
         node.get_logger().info(f"=== Iteration {i + 1}/{NUM_REPEATS} ===")
 
         # Transfer 1: source=2, dest=0, rescan=1
-        #ok1 = node.transferPlate(source_id=2, dest_id=0, rescan_id=1, scan_distance=0.15)
+        ok1 = node.transferPlate(source_id=2, dest_id=0, rescan_id=1, scan_distance=0.15)
         
 
         # Transfer 2: source=2, dest=1, rescan=0
-        ok2 = node.transferPlate(source_id=2, dest_id=1, rescan_id=0, scan_distance=0.15)
+        #ok2 = node.transferPlate(source_id=2, dest_id=1, rescan_id=0, scan_distance=0.15)
         
         #ok2 = node.transferPlate(source_id=1, dest_id=2, rescan_id=2, scan_distance=0.15)
         #node.get_logger().info("Transfer 2 succeeded." if ok2 else "Transfer 2 failed.")
