@@ -4,6 +4,8 @@ import numpy as np
 import os
 import json
 import csv
+import datetime
+import functools
 from pymoveit2 import GripperInterface
 from printerclass import BambuPrinter
 from scipy.spatial.transform import Rotation as R
@@ -17,10 +19,29 @@ import threading
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
+def _timed(method):
+    """Decorator that records wall-clock duration and full call chain for each public method."""
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        call_chain = " > ".join(self._timing_call_stack + [method.__name__])
+        self._timing_call_stack.append(method.__name__)
+        paused_at_start = self._timing_total_paused
+        t0 = time.perf_counter()
+        try:
+            result = method(self, *args, **kwargs)
+        finally:
+            elapsed = round((time.perf_counter() - t0) - (self._timing_total_paused - paused_at_start), 4)
+            self._timing_call_stack.pop()
+            self._record_timing(call_chain, elapsed)
+        return result
+    return wrapper
+
+
 class printerAutomation(ArucoDetectionViewer):
     def __init__(self, calibration_mode=False, stream_source="webcam", camera_index=None, camera_keyword="GENERAL WEBCAM",
                  color_topic="/rgbd_camera/image", depth_topic="/rgbd_camera/depth_image", camera_info_topic="/rgbd_camera/camera_info",
                  feed_rotation_deg=0.0, marker_sizes=None):
+        self._startup_start = time.perf_counter()
         super().__init__(source=stream_source,
                          camera_index=camera_index,
                          camera_keyword=camera_keyword,
@@ -61,8 +82,8 @@ class printerAutomation(ArucoDetectionViewer):
         self.offset_configs = {
             # Printer with the handle above the marker
             'printer_offset': {
-                'handleOffset': np.array([0.0, 0.067, 0.09]),
-                'pickupOffset': np.array([0.0, 0.167, 0.09]),
+                'handleOffset': np.array([0.0, 0.067, 0.087]),
+                'pickupOffset': np.array([0.0, 0.167, 0.087]),
             },
             # Printer with the marker to the side
             'box_offset': {
@@ -76,7 +97,7 @@ class printerAutomation(ArucoDetectionViewer):
         ## Offset from the scrape marker origin in the marker's local frame [x, y, z]
         ## used by scrapePlate().  z is the closest approach distance along the marker's
         ## outward Z axis; x/y shift the contact point laterally in the marker plane.
-        self.scrape_offset = np.array([0.0, 0.1, 0.102])
+        self.scrape_offset = np.array([0.0, 0.1, 0.125])
 
         self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
 
@@ -87,6 +108,19 @@ class printerAutomation(ArucoDetectionViewer):
         # Persistent state save file — written every 5 s and loaded at startup
         self._state_save_path = os.path.join(_SCRIPT_DIR, "printer_state.json")
         self.create_timer(5.0, self._auto_save_state)
+
+        # Timing log: one row per public-method call
+        _timing_dir = os.path.join(_SCRIPT_DIR, "timingData")
+        os.makedirs(_timing_dir, exist_ok=True)
+        _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        self._timing_csv_path = os.path.join(_timing_dir, f"timing_{_ts}.csv")
+        self._timing_file = open(self._timing_csv_path, "w", newline="")
+        self._timing_writer = csv.writer(self._timing_file)
+        self._timing_call_stack = []
+        self._timing_total_paused = 0.0
+        self._timing_pause_start = None
+        self._timing_writer.writerow(["timestamp", "call_chain", "duration_s"])
+        self._timing_file.flush()
 
         # Raw-measurement scan log (one row per video frame, written immediately).
         # Opened in write mode so old data is discarded on every restart.
@@ -117,6 +151,29 @@ class printerAutomation(ArucoDetectionViewer):
             callback_group=self._cb_group,
             gripper_command_action_name="gripper_controller/gripper_cmd",
         )
+
+    def _record_timing(self, call_chain: str, duration_s: float):
+        """Append one timing row (with full call chain) to the session CSV."""
+        self._timing_writer.writerow(
+            [datetime.datetime.now().isoformat(), call_chain, duration_s]
+        )
+        self._timing_file.flush()
+
+    def record_startup_time(self):
+        """Record the elapsed time from __init__ to now as a 'startup' row in the timing CSV."""
+        elapsed = round(time.perf_counter() - self._startup_start, 4)
+        self._record_timing("startup", elapsed)
+
+    def pause_timing(self):
+        """Pause the timing clock. Time elapsed while paused is excluded from all active timers."""
+        if self._timing_pause_start is None:
+            self._timing_pause_start = time.perf_counter()
+
+    def resume_timing(self):
+        """Resume the timing clock after a pause_timing() call."""
+        if self._timing_pause_start is not None:
+            self._timing_total_paused += time.perf_counter() - self._timing_pause_start
+            self._timing_pause_start = None
 
     # ---- State persistence ----
 
@@ -409,6 +466,7 @@ class printerAutomation(ArucoDetectionViewer):
             f"Registered estimated marker {marker_id} at base_link pos={bad_pos}, euler={bad_euler}"
         )
 
+    @_timed
     def scanToMarker(self, marker_id=0, viewing_distance=0.20):
         """Move the camera to face a known/estimated marker using its TF frame."""
         entry = self._find_marker_entry(marker_id)
@@ -451,6 +509,7 @@ class printerAutomation(ArucoDetectionViewer):
             print(f"[SCAN] Marker {marker_id}: detected at {pos}")
         return move_ok, marker_spotted
 
+    @_timed
     def scanLocationForMarkers(self, estimated_pos, estimated_orient=[0,0,0], viewing_distance=0.15, frame_name=None):
         """Move the camera to face an estimated marker location."""
         estimated_pos = np.array(estimated_pos)
@@ -510,6 +569,7 @@ class printerAutomation(ArucoDetectionViewer):
         approach_offset = np.array([handle_offset[0], handle_offset[1], approach_standoff])
         return self._move_to_marker_offset(markerID, approach_offset)
 
+    @_timed
     def moveToMarker(self, markerID=0, approach_standoff=0.15):
         self.open_gripper()
         handle_offset, _ = self._get_offsets_for_marker(markerID)
@@ -525,6 +585,7 @@ class printerAutomation(ArucoDetectionViewer):
         _, pickup_offset = self._get_offsets_for_marker(markerID)
         return self._move_to_marker_offset(markerID, pickup_offset)
 
+    @_timed
     def pickupPlate(self, markerID=0):
         if not self.moveToMarker(markerID):
             self.get_logger().error(f"pickupPlate: moveToMarker failed for marker {markerID}.")
@@ -536,6 +597,7 @@ class printerAutomation(ArucoDetectionViewer):
             return False
         return True
 
+    @_timed
     def placePlate(self, markerID=0):
         """Place a held build plate at the specified marker location."""
         handle_offset, _ = self._get_offsets_for_marker(markerID)
@@ -550,6 +612,7 @@ class printerAutomation(ArucoDetectionViewer):
         self.open_gripper()
         return True
 
+    @_timed
     def transferPlate(self, source_id, dest_id, rescan_id, scan_distance=0.15):
         """
         Full plate-transfer sequence across three printers.
@@ -649,6 +712,7 @@ class printerAutomation(ArucoDetectionViewer):
         time.sleep(1.0)
         return True
 
+    @_timed
     def scanMarkerApproach(self, marker_id, viewing_distance=0.15):
         """
         Scan a marker at progressively closer distances.
@@ -678,6 +742,7 @@ class printerAutomation(ArucoDetectionViewer):
 
         return True
 
+    @_timed
     def scrapePlate(self, source_id, scrape_id, scan_distance=0.15, scrape_standoff=0.15, scrape_offset=None):
         """
         Pick up a plate from source_id, scrape it against the scrape_id marker surface,
@@ -724,6 +789,9 @@ class printerAutomation(ArucoDetectionViewer):
                 f"scrapePlate: pickupPlate failed for marker {source_id}. Aborting."
             )
             return False
+        # Freeze marker updates while scraping so the scrape surface marker pose is
+        # not corrupted by the camera seeing it at close range during the approach.
+        self.freeze_markers()
 
         '''# Step 3 – scan scrape marker; retry at closer distances only if movement fails
         self.get_logger().info(f"Step 3: scanning scrape marker {scrape_id}")
@@ -756,7 +824,12 @@ class printerAutomation(ArucoDetectionViewer):
                 f"scrapePlate: could not reach scrape depth for marker {scrape_id}. Aborting."
             )
             return False
+        self.pause_timing()
+        print(f"[scrapePlate] Plate at full scrape depth on marker {scrape_id}. Timing paused.")
+        self.resume_timing()
 
+        
+        self.freeze_markers()
         # Step 6 – retract back along marker Z to standoff
         self.get_logger().info(f"Step 6: retracting to standoff (Z={scrape_standoff} m)")
         if not self._move_to_marker_offset(scrape_id, standoff_offset):
@@ -765,6 +838,8 @@ class printerAutomation(ArucoDetectionViewer):
             )
 
         # Step 7 – place plate back at source
+        # Unfreeze so the camera can refresh the source marker pose before placing.
+        self.unfreeze_markers()
         self.get_logger().info(f"Step 7: placing plate back at marker {source_id}")
         if not self.placePlate(markerID=source_id):
             self.get_logger().error(
@@ -781,6 +856,7 @@ class printerAutomation(ArucoDetectionViewer):
         time.sleep(1.0)
         return True
 
+    @_timed
     def go_home(self, velocity_scaling=0.2):
         """
         Move all joints to their zero (home) position.

@@ -65,6 +65,7 @@ def _input_thread(node):
     # Wait for the system to initialize
     time.sleep(5.0)
     print("\n[INFO] System ready. Type a command number.")
+    node.record_startup_time()
 
     while rclpy.ok():
         _print_menu()

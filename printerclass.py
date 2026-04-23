@@ -360,11 +360,11 @@ if __name__ == "__main__":
     my_a1_mini.send_gcode("G0 X180 Y180 Z180 F1200")
     print("Moving to max X, Y and Z position (180mm, 180mm, 180mm)")
 
-
-    '''my_a1_mini.enable_debug_listener()
-    my_a1_mini.upload_file_timeout("testPrints/dot6m5s.gcode.3mf") # Use the timeout version or the file might stall, default is 10s use bigger numbers for bigger files
-    my_a1_mini.start_print("testPrints/dot6m5s.gcode.3mf")
+    filepath = "testPrints/dotFast.3mf"
+    my_a1_mini.enable_debug_listener()
+    my_a1_mini.upload_file_timeout(filepath) # Use the timeout version or the file might stall, default is 10s use bigger numbers for bigger files
+    my_a1_mini.start_print(filepath)
     my_a1_mini.waitUntilPrintFinished()
-    print("done")'''
+    print("done")
 
     my_a1_mini.disconnect()

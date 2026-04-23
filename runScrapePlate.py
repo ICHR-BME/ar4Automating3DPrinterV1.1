@@ -35,7 +35,7 @@ from simulated3DPrinter import Simulated3DPrinter
 SOURCE_ID       = 2           # Marker to pick up the plate from (and return it to)
 SCRAPE_ID       = 1           # Marker whose surface the plate is scraped against
 SCAN_DISTANCE   = 0.15         # Distance (m) used when scanning markers
-SCRAPE_STANDOFF = 0.2         # Distance (m) along scrape marker Z to approach from
+SCRAPE_STANDOFF = 0.38         # Distance (m) along scrape marker Z to approach from
 # Scrape contact offset is set via node.scrape_offset (defined in printerAutomation.__init__)
 
 
