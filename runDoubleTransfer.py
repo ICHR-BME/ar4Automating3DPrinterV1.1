@@ -103,7 +103,7 @@ def main():
         
 
         # Transfer 2: source=2, dest=1, rescan=0
-        #ok2 = node.transferPlate(source_id=2, dest_id=1, rescan_id=0, scan_distance=0.15)
+        ok2 = node.transferPlate(source_id=2, dest_id=1, rescan_id=0, scan_distance=0.15)
         
         #ok2 = node.transferPlate(source_id=1, dest_id=2, rescan_id=2, scan_distance=0.15)
         #node.get_logger().info("Transfer 2 succeeded." if ok2 else "Transfer 2 failed.")
@@ -114,7 +114,7 @@ def main():
     node.save_state()
 
 
-NUM_REPEATS = 1  # Number of times to repeat the double transfer
+NUM_REPEATS = 6  # Number of times to repeat the double transfer
 
 if __name__ == '__main__':
     main()

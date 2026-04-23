@@ -1,0 +1,20 @@
+timestamp,call_chain,duration_s
+2026-04-23T15:30:46.889237,transferPlate > scanToMarker,3.3301
+2026-04-23T15:30:52.051063,transferPlate > pickupPlate > moveToMarker,5.1547
+2026-04-23T15:30:58.052861,transferPlate > pickupPlate,11.1566
+2026-04-23T15:31:06.401941,transferPlate > placePlate,8.3467
+2026-04-23T15:31:14.841057,transferPlate > scanToMarker,5.6759
+2026-04-23T15:31:19.331304,transferPlate > pickupPlate > moveToMarker,4.4818
+2026-04-23T15:31:25.489202,transferPlate > pickupPlate,10.6397
+2026-04-23T15:31:33.451610,transferPlate > placePlate,7.9607
+2026-04-23T15:31:37.649242,transferPlate,54.1265
+2026-04-23T15:35:19.857871,transferPlate > scanToMarker,3.6615
+2026-04-23T15:35:25.290183,transferPlate > pickupPlate > moveToMarker,5.315
+2026-04-23T15:35:31.623272,transferPlate > pickupPlate,11.6481
+2026-04-23T15:35:39.961098,transferPlate > placePlate,8.3334
+2026-04-23T15:35:46.706679,transferPlate > scanToMarker,4.2727
+2026-04-23T15:35:52.424919,transferPlate > scanToMarker,5.7175
+2026-04-23T15:35:58.099331,transferPlate > pickupPlate > moveToMarker,5.6706
+2026-04-23T15:36:04.924963,transferPlate > pickupPlate,12.4963
+2026-04-23T15:36:12.683287,transferPlate > placePlate,7.7539
+2026-04-23T15:36:17.041979,transferPlate,60.849
