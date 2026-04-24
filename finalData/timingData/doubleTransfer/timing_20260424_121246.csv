@@ -1,0 +1,10 @@
+timestamp,call_chain,duration_s
+2026-04-24T12:12:52.787782,transferPlate > scanToMarker,3.1054
+2026-04-24T12:12:57.901851,transferPlate > pickupPlate > moveToMarker,5.1066
+2026-04-24T12:13:03.855901,transferPlate > pickupPlate,11.0607
+2026-04-24T12:13:12.115443,transferPlate > placePlate,8.2231
+2026-04-24T12:13:20.506733,transferPlate > scanToMarker,5.7267
+2026-04-24T12:13:24.812572,transferPlate > pickupPlate > moveToMarker,4.2952
+2026-04-24T12:13:30.711736,transferPlate > pickupPlate,10.1944
+2026-04-24T12:13:38.526871,transferPlate > placePlate,7.8101
+2026-04-24T12:13:42.658231,transferPlate,53.0151

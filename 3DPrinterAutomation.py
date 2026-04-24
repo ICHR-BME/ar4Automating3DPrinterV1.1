@@ -82,8 +82,8 @@ class printerAutomation(ArucoDetectionViewer):
         self.offset_configs = {
             # Printer with the handle above the marker
             'printer_offset': {
-                'handleOffset': np.array([0.0, 0.067, 0.087]),
-                'pickupOffset': np.array([0.0, 0.167, 0.087]),
+                'handleOffset': np.array([0.0, 0.067, 0.089]),
+                'pickupOffset': np.array([0.0, 0.167, 0.089]),
             },
             # Printer with the marker to the side
             'box_offset': {
