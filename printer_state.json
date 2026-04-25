@@ -1,5 +1,70 @@
 {
-  "marker_offset_config": {},
-  "markers": [],
-  "printers": []
+  "marker_offset_config": {
+    "1": "box_offset",
+    "2": "printer_offset"
+  },
+  "markers": [
+    {
+      "id": 1,
+      "positionInBase": [
+        -0.20286931900539956,
+        -0.4388225720717331,
+        0.10301653891672398
+      ],
+      "eulerInBase": [
+        2.3385871494228554,
+        1.5248053530786247,
+        -0.7617770795471914
+      ],
+      "dict_name": "DICT_6X6_50",
+      "marker_size": 0.03,
+      "estimated": false
+    },
+    {
+      "id": 2,
+      "positionInBase": [
+        0.14922068911281042,
+        -0.5678917916248403,
+        0.07740437167672343
+      ],
+      "eulerInBase": [
+        -1.6607480274011077,
+        -0.09372678508939192,
+        -3.1406058726747164
+      ],
+      "dict_name": "DICT_6X6_50",
+      "marker_size": 0.03,
+      "estimated": false
+    }
+  ],
+  "printers": [
+    {
+      "marker_id": 1,
+      "pos": [
+        0.48,
+        -0.3,
+        0.07
+      ],
+      "orient": [
+        0.0,
+        0.0,
+        3.141592653589793
+      ],
+      "door_marker_texture": "materials/textures/marker6x6_1.png"
+    },
+    {
+      "marker_id": 2,
+      "pos": [
+        0.65,
+        0.1,
+        0.07
+      ],
+      "orient": [
+        0.0,
+        0.0,
+        4.71238898038469
+      ],
+      "door_marker_texture": "materials/textures/marker6x6_2.png"
+    }
+  ]
 }

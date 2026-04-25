@@ -191,7 +191,7 @@ class BambuPrinter:
         """Move the tool head to max X/Y/Z so the build plate is accessible for the robot arm."""
         self.send_gcode("G0 X180 Y180 Z180 F1200")
 
-        time.sleep(5)
+        time.sleep(10)
         print("Printer ready for pickup")
 
     def send_gcode(self, gcode_line):
@@ -348,7 +348,12 @@ class BambuPrinter:
             socket.setdefaulttimeout(None)
 
 if __name__ == "__main__":
-    my_a1_mini = BambuPrinter("172.20.10.2", "14668855", "0309CA460401528")
+    PRINTER_IP          = "192.168.137.241"
+    PRINTER_ACCESS_CODE = "14668855"
+    PRINTER_SERIAL      = "0309CA460401528"
+    my_a1_mini = BambuPrinter(PRINTER_IP, PRINTER_ACCESS_CODE, PRINTER_SERIAL)
+    #my_a1_mini = BambuPrinter("192.168.1.237", "48291374", "01S00A1M23456789")
+
     my_a1_mini.connect()
     time.sleep(1)  # Allow MQTT connection to stabilize
 
@@ -360,7 +365,7 @@ if __name__ == "__main__":
     my_a1_mini.send_gcode("G0 X180 Y180 Z180 F1200")
     print("Moving to max X, Y and Z position (180mm, 180mm, 180mm)")
 
-    filepath = "testPrints/dotFast.3mf"
+    filepath = "testPrints/cylinderFast.3mf"
     my_a1_mini.enable_debug_listener()
     my_a1_mini.upload_file_timeout(filepath) # Use the timeout version or the file might stall, default is 10s use bigger numbers for bigger files
     my_a1_mini.start_print(filepath)

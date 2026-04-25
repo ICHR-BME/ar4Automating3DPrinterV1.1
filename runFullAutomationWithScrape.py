@@ -41,15 +41,15 @@ SOURCE_ID       = 2           # Marker to pick up the plate from (and return it 
 SCRAPE_ID       = 1           # Marker whose surface the plate is scraped against
 SCAN_DISTANCE   = 0.15        # Distance (m) used when scanning markers
 SCRAPE_STANDOFF = 0.38        # Distance (m) along scrape marker Z to approach from
-NUM_CYCLES      = 5           # Number of print-then-scrape cycles to run
+NUM_CYCLES      = 20           # Number of print-then-scrape cycles to run
 
 # Bambu printer credentials.
-PRINTER_IP          = "172.20.10.2"
+PRINTER_IP          = "192.168.137.241"
 PRINTER_ACCESS_CODE = "14668855"
 PRINTER_SERIAL      = "0309CA460401528"
 
 # File name on the printer's SD card to print each cycle.
-PRINT_FILENAME = "testPrints/dotFast.3mf"
+PRINT_FILENAME = "testPrints/BenchyFast.3mf"
 # ---- End Configuration ----
 
 
@@ -124,6 +124,7 @@ def main():
     bambu.connect()
     bambu.enable_debug_listener()
     node.register_bambu_printer(SOURCE_ID, bambu)
+    bambu.upload_file_timeout(PRINT_FILENAME)
 
     # Scan for markers 1 and 2 (mirrors scanFor2Markers.py non-virtual procedure).
     viewing_distance = SCAN_DISTANCE
@@ -160,8 +161,8 @@ def main():
     for cycle in range(1, NUM_CYCLES + 1):
         node.get_logger().info(f"=== Cycle {cycle}/{NUM_CYCLES}: starting print ===")
 
-        #bambu.start_print(PRINT_FILENAME)
-        #bambu.waitUntilPrintFinished()
+        bambu.start_print(PRINT_FILENAME)
+        bambu.waitUntilPrintFinished()
 
         node.get_logger().info(f"=== Cycle {cycle}/{NUM_CYCLES}: print done, preparing for pickup ===")
         bambu.prepare_for_pickup()
