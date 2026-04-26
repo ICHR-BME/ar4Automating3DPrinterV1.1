@@ -179,12 +179,12 @@ bars = ax.bar(
 )
 
 ax.set_xticks(x)
-ax.set_xticklabels(["Position\nerror [mm]", "Orientation\nerror [°]", "Distance not\ncovered [mm]"])
+ax.set_xticklabels(["Position\nerror [mm]", "Orientation\nerror [°]", "Gap on\nprinter [mm]"])
 ax.set_ylabel("Error")
 ax.grid(True, axis="y", alpha=0.3)
 
 plt.tight_layout(pad=0.5)
-out_path = os.path.join(script_dir, "build_plate_errors.png")
+out_path = os.path.join(script_dir, "build_plate_errors_transfer.png")
 plt.savefig(out_path, dpi=150, bbox_inches="tight")
 print(f"\nSaved to {out_path}")
 
