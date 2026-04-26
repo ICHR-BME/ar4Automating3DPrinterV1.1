@@ -5,8 +5,8 @@ import os
 # ── Configuration ──────────────────────────────────────────────────────────────
 RUN_TEST   = False          # True  → synthetic self-test
                             # False → load measurements from CSV_FILE
-CSV_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "buildPlatePlacementErrorMeasurements.csv")
-CORNER_SPACING = 0.198      # L: distance between the two reference corners (meters)
+CSV_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "buildPlatePlacementErrorMeasurements3.csv")
+CORNER_SPACING = 198.0      # L: distance between the two reference corners (meters)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def solve_rigid_body(d1, d2, d_cross1, d_cross2, L):
@@ -147,8 +147,7 @@ def run_csv():
     else:
         out_rows.append(["d1", "d_cross2", "d2", "d_cross1", "orientation_deg", "centroid_offset"])
     for row, theta, offset in results:
-        padded = list(row) + [""] * max(0, 4 - len(row))
-        out_rows.append(padded[:4] + [f"{theta:.6f}", f"{offset:.6f}"])
+        out_rows.append(list(row) + [f"{theta:.6f}", f"{offset:.6f}"])
 
     with open(out_file, "w", newline="") as f:
         writer = csv.writer(f)
@@ -157,7 +156,8 @@ def run_csv():
     print(f"\nResults written to: {out_file}")
 
 
-if RUN_TEST:
-    run_test()
-else:
-    run_csv()
+if __name__ == "__main__":
+    if RUN_TEST:
+        run_test()
+    else:
+        run_csv()

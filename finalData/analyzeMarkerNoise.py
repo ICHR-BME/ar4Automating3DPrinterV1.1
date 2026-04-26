@@ -7,6 +7,13 @@ import matplotlib.pyplot as plt
 from scipy.signal import welch, butter, filtfilt
 
 # ---------------------------------------------------------------------------
+# Global style
+# ---------------------------------------------------------------------------
+
+plt.rcParams.update({"font.size": 12})
+FIG_SIZE = (3.5, 3.0)
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -58,7 +65,7 @@ CAM_POS_COLS  = ["cam_px", "cam_py", "cam_pz"]
 CAM_QUAT_COLS = ["cam_qx", "cam_qy", "cam_qz", "cam_qw"]
 
 # ---------------------------------------------------------------------------
-# Build per-group (file × marker × distance × movement) time series
+# Build per-group (trial × marker × distance × movement) time series
 # Each group is one continuous sequence of frames at a fixed robot pose.
 # ---------------------------------------------------------------------------
 
@@ -111,22 +118,15 @@ for loc in scan_locations:
 # ---------------------------------------------------------------------------
 
 DIST_COLORS = {d: c for d, c in zip(scan_distances,
-                                     ["#e41a1c", "#ff7f00", "#4daf4a", "#377eb8"])}
-XYZ_COLORS  = ["tab:red", "tab:green", "tab:blue"]
+                                     ["#c6dbef", "#6baed6", "#2171b5", "#084594"])}
+XYZ_COLORS  = ["#6baed6", "#2171b5", "#084594"]
 XYZ_LABELS  = ["ΔX", "ΔY", "ΔZ"]
 
 # ---------------------------------------------------------------------------
-# Figure 1 — Example time series per scan distance
-#   Upper row: position deviation per axis (mm)
-#   Lower row: orientation angular deviation from group mean (degrees)
-#   Each column = one scan distance; example taken from file 1, marker 0
+# Figure 1a/1b — Example time series per scan distance (separate figures)
+#   Position deviation per axis (mm) and orientation deviation (degrees)
+#   Example taken from trial 1, marker 0
 # ---------------------------------------------------------------------------
-
-fig1, axes1 = plt.subplots(
-    2, len(scan_distances),
-    figsize=(4 * len(scan_distances), 7),
-    sharey="row",
-)
 
 for col, dist in enumerate(scan_distances):
     ex = next(
@@ -137,43 +137,48 @@ for col, dist in enumerate(scan_distances):
         None,
     )
 
-    ax_pos = axes1[0, col]
-    ax_ori = axes1[1, col]
-    ax_pos.set_title(f"{int(round(dist * 100))} cm", fontsize=11)
+    # --- Position deviation ---
+    fig_ts_pos = plt.figure(figsize=FIG_SIZE)
+    ax_pos = fig_ts_pos.add_subplot(111)
 
     if ex is None:
         ax_pos.text(0.5, 0.5, "no data", ha="center", va="center",
                     transform=ax_pos.transAxes)
-        ax_ori.text(0.5, 0.5, "no data", ha="center", va="center",
-                    transform=ax_ori.transAxes)
-        continue
-
-    fn = np.arange(ex["n"])
-
-    for i, (lbl, c) in enumerate(zip(XYZ_LABELS, XYZ_COLORS)):
-        ax_pos.plot(fn, ex["pos_dev_xyz"][:, i] * 1000, color=c,
-                    linewidth=0.8, label=lbl)
-    ax_pos.axhline(0, color="k", linewidth=0.5, linestyle="--")
-    ax_pos.set_xlabel("Frame index")
-
-    ax_ori.plot(fn, ex["ori_dev"], color=DIST_COLORS[dist], linewidth=0.8)
-    ax_ori.axhline(0, color="k", linewidth=0.5, linestyle="--")
-    ax_ori.set_xlabel("Frame index")
-
-    if col == 0:
-        ax_pos.set_ylabel("Position deviation (mm)")
-        ax_ori.set_ylabel("Orientation deviation (°)")
+    else:
+        fn = np.arange(ex["n"])
+        for i, (lbl, c) in enumerate(zip(XYZ_LABELS, XYZ_COLORS)):
+            ax_pos.plot(fn, ex["pos_dev_xyz"][:, i] * 1000, color=c,
+                        linewidth=0.8, label=lbl)
+        ax_pos.axhline(0, color="k", linewidth=0.5, linestyle="--")
         ax_pos.legend(loc="upper right", fontsize=7)
 
-fig1.suptitle(
-    "Camera-frame Marker Pose Deviation from Group Mean\n"
-    "(file 1, marker 0 — one movement segment per scan distance)",
-    fontsize=11,
-)
-plt.tight_layout()
-out1 = os.path.join(script_dir, "marker_noise_timeseries.png")
-plt.savefig(out1, dpi=150, bbox_inches="tight")
-print(f"Saved {out1}")
+    ax_pos.set_xlabel("Frame index")
+    ax_pos.set_ylabel("Position deviation [mm]")
+    plt.tight_layout()
+    out_ts_pos = os.path.join(script_dir,
+        f"marker_noise_timeseries_pos_{int(round(dist * 100))}cm.png")
+    plt.savefig(out_ts_pos, dpi=150, bbox_inches="tight")
+    print(f"Saved {out_ts_pos}")
+
+    # --- Orientation deviation ---
+    fig_ts_ori = plt.figure(figsize=FIG_SIZE)
+    ax_ori = fig_ts_ori.add_subplot(111)
+
+    if ex is not None:
+        fn = np.arange(ex["n"])
+        ax_ori.plot(fn, ex["ori_dev"], color=DIST_COLORS[dist], linewidth=0.8)
+        ax_ori.axhline(0, color="k", linewidth=0.5, linestyle="--")
+    else:
+        ax_ori.text(0.5, 0.5, "no data", ha="center", va="center",
+                    transform=ax_ori.transAxes)
+
+    ax_ori.set_xlabel("Frame index")
+    ax_ori.set_ylabel("Orientation deviation [°]")
+    plt.tight_layout()
+    out_ts_ori = os.path.join(script_dir,
+        f"marker_noise_timeseries_ori_{int(round(dist * 100))}cm.png")
+    plt.savefig(out_ts_ori, dpi=150, bbox_inches="tight")
+    print(f"Saved {out_ts_ori}")
 
 # ---------------------------------------------------------------------------
 # Figure 2 — Power Spectral Density (Welch), averaged by scan_distance
@@ -198,51 +203,63 @@ for g in groups:
     psd_pos[g["scan_distance"]].append(Pxx_pos)
     psd_ori[g["scan_distance"]].append(Pxx_ori)
 
-fig2, (ax_pp, ax_po) = plt.subplots(1, 2, figsize=(13, 5))
+# --- PSD: Position ---
+fig2_pos = plt.figure(figsize=FIG_SIZE)
+ax_pp = fig2_pos.add_subplot(111)
 
 for dist in scan_distances:
     lbl   = f"{int(round(dist * 100))} cm"
     color = DIST_COLORS[dist]
-
     if not psd_pos[dist]:
         continue
-
     arr_pos = np.array(psd_pos[dist])
-    arr_ori = np.array(psd_ori[dist])
+    mean_ = arr_pos.mean(axis=0)
+    std_  = arr_pos.std(axis=0)
+    ax_pp.semilogy(freqs, mean_, color=color, linewidth=1.5, label=lbl)
+    ax_pp.fill_between(
+        freqs,
+        np.clip(mean_ - std_, 1e-15, None),
+        mean_ + std_,
+        color=color, alpha=0.2,
+    )
 
-    for ax, arr, unit in (
-        (ax_pp, arr_pos, "m²"),
-        (ax_po, arr_ori, "deg²"),
-    ):
-        mean_ = arr.mean(axis=0)
-        std_  = arr.std(axis=0)
-        ax.semilogy(freqs, mean_, color=color, linewidth=1.5, label=lbl)
-        ax.fill_between(
-            freqs,
-            np.clip(mean_ - std_, 1e-15, None),
-            mean_ + std_,
-            color=color, alpha=0.2,
-        )
-
-for ax in (ax_pp, ax_po):
-    ax.set_xlabel("Normalized frequency (cycles / frame)")
-    ax.grid(True, which="both", alpha=0.3)
-    ax.legend(title="Scan distance")
-
-ax_pp.set_ylabel("PSD  (m² / (cycles/frame))")
-ax_pp.set_title("Position Deviation PSD")
-ax_po.set_ylabel("PSD  (deg² / (cycles/frame))")
-ax_po.set_title("Orientation Deviation PSD")
-
-fig2.suptitle(
-    f"Power Spectral Density of Camera-frame Marker Pose Noise\n"
-    f"(Welch, nperseg={NPERSEG} — mean ± 1σ across all groups and files)",
-    fontsize=11,
-)
+ax_pp.set_xlabel("Normalized frequency [cycles/frame]")
+ax_pp.set_ylabel("PSD [m²/(cycles/frame)]")
+ax_pp.grid(True, which="both", alpha=0.3)
+ax_pp.legend(title="Scan distance")
 plt.tight_layout()
-out2 = os.path.join(script_dir, "marker_noise_psd.png")
-plt.savefig(out2, dpi=150, bbox_inches="tight")
-print(f"Saved {out2}")
+out2_pos = os.path.join(script_dir, "marker_noise_psd_pos.png")
+plt.savefig(out2_pos, dpi=150, bbox_inches="tight")
+print(f"Saved {out2_pos}")
+
+# --- PSD: Orientation ---
+fig2_ori = plt.figure(figsize=FIG_SIZE)
+ax_po = fig2_ori.add_subplot(111)
+
+for dist in scan_distances:
+    lbl   = f"{int(round(dist * 100))} cm"
+    color = DIST_COLORS[dist]
+    if not psd_ori[dist]:
+        continue
+    arr_ori = np.array(psd_ori[dist])
+    mean_ = arr_ori.mean(axis=0)
+    std_  = arr_ori.std(axis=0)
+    ax_po.semilogy(freqs, mean_, color=color, linewidth=1.5, label=lbl)
+    ax_po.fill_between(
+        freqs,
+        np.clip(mean_ - std_, 1e-15, None),
+        mean_ + std_,
+        color=color, alpha=0.2,
+    )
+
+ax_po.set_xlabel("Normalized frequency [cycles/frame]")
+ax_po.set_ylabel("PSD [deg²/(cycles/frame)]")
+ax_po.grid(True, which="both", alpha=0.3)
+ax_po.legend(title="Scan distance")
+plt.tight_layout()
+out2_ori = os.path.join(script_dir, "marker_noise_psd_ori.png")
+plt.savefig(out2_ori, dpi=150, bbox_inches="tight")
+print(f"Saved {out2_ori}")
 
 # ---------------------------------------------------------------------------
 # Figure 3 — Frame-to-frame jump distributions (violin plots)
@@ -258,45 +275,55 @@ for g in groups:
     all_pos_deltas[g["scan_distance"]].extend(g["pos_delta"].tolist())
     all_ori_deltas[g["scan_distance"]].extend(g["ori_delta"].tolist())
 
-fig3, (ax_dp, ax_do) = plt.subplots(1, 2, figsize=(12, 5))
-x_labels = [f"{int(round(d * 100))} cm" for d in scan_distances]
+x_labels = [f"{int(round(d * 100))}" for d in scan_distances]
 positions = range(len(scan_distances))
 
-for ax, delta_dict, unit, title in (
-    (ax_dp, all_pos_deltas, "mm",  "Position Jump Magnitude per Frame"),
-    (ax_do, all_ori_deltas, "°",   "Orientation Jump Magnitude per Frame"),
-):
-    scale = 1000.0 if unit == "mm" else 1.0
-    data_list = [np.array(delta_dict[d]) * scale for d in scan_distances]
-
-    vp = ax.violinplot(data_list, positions=positions,
-                       showmedians=True, showextrema=True)
-    for body, dist in zip(vp["bodies"], scan_distances):
-        body.set_facecolor(DIST_COLORS[dist])
-        body.set_alpha(0.7)
-
-    ax.set_xticks(positions)
-    ax.set_xticklabels(x_labels)
-    ax.set_xlabel("Scan distance")
-    ax.set_ylabel(f"Frame-to-frame Δ ({unit})")
-    ax.set_title(title)
-    ax.grid(True, axis="y", alpha=0.3)
-
-    # Annotate median values
-    for xi, dist in zip(positions, scan_distances):
-        med = np.median(delta_dict[dist]) * scale
-        ax.text(xi, ax.get_ylim()[1] * 0.97, f"med={med:.3g}",
-                ha="center", va="top", fontsize=7)
-
-fig3.suptitle(
-    "Frame-to-Frame Marker Pose Jump Distributions vs Scan Distance\n"
-    "(all files and marker IDs combined)",
-    fontsize=11,
-)
+# --- Violin: Position jumps ---
+fig3_pos = plt.figure(figsize=FIG_SIZE)
+ax_dp = fig3_pos.add_subplot(111)
+scale = 1000.0
+data_list = [np.array(all_pos_deltas[d]) * scale for d in scan_distances]
+vp = ax_dp.violinplot(data_list, positions=positions,
+                      showmedians=True, showextrema=True)
+for body, dist in zip(vp["bodies"], scan_distances):
+    body.set_facecolor(DIST_COLORS[dist])
+    body.set_alpha(0.7)
+ax_dp.set_xticks(positions)
+ax_dp.set_xticklabels(x_labels)
+ax_dp.set_xlabel("Scan distance [cm]")
+ax_dp.set_ylabel("Frame-to-frame Δ [mm]")
+ax_dp.grid(True, axis="y", alpha=0.3)
+for xi, dist in zip(positions, scan_distances):
+    med = np.median(all_pos_deltas[dist]) * scale
+    ax_dp.text(xi, ax_dp.get_ylim()[1] * 0.97, f"med={med:.3g}",
+               ha="center", va="top", fontsize=7)
 plt.tight_layout()
-out3 = os.path.join(script_dir, "marker_noise_deltas.png")
-plt.savefig(out3, dpi=150, bbox_inches="tight")
-print(f"Saved {out3}")
+out3_pos = os.path.join(script_dir, "marker_noise_deltas_pos.png")
+plt.savefig(out3_pos, dpi=150, bbox_inches="tight")
+print(f"Saved {out3_pos}")
+
+# --- Violin: Orientation jumps ---
+fig3_ori = plt.figure(figsize=FIG_SIZE)
+ax_do = fig3_ori.add_subplot(111)
+data_list = [np.array(all_ori_deltas[d]) for d in scan_distances]
+vp = ax_do.violinplot(data_list, positions=positions,
+                      showmedians=True, showextrema=True)
+for body, dist in zip(vp["bodies"], scan_distances):
+    body.set_facecolor(DIST_COLORS[dist])
+    body.set_alpha(0.7)
+ax_do.set_xticks(positions)
+ax_do.set_xticklabels(x_labels)
+ax_do.set_xlabel("Scan distance [cm]")
+ax_do.set_ylabel("Frame-to-frame Δ [°]")
+ax_do.grid(True, axis="y", alpha=0.3)
+for xi, dist in zip(positions, scan_distances):
+    med = np.median(all_ori_deltas[dist])
+    ax_do.text(xi, ax_do.get_ylim()[1] * 0.97, f"med={med:.3g}",
+               ha="center", va="top", fontsize=7)
+plt.tight_layout()
+out3_ori = os.path.join(script_dir, "marker_noise_deltas_ori.png")
+plt.savefig(out3_ori, dpi=150, bbox_inches="tight")
+print(f"Saved {out3_ori}")
 
 # ---------------------------------------------------------------------------
 # Figure 4 — Orientation noise: before vs after a Butterworth low-pass filter
@@ -347,13 +374,13 @@ for g in groups:
         rms_fc.append(np.sqrt(np.mean(filtfilt(b, a, ori_raw) ** 2)))
     rms_filt_curves[g["scan_distance"]].append(rms_fc)
 
-fig4, (ax4l, ax4r) = plt.subplots(1, 2, figsize=(13, 5))
+# --- Figure 4a: PSD raw vs filtered ---
+fig4l = plt.figure(figsize=FIG_SIZE)
+ax4l = fig4l.add_subplot(111)
 
 for dist in scan_distances:
     lbl   = f"{int(round(dist * 100))} cm"
     color = DIST_COLORS[dist]
-
-    # --- Left: PSD before vs after ---
     if psd_ori_raw[dist]:
         raw_mean  = np.array(psd_ori_raw [dist]).mean(axis=0)
         filt_mean = np.array(psd_ori_filt[dist]).mean(axis=0)
@@ -362,14 +389,29 @@ for dist in scan_distances:
         ax4l.semilogy(f, filt_mean, color=color, linewidth=1.8,
                       linestyle="--", label=f"{lbl} filtered")
 
-    # --- Right: RMS retained vs cutoff ---
+ax4l.axvline(FC_DEMO, color="k", linewidth=1.0, linestyle="--",
+             label=f"f_c={FC_DEMO} ({FC_DEMO * FPS / 2:.2g} Hz)")
+ax4l.set_xlabel("Normalized frequency [cycles/frame]")
+ax4l.set_ylabel("PSD [deg²/(cycles/frame)]")
+ax4l.legend(fontsize=7, ncol=2)
+ax4l.grid(True, which="both", alpha=0.3)
+plt.tight_layout()
+out4l = os.path.join(script_dir, "marker_noise_lpf_psd.png")
+plt.savefig(out4l, dpi=150, bbox_inches="tight")
+print(f"Saved {out4l}")
+
+# --- Figure 4b: RMS retained vs cutoff ---
+fig4r = plt.figure(figsize=FIG_SIZE)
+ax4r = fig4r.add_subplot(111)
+
+for dist in scan_distances:
+    lbl   = f"{int(round(dist * 100))} cm"
+    color = DIST_COLORS[dist]
     if rms_filt_curves[dist]:
         raw_rms_mean  = np.mean(rms_raw[dist])
-        filt_arr      = np.array(rms_filt_curves[dist])    # (n_groups, n_cutoffs)
+        filt_arr      = np.array(rms_filt_curves[dist])
         filt_mean_    = filt_arr.mean(axis=0)
         filt_std_     = filt_arr.std(axis=0)
-
-        # Unfiltered reference as horizontal line
         ax4r.axhline(raw_rms_mean, color=color, linewidth=1.0,
                      linestyle=":", alpha=0.7)
         ax4r.plot(CUTOFFS, filt_mean_, color=color, linewidth=1.8, label=lbl)
@@ -378,13 +420,8 @@ for dist in scan_distances:
                           filt_mean_ + filt_std_,
                           color=color, alpha=0.15)
 
-# Mark the demo cutoff on both axes
-ax4l.axvline(FC_DEMO, color="k", linewidth=1.0, linestyle="--",
-             label=f"ArucoDetector f_c = {FC_DEMO} ({FC_DEMO * FPS / 2:.2g} Hz)")
 ax4r.axvline(FC_DEMO, color="k", linewidth=1.0, linestyle="--",
-             label=f"ArucoDetector f_c = {FC_DEMO} ({FC_DEMO * FPS / 2:.2g} Hz)")
-
-# Annotate additional reference cutoffs on the right panel
+             label=f"f_c={FC_DEMO} ({FC_DEMO * FPS / 2:.2g} Hz)")
 for fc_ann, ls in ((0.01, ":"), (0.05, "-."), (0.1, ":")):
     ax4r.axvline(fc_ann, color="grey", linewidth=0.8, linestyle=ls)
     ax4r.text(fc_ann + 0.002,
@@ -392,29 +429,14 @@ for fc_ann, ls in ((0.01, ":"), (0.05, "-."), (0.1, ":")):
               f"{fc_ann}\n({fc_ann * FPS / 2:.2g} Hz)",
               color="grey", fontsize=6, va="bottom")
 
-ax4l.set_xlabel("Normalized frequency (cycles / frame)")
-ax4l.set_ylabel("PSD  (deg² / (cycles/frame))")
-ax4l.set_title(f"Orientation PSD: Raw vs Low-Pass\n(f_c = {FC_DEMO} → {FC_DEMO * FPS / 2:.2g} Hz at {FPS:.0f} fps)")
-ax4l.legend(fontsize=7, ncol=2)
-ax4l.grid(True, which="both", alpha=0.3)
-
-ax4r.set_xlabel(f"Low-pass cutoff Wn (0–1 normalized, 1 = Nyquist = {FPS/2:.0f} Hz)")
-ax4r.set_ylabel("Orientation RMS (°)")
-ax4r.set_title("Orientation RMS Retained After Low-Pass Filter")
-ax4r.legend(title="Scan distance  (dotted = unfiltered)", fontsize=8)
+ax4r.set_xlabel(f"Low-pass cutoff Wn [normalized, 1=Nyquist={FPS/2:.0f} Hz]")
+ax4r.set_ylabel("Orientation RMS [°]")
+ax4r.legend(title="Scan dist. (dotted=unfiltered)", fontsize=7)
 ax4r.grid(True, alpha=0.3)
-
-fig4.suptitle(
-    f"Low-Pass Filter Effect on Orientation Noise\n"
-    f"(Order-{FILT_ORDER} Butterworth matching ArucoDetector RC filter: "
-    f"f_c = {FC_DEMO * FPS / 2:.2g} Hz at {FPS:.0f} fps — "
-    f"mean ± 1σ across all groups and files)",
-    fontsize=11,
-)
 plt.tight_layout()
-out4 = os.path.join(script_dir, "marker_noise_lpf_effect.png")
-plt.savefig(out4, dpi=150, bbox_inches="tight")
-print(f"Saved {out4}")
+out4r = os.path.join(script_dir, "marker_noise_lpf_rms.png")
+plt.savefig(out4r, dpi=150, bbox_inches="tight")
+print(f"Saved {out4r}")
 
 # ---------------------------------------------------------------------------
 # Print summary statistics
