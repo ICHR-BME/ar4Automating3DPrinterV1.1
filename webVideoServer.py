@@ -133,12 +133,15 @@ class WebVideoStream:
         self.found_markers = {}
         # When False, found_markers will not be updated with new detections.
         self.marker_updates_enabled = True
+        # Per-marker EMA state used exclusively for the web panel display.
+        # Does NOT affect found_markers or anything returned by detect().
+        self._display_filter_states = {}
 
         # ---- ArUco detector ----
         self.enable_aruco = enable_aruco
         if enable_aruco:
             self.dict_names = dict_names or ['DICT_4X4_50', 'DICT_6X6_50']
-            self.marker_sizes = marker_sizes or [0.03, 0.05]
+            self.marker_sizes = marker_sizes or [0.03, 0.025]
             self.aruco_dicts = [cv2.aruco.getPredefinedDictionary(ARUCO_DICT_MAP[n])
                                 for n in self.dict_names]
             self.aruco_params = cv2.aruco.DetectorParameters_create()
@@ -302,6 +305,13 @@ class WebVideoStream:
             if not self.is_calibrated:
                 return output, live_marker_poses
 
+            h_img, w_img = image.shape[:2]
+            f_naive = float(max(w_img, h_img))
+            naive_K = np.array([[f_naive, 0, w_img / 2.0],
+                                 [0, f_naive, h_img / 2.0],
+                                 [0, 0, 1.0]], dtype=np.float64)
+            naive_d = np.zeros(5, dtype=np.float64)
+
             seen = set()
             for i, corner in enumerate(all_corners):
                 marker_id = all_ids[i][0]
@@ -318,6 +328,13 @@ class WebVideoStream:
                 rot_mat, _ = cv2.Rodrigues(rvec[0])
                 roll, pitch, yaw = R.from_matrix(rot_mat).as_euler('XYZ', degrees=False)
 
+                rvec_n, tvec_n, _ = cv2.aruco.estimatePoseSingleMarkers(
+                    corner, marker_size, naive_K, naive_d)
+                pos_naive = tvec_n[0][0].copy()
+                dist_naive = float(np.linalg.norm(pos_naive))
+                rot_naive, _ = cv2.Rodrigues(rvec_n[0])
+                roll_n, pitch_n, yaw_n = R.from_matrix(rot_naive).as_euler('XYZ', degrees=False)
+
                 entry = {
                     'id': marker_id,
                     'dict_name': self.dict_names[dict_indices[i]],
@@ -329,12 +346,18 @@ class WebVideoStream:
                         'yaw': np.degrees(yaw),
                     },
                     'distanceFromCamera': distance,
+                    'positionFromCamera_naive': pos_naive,
+                    'distanceFromCamera_naive': dist_naive,
+                    'orientFromCamera_naive': {
+                        'roll': np.degrees(roll_n),
+                        'pitch': np.degrees(pitch_n),
+                        'yaw': np.degrees(yaw_n),
+                    },
                 }
 
-                # Store base entry only if we don't already have an enriched version
                 if self.marker_updates_enabled:
-                    if marker_id not in self.found_markers:
-                        self.found_markers[marker_id] = entry.copy()
+                    # Always update with the latest base pose so the display stays live
+                    self.found_markers[marker_id] = entry.copy()
 
                     if self.enrich_fn is not None:
                         enriched = self.enrich_fn(entry)
@@ -343,9 +366,9 @@ class WebVideoStream:
                             # Update found_markers with the enriched version
                             self.found_markers[marker_id] = entry
                         else:
-                            # enrich_fn failed but we still have the base entry
+                            # enrich_fn failed — keep the latest base entry
                             _log = self.log_fn or print
-                            _log(f"[detect] ID={marker_id} enrich_fn returned None — found_markers NOT updated")
+                            _log(f"[detect] ID={marker_id} enrich_fn returned None — using base entry")
                 live_marker_poses.append(entry)
 
                 cv2.drawFrameAxes(output, self.camera_matrix, self.dist_coeffs,
@@ -369,11 +392,67 @@ class WebVideoStream:
 
         return output, live_marker_poses
 
+    # ---- Display-only low-pass filter ----
+
+    def _smooth_for_display(self, marker_list: list) -> list:
+        """Return a display copy of marker_list with poses smoothed by a 4-frame
+        time-constant first-order IIR filter (same approach as ArucoDetector.py).
+        Never modifies found_markers or any value returned by detect()."""
+        dt = 1.0 / self.fps
+        RC = 4.0 / self.fps        # 4-frame time constant: RC = 4 * dt
+        alpha = dt / (RC + dt)     # = 0.2
+
+        result = []
+        for entry in marker_list:
+            mid = entry['id']
+            p = dict(entry)        # shallow copy — arrays replaced below
+
+            if mid not in self._display_filter_states:
+                self._display_filter_states[mid] = {}
+            state = self._display_filter_states[mid]
+
+            def _smooth(pos_key, orient_dict_key, dist_key, prefix):
+                if pos_key not in p:
+                    return
+                pos_new = np.asarray(p[pos_key], dtype=float)
+                od = p.get(orient_dict_key) or {}
+                euler_new = np.radians([od.get('roll', 0.0),
+                                        od.get('pitch', 0.0),
+                                        od.get('yaw', 0.0)])
+                sp, sq = prefix + '_pos', prefix + '_quat'
+                if sp not in state:
+                    state[sp] = pos_new.copy()
+                    state[sq] = R.from_euler('XYZ', euler_new).as_quat()
+                else:
+                    state[sp] = alpha * pos_new + (1.0 - alpha) * state[sp]
+                    q_new = R.from_euler('XYZ', euler_new).as_quat()
+                    q_prev = state[sq]
+                    if np.dot(q_prev, q_new) < 0.0:
+                        q_new = -q_new
+                    q_smooth = R.from_quat(q_prev) * R.from_rotvec(
+                        alpha * (R.from_quat(q_prev).inv() * R.from_quat(q_new)).as_rotvec())
+                    state[sq] = q_smooth.as_quat()
+                p[pos_key] = state[sp].copy()
+                if dist_key and dist_key in p:
+                    p[dist_key] = float(np.linalg.norm(state[sp]))
+                smooth_euler = R.from_quat(state[sq]).as_euler('XYZ', degrees=False)
+                p[orient_dict_key] = {
+                    'roll':  float(np.degrees(smooth_euler[0])),
+                    'pitch': float(np.degrees(smooth_euler[1])),
+                    'yaw':   float(np.degrees(smooth_euler[2])),
+                }
+
+            _smooth('positionFromCamera',       'orientFromCamera',       'distanceFromCamera',       'cam')
+            _smooth('positionFromCamera_naive',  'orientFromCamera_naive', 'distanceFromCamera_naive', 'naive')
+            _smooth('positionInWorld',           'orientInWorld',          None,                       'world')
+            result.append(p)
+        return result
+
     # ---- Pose panel ----
 
     def _draw_pose_panel(self, width: int, marker_list: list) -> np.ndarray:
         line_h = 14
-        panel = np.zeros((max(160, 40 + len(marker_list) * 160), width, 3), dtype=np.uint8)
+        panel = np.zeros((max(160, 40 + len(marker_list) * 210), width, 3), dtype=np.uint8)
         y = 18
 
         if not marker_list:
@@ -398,6 +477,16 @@ class WebVideoStream:
                             (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1); y += line_h
                 cv2.putText(panel, f"    RPY: R={ob['roll']:+.1f} P={ob['pitch']:+.1f} Y={ob['yaw']:+.1f}",
                             (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1); y += line_h
+            if 'positionFromCamera_naive' in p:
+                pn = p['positionFromCamera_naive']
+                on_n = p['orientFromCamera_naive']
+                dn = p['distanceFromCamera_naive']
+                cv2.putText(panel, f"  (Naive est.):", (10, y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (180, 130, 255), 2); y += line_h
+                cv2.putText(panel, f"    Pos: X={pn[0]:+.3f} Y={pn[1]:+.3f} Z={pn[2]:+.3f}  Dist={dn:.3f}m",
+                            (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1); y += line_h
+                cv2.putText(panel, f"    RPY: R={on_n['roll']:+.1f} P={on_n['pitch']:+.1f} Y={on_n['yaw']:+.1f}",
+                            (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1); y += line_h
             y += 2
 
         return panel
@@ -432,8 +521,8 @@ class WebVideoStream:
             frame = np.hstack([frame, depth_vis])
 
         if self.enable_aruco:
-            # Show ALL known markers in the panel (persistent)
-            frame = np.vstack([frame, self._draw_pose_panel(frame.shape[1], self.marker_poses)])
+            # Show ALL known markers in the panel (persistent), smoothed for display only
+            frame = np.vstack([frame, self._draw_pose_panel(frame.shape[1], self._smooth_for_display(self.marker_poses))])
 
         if self.display_scale and self.display_scale != 1.0:
             frame = cv2.resize(frame, None, fx=self.display_scale, fy=self.display_scale,
@@ -475,7 +564,7 @@ if __name__ == "__main__":
         fps=30.0,
         display_scale=1.0/0.702,
         depth_colormap="turbo",
-        marker_sizes=[0.03, 0.05],
+        marker_sizes=[0.03, 0.025],
         dict_names=['DICT_4X4_50', 'DICT_6X6_50'],
         camera_keyword="GENERAL WEBCAM",
     )
