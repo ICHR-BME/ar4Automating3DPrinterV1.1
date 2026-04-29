@@ -179,7 +179,7 @@ bars = ax.bar(
 )
 
 ax.set_xticks(x)
-ax.set_xticklabels(["Position\nerror [mm]", "Orientation\nerror [°]", "Gap on\nprinter [mm]"])
+ax.set_xticklabels(["Horizontal\nerror [mm]", "Orientation\nerror [°]", "Gap on\nprinter [mm]"])
 ax.set_ylabel("Error")
 ax.grid(True, axis="y", alpha=0.3)
 
