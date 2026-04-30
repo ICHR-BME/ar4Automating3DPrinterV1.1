@@ -1,3 +1,5 @@
+import csv
+import os
 import cv2
 import subprocess
 import re
@@ -34,6 +36,63 @@ def list_cameras():
                 cameras.append((i, f"Camera {i}"))
                 cap.release()
     return cameras
+
+
+def get_camera_usb_properties(camera_index: int) -> dict:
+    """Query USB/device properties for a video camera using udevadm and sysfs."""
+    device_path = f"/dev/video{camera_index}"
+    properties = {"device_path": device_path, "camera_index": str(camera_index)}
+
+    # Primary source: udevadm (comprehensive udev property database)
+    try:
+        result = subprocess.run(
+            ['udevadm', 'info', '--query=all', f'--name={device_path}'],
+            capture_output=True, text=True, timeout=5
+        )
+        for line in result.stdout.splitlines():
+            if line.startswith('E:'):
+                key, _, value = line[3:].partition('=')
+                properties[key.strip()] = value.strip()
+    except FileNotFoundError:
+        print("Warning: udevadm not found; skipping udev property query.")
+    except Exception as e:
+        print(f"Warning: udevadm query failed: {e}")
+
+    # Supplement with raw sysfs USB attributes (walk up the device tree)
+    usb_attrs = [
+        'manufacturer', 'product', 'serial',
+        'idVendor', 'idProduct', 'bcdDevice',
+        'speed', 'version', 'busnum', 'devnum',
+    ]
+    try:
+        device_link = f"/sys/class/video4linux/video{camera_index}/device"
+        path = os.path.realpath(device_link)
+        for _ in range(6):  # walk up at most 6 levels toward the USB root
+            for attr in usb_attrs:
+                attr_file = os.path.join(path, attr)
+                if os.path.isfile(attr_file):
+                    key = f"usb_{attr}"
+                    if key not in properties:  # don't overwrite udevadm values
+                        with open(attr_file) as f:
+                            properties[key] = f.read().strip()
+            parent = os.path.dirname(path)
+            if parent == path:
+                break
+            path = parent
+    except Exception as e:
+        print(f"Warning: Could not read sysfs USB attributes: {e}")
+
+    return properties
+
+
+def write_camera_properties_to_csv(properties: dict, filename: str = "camera_properties.csv"):
+    """Write camera device properties as key-value rows to a CSV file."""
+    with open(filename, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["property", "value"])
+        for key, value in properties.items():
+            writer.writerow([key, value])
+    print(f"Camera properties saved to '{filename}'")
 
 
 def select_camera(preset_keyword=None):
@@ -113,6 +172,14 @@ class WebcamPublisher(Node):
 
         self.img_height, self.img_width = frame.shape[:2]
         self.get_logger().info(f"Camera opened: {self.img_width}x{self.img_height} (index {camera_index})")
+
+        # Collect and persist USB device properties to CSV
+        usb_props = get_camera_usb_properties(camera_index)
+        usb_props["resolution_width"] = str(self.img_width)
+        usb_props["resolution_height"] = str(self.img_height)
+        csv_filename = f"camera_{camera_index}_properties.csv"
+        write_camera_properties_to_csv(usb_props, csv_filename)
+        self.get_logger().info(f"USB device properties written to '{csv_filename}'")
 
         # Build camera intrinsics
         if camera_matrix is not None:

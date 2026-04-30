@@ -132,6 +132,55 @@ class PoseReader(Node):
 		# Brief pause so TrajectoryExecutionManager has released the lock.
 		time.sleep(0.3)
 
+	def move_to_configuration(self, joint_positions, timeout=15.0, max_retries=2):
+		"""Move to *joint_positions* with automatic retry on transient failures.
+
+		Mirrors the move_to_pose() pattern: cancels any in-flight trajectory
+		before each attempt and polls the MoveIt flags with a deadline instead
+		of calling wait_until_executed() (which has no timeout).
+
+		Returns True if the motion succeeded, False if all attempts failed.
+		"""
+		for attempt in range(max_retries + 1):
+			if attempt > 0:
+				self.get_logger().warn(
+					f"[move_to_configuration] Retry {attempt}/{max_retries}…"
+				)
+
+			self._cancel_and_wait()
+			self.moveit2.motion_suceeded = False
+
+			self.moveit2.move_to_configuration(joint_positions=joint_positions)
+
+			_deadline = time.time() + timeout
+			timed_out = False
+			while (getattr(self.moveit2, '_MoveIt2__is_motion_requested', False) or
+			       getattr(self.moveit2, '_MoveIt2__is_executing', False)):
+				if time.time() > _deadline:
+					self.get_logger().error(
+						f"[move_to_configuration] timed out after {timeout}s."
+					)
+					timed_out = True
+					self._cancel_and_wait()
+					break
+				time.sleep(0.05)
+
+			if self.moveit2.motion_suceeded:
+				time.sleep(self.move_settle_delay)
+				return True
+
+			reason = f"timed out after {timeout}s" if timed_out else "motion aborted/failed"
+			if attempt < max_retries:
+				self.get_logger().warn(
+					f"[move_to_configuration] {reason} on attempt {attempt + 1} — retrying…"
+				)
+			else:
+				self.get_logger().error(
+					f"[move_to_configuration] {reason} — all attempts exhausted."
+				)
+
+		return False
+
 	def move_to_pose(self, pos, euler, max_retries=2):
 		"""Move to *pos* / *euler* with automatic retry on transient failures.
 

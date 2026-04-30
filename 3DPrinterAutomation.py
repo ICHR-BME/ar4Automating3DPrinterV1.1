@@ -743,7 +743,7 @@ class printerAutomation(ArucoDetectionViewer):
         return True
 
     @_timed
-    def scrapePlate(self, source_id, scrape_id, scan_distance=0.15, scrape_standoff=0.15, scrape_offset=None):
+    def scrapePlate(self, source_id, scrape_id, scan_distance=0.15, scrape_standoff=0.15, scrape_offset=None, wait_after_pickup=False, wait_duration=60.0, rotate_after_scrape=False, rotate_degrees=60.0):
         """
         Pick up a plate from source_id, scrape it against the scrape_id marker surface,
         then return it to source_id.
@@ -751,6 +751,15 @@ class printerAutomation(ArucoDetectionViewer):
         scrape_offset: 3-element [x, y, z] offset from the scrape marker origin in the
           marker's local frame at which the scrape is carried out.  Falls back to
           self.scrape_offset when not provided.
+        wait_after_pickup: if True, pause for wait_duration seconds after picking up the
+          plate before moving to the scrape position (e.g. to allow a hot plate to cool).
+          Defaults to False.
+        wait_duration: seconds to wait when wait_after_pickup is True.  Defaults to 60.0.
+        rotate_after_scrape: if True, rotate the end-effector joint by rotate_degrees after
+          retracting to standoff, then restore the original angle before placing.  Defaults
+          to False.
+        rotate_degrees: degrees to rotate the end-effector joint when rotate_after_scrape is
+          True.  Defaults to 60.0.
 
         1. Scan source marker  — retries at 0.85x and 0.70x if movement fails; aborts if all fail
         2. Pick up plate from source_id  — aborts on failure
@@ -758,6 +767,7 @@ class printerAutomation(ArucoDetectionViewer):
         4. Move to standoff position along the scrape marker's Z axis
         5. Move to scrape_offset position in the scrape marker's local frame
         6. Retract back to standoff along the scrape marker's Z axis
+        6b. (optional) Rotate end-effector joint by rotate_degrees, then restore original angle
         7. Place plate back at source_id  — aborts on failure
         """
         if scrape_offset is None:
@@ -789,6 +799,13 @@ class printerAutomation(ArucoDetectionViewer):
                 f"scrapePlate: pickupPlate failed for marker {source_id}. Aborting."
             )
             return False
+        # Optional post-pickup wait (e.g. to let a heated plate cool)
+        if wait_after_pickup:
+            self.get_logger().info(
+                f"scrapePlate: waiting {wait_duration} s after pickup before scraping."
+            )
+            time.sleep(wait_duration)
+
         # Freeze marker updates while scraping so the scrape surface marker pose is
         # not corrupted by the camera seeing it at close range during the approach.
         self.freeze_markers()
@@ -837,6 +854,30 @@ class printerAutomation(ArucoDetectionViewer):
                 f"scrapePlate: retraction to standoff failed for marker {scrape_id}. Continuing."
             )
 
+        # Step 6b – optional end-effector rotation to dislodge debris / change plate orientation
+        if rotate_after_scrape:
+            self.get_logger().info(
+                f"scrapePlate: rotating end-effector joint by {rotate_degrees:.1f}° after scrape."
+            )
+            js = self.moveit2.joint_state
+            if js is not None:
+                joint_names_list = list(js.name)
+                current_joints = [
+                    float(js.position[joint_names_list.index(j)])
+                    for j in self.moveit2.joint_names
+                ]
+                rotated_joints = list(current_joints)
+                rotated_joints[-1] -= np.radians(rotate_degrees)
+                self.move_to_configuration(rotated_joints)
+                time.sleep(0.5)
+                # Restore original end-effector angle before placing the plate
+                self.move_to_configuration(current_joints)
+                time.sleep(0.5)
+            else:
+                self.get_logger().warn(
+                    "scrapePlate: joint state unavailable — skipping rotation."
+                )
+
         # Step 7 – place plate back at source
         # Unfreeze so the camera can refresh the source marker pose before placing.
         self.unfreeze_markers()
@@ -882,8 +923,7 @@ class printerAutomation(ArucoDetectionViewer):
             self.moveit2.max_velocity = velocity_scaling
             self.moveit2.max_acceleration = velocity_scaling
             self.freeze_markers()
-            self.moveit2.move_to_configuration(joint_positions=home_joints)
-            self.moveit2.wait_until_executed()
+            self.move_to_configuration(home_joints)
             time.sleep(self.move_settle_delay)
         finally:
             self.moveit2.max_velocity = prev_velocity

@@ -50,6 +50,7 @@ PRINTER_SERIAL      = "0309CA460401528"
 
 # File name on the printer's SD card to print each cycle.
 PRINT_FILENAME = "testPrints/BenchyFast.3mf"
+#PRINT_FILENAME = "testPrints/smallCylinderPLA15m17s.gcode.3mf"
 # ---- End Configuration ----
 
 
@@ -173,6 +174,9 @@ def main():
             scrape_id=SCRAPE_ID,
             scan_distance=SCAN_DISTANCE,
             scrape_standoff=SCRAPE_STANDOFF,
+            wait_after_pickup=True,
+            wait_duration=90.0,
+            rotate_after_scrape=True,
         )
         node.get_logger().info(
             f"=== Cycle {cycle}/{NUM_CYCLES}: scrapePlate {'succeeded' if ok else 'FAILED'} ==="

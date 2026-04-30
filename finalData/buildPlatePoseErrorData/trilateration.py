@@ -6,7 +6,7 @@ import os
 RUN_TEST   = False          # True  → synthetic self-test
                             # False → load measurements from CSV_FILE
 CSV_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "buildPlatePlacementErrorMeasurements3.csv")
-CORNER_SPACING = 198.0      # L: distance between the two reference corners (meters)
+CORNER_SPACING = 200.0      # L: distance between the two reference corners (meters)
 # ──────────────────────────────────────────────────────────────────────────────
 
 def solve_rigid_body(d1, d2, d_cross1, d_cross2, L):

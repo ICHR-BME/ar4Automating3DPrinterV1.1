@@ -106,6 +106,9 @@ def main():
         scrape_id=SCRAPE_ID,
         scan_distance=SCAN_DISTANCE,
         scrape_standoff=SCRAPE_STANDOFF,
+        wait_after_pickup=True,
+        wait_duration=10.0,
+        rotate_after_scrape=True,
     )
     node.get_logger().info("scrapePlate succeeded." if ok else "scrapePlate failed.")
 
