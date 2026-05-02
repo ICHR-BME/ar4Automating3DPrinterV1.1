@@ -97,7 +97,7 @@ class printerAutomation(ArucoDetectionViewer):
         ## Offset from the scrape marker origin in the marker's local frame [x, y, z]
         ## used by scrapePlate().  z is the closest approach distance along the marker's
         ## outward Z axis; x/y shift the contact point laterally in the marker plane.
-        self.scrape_offset = np.array([0.0, 0.12, 0.13])
+        self.scrape_offset = np.array([0.0, 0.11, 0.13])
 
         self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
 

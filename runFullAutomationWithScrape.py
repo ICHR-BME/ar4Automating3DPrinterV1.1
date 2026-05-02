@@ -182,7 +182,7 @@ def main():
             f"=== Cycle {cycle}/{NUM_CYCLES}: scrapePlate {'succeeded' if ok else 'FAILED'} ==="
         )
 
-        node.save_state()
+        #node.save_state()
 
     node.get_logger().info("All cycles complete.")
     bambu.disconnect()

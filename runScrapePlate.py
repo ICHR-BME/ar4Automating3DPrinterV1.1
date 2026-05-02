@@ -100,19 +100,19 @@ def main():
             node.register_estimated_marker(
                 marker_id=p["marker_id"], bad_pos=bad_pos, bad_euler=bad_euler
             )
+    for i in range(10):
+        ok = node.scrapePlate(
+            source_id=SOURCE_ID,
+            scrape_id=SCRAPE_ID,
+            scan_distance=SCAN_DISTANCE,
+            scrape_standoff=SCRAPE_STANDOFF,
+            wait_after_pickup=False,
+            wait_duration=10.0,
+            rotate_after_scrape=True,
+        )
+        node.get_logger().info("scrapePlate succeeded." if ok else "scrapePlate failed.")
 
-    ok = node.scrapePlate(
-        source_id=SOURCE_ID,
-        scrape_id=SCRAPE_ID,
-        scan_distance=SCAN_DISTANCE,
-        scrape_standoff=SCRAPE_STANDOFF,
-        wait_after_pickup=True,
-        wait_duration=10.0,
-        rotate_after_scrape=True,
-    )
-    node.get_logger().info("scrapePlate succeeded." if ok else "scrapePlate failed.")
-
-    node.save_state()
+        #node.save_state()
 
 
 if __name__ == '__main__':
