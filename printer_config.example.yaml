@@ -1,0 +1,26 @@
+# Printer connection settings.
+#
+# Copy this file to "printer_config.yaml" and fill in your own values.
+# printer_config.yaml is gitignored so your real credentials are never committed.
+#
+#   cp printer_config.example.yaml printer_config.yaml
+#
+# Where to find these on a Bambu printer:
+#   ip          - LAN IP of the printer (Settings > Network, or your router)
+#   access_code - LAN access code (Settings > Network > LAN Only / Access Code)
+#   serial      - Printer serial number (Settings > Device, or printed on the unit)
+
+# Which printer below to connect to by default.
+active_printer: a1_mini
+
+printers:
+  a1_mini:
+    ip: "192.168.0.10"
+    access_code: "00000000"
+    serial: "00X00A000000000"
+
+  # A second printer (optional). Set active_printer above to use it.
+  a1_mini_2:
+    ip: "192.168.0.11"
+    access_code: "00000000"
+    serial: "00X00A000000001"

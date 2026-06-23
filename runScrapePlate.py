@@ -85,6 +85,11 @@ def main():
         node.get_logger().error("No save file found — run 3DPrinterAutomation.py first to create one.")
         return
 
+    # The scrape marker is a fixed reference: pin it to the file-loaded pose so the
+    # camera can never overwrite it. This keeps the scrape approach identical on
+    # every repetition (without it, live detections drift marker 1 between passes).
+    node.lock_marker(SCRAPE_ID)
+
     # Reconstruct Simulated3DPrinter objects from the saved printer configs so
     # register_estimated_marker has the correct geometric estimates as a fallback.
     for p in getattr(node, '_saved_printer_configs', []):

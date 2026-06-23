@@ -3,3 +3,6 @@ build/
 env-hooks/
 install/
 log/
+
+# Real printer credentials (use printer_config.example.yaml as a template)
+printer_config.yaml

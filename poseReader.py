@@ -25,6 +25,26 @@ def quat_to_euler(x: float, y: float, z: float, w: float):
 	roll, pitch, yaw = R.from_quat([x, y, z, w]).as_euler("XYZ", degrees=False)
 	return roll, pitch, yaw
 
+# MoveItErrorCodes values -> human-readable reason (for diagnosing STATUS_ABORTED).
+_MOVEIT_ERR = {
+	1: "SUCCESS", 99999: "UNDEFINED", -1: "FAILURE", -2: "PLANNING_FAILED",
+	-3: "INVALID_MOTION_PLAN", -4: "MOTION_PLAN_INVALIDATED_BY_ENVIRONMENT_CHANGE",
+	-5: "CONTROL_FAILED", -6: "UNABLE_TO_AQUIRE_SENSOR_DATA", -7: "TIMED_OUT",
+	-8: "PREEMPTED", -10: "START_STATE_IN_COLLISION", -11: "START_STATE_VIOLATES_PATH_CONSTRAINTS",
+	-12: "GOAL_IN_COLLISION", -13: "GOAL_VIOLATES_PATH_CONSTRAINTS", -14: "GOAL_CONSTRAINTS_VIOLATED",
+	-15: "INVALID_GROUP_NAME", -16: "INVALID_GOAL_CONSTRAINTS", -17: "INVALID_ROBOT_STATE",
+	-18: "INVALID_LINK_NAME", -19: "INVALID_OBJECT_NAME", -21: "NO_IK_SOLUTION",
+}
+
+def _moveit_err_str(moveit2):
+	"""Return a readable MoveIt error-code string for the last execution, or '?'."""
+	try:
+		code = moveit2.get_last_execution_error_code()
+		val = getattr(code, "val", code)
+		return f"{_MOVEIT_ERR.get(val, 'UNKNOWN')}({val})"
+	except Exception:
+		return "?"
+
 import sys
 sys.path.insert(0, "/home/koghalai/ar4_ws/src/ar4Automating3DPrinter")
 from moveit2 import MoveIt2
@@ -170,13 +190,14 @@ class PoseReader(Node):
 				return True
 
 			reason = f"timed out after {timeout}s" if timed_out else "motion aborted/failed"
+			err = _moveit_err_str(self.moveit2)
 			if attempt < max_retries:
 				self.get_logger().warn(
-					f"[move_to_configuration] {reason} on attempt {attempt + 1} — retrying…"
+					f"[move_to_configuration] {reason} (MoveIt err={err}) on attempt {attempt + 1} — retrying…"
 				)
 			else:
 				self.get_logger().error(
-					f"[move_to_configuration] {reason} — all attempts exhausted."
+					f"[move_to_configuration] {reason} (MoveIt err={err}) — all attempts exhausted."
 				)
 
 		return False
@@ -200,7 +221,7 @@ class PoseReader(Node):
 			f"quat=[{q[0]:.3f}, {q[1]:.3f}, {q[2]:.3f}, {q[3]:.3f}]"
 		)
 
-		_timeout = 10.0
+		_timeout = 15.0
 
 		for attempt in range(max_retries + 1):
 			if attempt > 0:
@@ -243,13 +264,14 @@ class PoseReader(Node):
 				return True
 
 			reason = f"timed out after {_timeout}s" if timed_out else "motion aborted/failed"
+			err = _moveit_err_str(self.moveit2)
 			if attempt < max_retries:
 				self.get_logger().warn(
-					f"[move_to_pose] {reason} on attempt {attempt + 1} — retrying…"
+					f"[move_to_pose] {reason} (MoveIt err={err}) on attempt {attempt + 1} — retrying…"
 				)
 			else:
 				self.get_logger().error(
-					f"[move_to_pose] {reason} — planning may have been unsuccessful."
+					f"[move_to_pose] {reason} (MoveIt err={err}) — planning may have been unsuccessful."
 				)
 
 		return False

@@ -1,0 +1,3 @@
+timestamp,call_chain,duration_s
+2026-06-23T11:51:09.459210,scrapePlate > scanToMarker,6.6844
+2026-06-23T11:51:09.459424,scrapePlate,6.6953

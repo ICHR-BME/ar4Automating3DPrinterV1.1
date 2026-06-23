@@ -6,6 +6,7 @@ import socket
 import os
 import sys
 import time
+import yaml
 
 # ==========================================
 # Helper Classes
@@ -54,6 +55,10 @@ class BambuPrinter:
         self.client.username_pw_set("bblp", self.access_code)
         self.on_finish_callback = None
         self._last_state = None
+
+        # Live status panel: latest known values, redrawn in place on one line.
+        self.debug = False          # set True to dump raw MQTT payloads
+        self.status = {}            # e.g. {"state": ..., "progress": ..., "nozzle": ...}
         
         # SSL configuration for MQTT (Bambu uses self-signed certs)
         self._print_finished = False
@@ -86,6 +91,9 @@ class BambuPrinter:
         """Sets the callback and subscribes without blocking the script."""
         def on_message(client, userdata, msg):
             payload = json.loads(msg.payload.decode())
+            # Debug: dump command acks (e.g. the response to project_file)
+            if self.debug and "print" in payload and payload["print"].get("command") in ("project_file", "push_status"):
+                print("\nRAW:", json.dumps(payload, indent=2))
             self._parse_message(payload)
         
         self.client.on_message = on_message
@@ -96,54 +104,50 @@ class BambuPrinter:
         """Pass a function here to be called when the print finishes."""
         self.on_finish_callback = func
 
-    def _parse_message(self, data):
-        """Internal parser for json """
+    # Maps incoming report fields -> (status key, formatter)
+    _STATUS_FIELDS = [
+        ("gcode_state",  "state",    lambda v: v),
+        ("mc_percent",   "progress", lambda v: f"{v}%"),
+        ("layer_num",    "layer",    lambda v: v),
+        ("nozzle_temper", "nozzle",  lambda v: f"{round(v, 1)}°C"),
+        ("bed_temper",   "bed",      lambda v: f"{round(v, 1)}°C"),
+    ]
 
+    def _parse_message(self, data):
+        """Update the live status values from a report and redraw the panel."""
         print_data = data.get("print", {})
         if not print_data:
             return
 
-        # 1. Handle Percentage (Only exists in some messages)
-        if "mc_percent" in print_data:
-            percent = print_data.get("mc_percent")
-            print(f"--> Progress: {percent}%")
+        changed = False
+        for src_key, status_key, fmt in self._STATUS_FIELDS:
+            if src_key in print_data:
+                value = fmt(print_data[src_key])
+                if self.status.get(status_key) != value:
+                    self.status[status_key] = value
+                    changed = True
 
-        # 2. Handle Temperatures 
-        if "nozzle_temper" in print_data:
-            temp = round(print_data.get("nozzle_temper"), 3)
-            print(f"--> Nozzle: {temp}°C")
-            
-        if "bed_temper" in print_data:
-            bed_temp = round(print_data.get("bed_temper"), 3)
-            print(f"--> Bed: {bed_temp}°C")
+        if changed:
+            self._render_status()
 
-        # 3. Handle Printing State
-        if "gcode_state" in print_data:
-            state = print_data.get("gcode_state")
-            print(f"--> Printer State: {state}")
+        # Finish detection (no longer spams the log on every state change)
+        new_state = print_data.get("gcode_state")
+        if new_state and new_state != self._last_state:
+            self._last_state = new_state
+            if new_state == "FINISH":
+                self._print_finished = True
+                if self.on_finish_callback:
+                    self.on_finish_callback()
 
-        # 4. Handle Layer Number
-        if "layer_num" in print_data:
-            layer = print_data.get("layer_num")
-            print(f"--> Current Layer: {layer}")
-
-
-        if "gcode_state" in print_data:
-            new_state = print_data.get("gcode_state")
-            
-            # Check if the state has actually changed to avoid spamming
-            if new_state != self._last_state:
-                print(f"--> Printer State Changed: {self._last_state} -> {new_state}")
-                
-                # TRIGGER: When state becomes 'FINISH'
-                if new_state == "FINISH":
-                    print("!!! Print Finished Detected !!!")
-                    self._print_finished = True
-                    if self.on_finish_callback:
-                        self.on_finish_callback()
-                
-                # Update the tracker
-                self._last_state = new_state
+    def _render_status(self):
+        """Redraw all known status values in place on a single line."""
+        order = ["state", "progress", "layer", "nozzle", "bed"]
+        labels = {"state": "State", "progress": "Progress",
+                  "layer": "Layer", "nozzle": "Nozzle", "bed": "Bed"}
+        parts = [f"{labels[k]}: {self.status[k]}" for k in order if k in self.status]
+        # \r returns to line start, \033[K clears to end of line (handles shrinking text)
+        sys.stdout.write("\r\033[K" + "  |  ".join(parts))
+        sys.stdout.flush()
 
 
     def waitUntilPrintFinished(self, poll_interval=1.0):
@@ -152,6 +156,7 @@ class BambuPrinter:
         self._print_finished = False
         while not self._print_finished:
             time.sleep(poll_interval)
+        sys.stdout.write("\n")  # preserve the final status line
         print("Print finished. Continuing.")
 
     def _send_command(self, command_dict):
@@ -347,12 +352,42 @@ class BambuPrinter:
         finally:
             socket.setdefaulttimeout(None)
 
+def load_printer_config(name=None, config_path=None):
+    """
+    Loads printer connection details from a YAML config file.
+
+    :param name: Which printer entry to use. Defaults to the file's 'active_printer'.
+    :param config_path: Path to the YAML file. Defaults to 'printer_config.yaml'
+                        next to this script.
+    :returns: dict with keys 'ip', 'access_code', 'serial'.
+    """
+    if config_path is None:
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   "printer_config.yaml")
+
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(
+            f"Config file not found: {config_path}\n"
+            f"Copy printer_config.example.yaml to printer_config.yaml and fill in your values."
+        )
+
+    with open(config_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    printers = config.get("printers", {})
+    if name is None:
+        name = config.get("active_printer")
+    if name not in printers:
+        raise KeyError(f"Printer '{name}' not found in {config_path}. "
+                       f"Available: {list(printers.keys())}")
+
+    return printers[name]
+
+
 if __name__ == "__main__":
-    PRINTER_IP          = "192.168.137.241"
-    PRINTER_ACCESS_CODE = "14668855"
-    PRINTER_SERIAL      = "0309CA460401528"
-    my_a1_mini = BambuPrinter(PRINTER_IP, PRINTER_ACCESS_CODE, PRINTER_SERIAL)
-    #my_a1_mini = BambuPrinter("192.168.1.237", "48291374", "01S00A1M23456789")
+    cfg = load_printer_config()
+
+    my_a1_mini = BambuPrinter(cfg["ip"], cfg["access_code"], cfg["serial"])
 
     my_a1_mini.connect()
     time.sleep(1)  # Allow MQTT connection to stabilize
@@ -365,10 +400,12 @@ if __name__ == "__main__":
     my_a1_mini.send_gcode("G0 X180 Y180 Z180 F1200")
     print("Moving to max X, Y and Z position (180mm, 180mm, 180mm)")
 
-    filepath = "testPrints/cylinderFast.3mf"
+    #filepath = "testPrints/cylinderFast.3mf"
+    filepath = "testPrints/bed_scraper_a1mini.gcode.3mf"
+    remote_filename = os.path.basename(filepath)  # file lands at SD card root on upload
     my_a1_mini.enable_debug_listener()
     my_a1_mini.upload_file_timeout(filepath) # Use the timeout version or the file might stall, default is 10s use bigger numbers for bigger files
-    my_a1_mini.start_print(filepath)
+    my_a1_mini.start_print(remote_filename)
     my_a1_mini.waitUntilPrintFinished()
     print("done")
 

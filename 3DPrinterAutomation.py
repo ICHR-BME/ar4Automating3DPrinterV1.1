@@ -1,3 +1,12 @@
+import warnings
+# SciPy emits a benign "Gimbal lock detected" UserWarning when decomposing a
+# rotation that sits exactly at a +/-90 deg singularity (common for axis-aligned
+# markers). The rotation is still correct -- only the Euler decomposition is
+# non-unique -- so silence just this one message to keep the console readable.
+# Installed here because every entry script imports this module, so all of them
+# inherit the filter without each having to set it.
+warnings.filterwarnings("ignore", message="Gimbal lock detected", category=UserWarning)
+
 from ArucoDetector import ArucoDetectionViewer
 import rclpy
 import numpy as np
@@ -82,8 +91,8 @@ class printerAutomation(ArucoDetectionViewer):
         self.offset_configs = {
             # Printer with the handle above the marker
             'printer_offset': {
-                'handleOffset': np.array([0.0, 0.067, 0.077]),
-                'pickupOffset': np.array([0.0, 0.167, 0.077]),
+                'handleOffset': np.array([0.0, 0.07, 0.077]),
+                'pickupOffset': np.array([0.0, 0.17, 0.077]),
             },
             # Printer with the marker to the side
             'box_offset': {
@@ -140,6 +149,10 @@ class printerAutomation(ArucoDetectionViewer):
         # BambuPrinter integration: maps marker_id -> BambuPrinter instance.
         # Populate via register_bambu_printer() after constructing the node.
         self._bambu_printers: dict = {}
+
+        # Recorded pickup joint configs ({'marker','grasp','lift'}) so placePlate
+        # can return a plate wrist-continuously instead of via flip-prone pose IK.
+        self._pickup_replay = None
 
         # Gripper interface
         self.gripper = GripperInterface(
@@ -415,6 +428,28 @@ class printerAutomation(ArucoDetectionViewer):
         self.stream.marker_updates_enabled = True
         self.get_logger().info("Marker pose updates resumed.")
 
+    def lock_marker(self, marker_id):
+        """Permanently pin marker_id's pose to its current (e.g. file-loaded) value.
+
+        Locked markers are never overwritten by camera detections, regardless of
+        freeze/unfreeze. Use for fixed reference markers (e.g. the scrape marker)
+        so every repetition uses the exact same pose from the save file.
+        """
+        self.stream.locked_marker_ids.add(marker_id)
+        entry = self._find_marker_entry(marker_id)
+        if entry is not None:
+            self.get_logger().info(
+                f"Marker {marker_id} locked at pos={np.round(entry['positionInBase'], 4)} "
+                f"euler_deg={np.round(np.degrees(entry['eulerInBase']), 2)} — camera updates ignored."
+            )
+        else:
+            self.get_logger().warn(f"Marker {marker_id} locked, but no pose entry exists yet.")
+
+    def unlock_marker(self, marker_id):
+        """Allow camera detections to update marker_id again."""
+        self.stream.locked_marker_ids.discard(marker_id)
+        self.get_logger().info(f"Marker {marker_id} unlocked — camera updates allowed.")
+
     # ---- Marker registration & scanning ----
 
     def register_estimated_marker(self, marker_id, bad_pos, bad_euler):
@@ -425,6 +460,14 @@ class printerAutomation(ArucoDetectionViewer):
         overwrite both the TF frame and the found_markers entry with the real
         measurement.
         """
+        # A locked marker is a fixed reference (e.g. the scrape marker loaded from
+        # the save file). Refuse to overwrite it here too, so neither the camera
+        # nor a geometric re-registration (e.g. printer reconstruction) can move it.
+        if marker_id in self.stream.locked_marker_ids:
+            self.get_logger().info(
+                f"register_estimated_marker: marker {marker_id} is locked — keeping file pose, skipping."
+            )
+            return
         bad_pos = np.array(bad_pos, dtype=float)
         bad_euler = np.array(bad_euler, dtype=float)
         if self.randomize_estimated_markers:
@@ -590,16 +633,45 @@ class printerAutomation(ArucoDetectionViewer):
         if not self.moveToMarker(markerID):
             self.get_logger().error(f"pickupPlate: moveToMarker failed for marker {markerID}.")
             return False
+        # Record the joint config at the grasp so placePlate can return the plate
+        # wrist-continuously (see placePlate).
+        grasp_joints = self._current_arm_joints()
         self.close_gripper()
         time.sleep(3.0)
         if not self.liftPlate(markerID):
             self.get_logger().error(f"pickupPlate: liftPlate failed for marker {markerID}.")
             return False
+        lift_joints = self._current_arm_joints()
+        if grasp_joints is not None and lift_joints is not None:
+            self._pickup_replay = {'marker': markerID, 'grasp': grasp_joints, 'lift': lift_joints}
+        else:
+            self._pickup_replay = None
         return True
 
     @_timed
     def placePlate(self, markerID=0):
-        """Place a held build plate at the specified marker location."""
+        """Place a held build plate at the specified marker location.
+
+        If we recorded joint configs while picking the plate up at this same
+        marker, replay them in joint space (lift -> grasp) so the wrist returns
+        to the exact orientation it grasped with.  This pins J6 explicitly and
+        prevents MoveIt's pose IK from choosing a flipped (J6 +/-180) solution,
+        which would swing the plate ~180 deg into a collision — e.g. after a
+        failed post-scrape rotation.  Falls back to pose-based placement when no
+        matching pickup record exists (e.g. transferPlate placing elsewhere).
+        """
+        replay = getattr(self, '_pickup_replay', None)
+        if replay is not None and replay.get('marker') == markerID:
+            self.get_logger().info(
+                f"placePlate: replaying recorded pickup joints for marker {markerID} (wrist-continuous)."
+            )
+            if self.move_to_configuration(replay['lift']) and self.move_to_configuration(replay['grasp']):
+                self.open_gripper()
+                return True
+            self.get_logger().warn(
+                "placePlate: joint replay failed — falling back to pose-based placement."
+            )
+
         handle_offset, _ = self._get_offsets_for_marker(markerID)
         # Move above destination
         if not self.liftPlate(markerID):
@@ -742,6 +814,31 @@ class printerAutomation(ArucoDetectionViewer):
 
         return True
 
+    def _scrape_dbg(self, msg):
+        """Append a timestamped line to a scrape diagnostic log next to this script.
+
+        Pure instrumentation — does not affect motion. Used to confirm why
+        repeated scrapes diverge and why the post-scrape rotation fails.
+        """
+        line = f"[{time.strftime('%H:%M:%S')}] {msg}"
+        self.get_logger().info(f"DBG {msg}")
+        try:
+            with open(os.path.join(_SCRIPT_DIR, "scrape_debug.log"), "a") as f:
+                f.write(line + "\n")
+        except Exception:
+            pass
+
+    def _current_arm_joints(self):
+        """Return the 6 arm joint angles (rad) in self.moveit2.joint_names order, or None."""
+        js = self.moveit2.joint_state
+        if js is None:
+            return None
+        names = list(js.name)
+        try:
+            return [float(js.position[names.index(j)]) for j in self.moveit2.joint_names]
+        except ValueError:
+            return None
+
     @_timed
     def scrapePlate(self, source_id, scrape_id, scan_distance=0.15, scrape_standoff=0.15, scrape_offset=None, wait_after_pickup=False, wait_duration=60.0, rotate_after_scrape=False, rotate_degrees=60.0):
         """
@@ -824,6 +921,14 @@ class printerAutomation(ArucoDetectionViewer):
             return False
             '''
 
+        # --- DIAG: record the scrape marker pose that Step 4 will actually use ---
+        _e4 = self._find_marker_entry(scrape_id)
+        if _e4 is not None:
+            self._scrape_dbg(
+                f"STEP4 scrape marker {scrape_id} pos={np.round(_e4['positionInBase'],4)} "
+                f"euler_deg={np.round(np.degrees(_e4['eulerInBase']),2)} estimated={_e4.get('estimated')}"
+            )
+
         # Step 4 – move to standoff: same x, y as scrape_offset but at standoff Z distance,
         # so the final approach and retract are purely along the marker's Z axis.
         self.get_logger().info(f"Step 4: moving to scrape standoff (Z={scrape_standoff} m)")
@@ -833,6 +938,10 @@ class printerAutomation(ArucoDetectionViewer):
                 f"scrapePlate: could not reach scrape standoff for marker {scrape_id}. Aborting."
             )
             return False
+        self._scrape_dbg(
+            "STEP4 arrived standoff joints_deg=" +
+            str(np.round(np.degrees(self._current_arm_joints() or []), 1).tolist())
+        )
 
         # Step 5 – move to scrape_offset position in the marker's local frame
         self.get_logger().info(f"Step 5: moving to scrape offset {scrape_offset} in marker frame")
@@ -841,12 +950,23 @@ class printerAutomation(ArucoDetectionViewer):
                 f"scrapePlate: could not reach scrape depth for marker {scrape_id}. Aborting."
             )
             return False
+        self._scrape_dbg(
+            "STEP5 arrived DEPTH joints_deg=" +
+            str(np.round(np.degrees(self._current_arm_joints() or []), 1).tolist())
+        )
         self.pause_timing()
         print(f"[scrapePlate] Plate at full scrape depth on marker {scrape_id}. Timing paused.")
         self.resume_timing()
 
         
         self.freeze_markers()
+        # --- DIAG: record the scrape marker pose that Step 6 will actually use ---
+        _e6 = self._find_marker_entry(scrape_id)
+        if _e6 is not None:
+            self._scrape_dbg(
+                f"STEP6 scrape marker {scrape_id} pos={np.round(_e6['positionInBase'],4)} "
+                f"euler_deg={np.round(np.degrees(_e6['eulerInBase']),2)} estimated={_e6.get('estimated')}"
+            )
         # Step 6 – retract back along marker Z to standoff
         self.get_logger().info(f"Step 6: retracting to standoff (Z={scrape_standoff} m)")
         if not self._move_to_marker_offset(scrape_id, standoff_offset):
@@ -868,10 +988,25 @@ class printerAutomation(ArucoDetectionViewer):
                 ]
                 rotated_joints = list(current_joints)
                 rotated_joints[-1] -= np.radians(rotate_degrees)
-                self.move_to_configuration(rotated_joints)
+
+                # --- DIAG: joint-6 angle vs. its limit (J6 range is +/-180 mk3, +/-155 mk2) ---
+                j6_now = np.degrees(current_joints[-1])
+                j6_tgt = np.degrees(rotated_joints[-1])
+                self._scrape_dbg(
+                    "ROTATE current_joints_deg=" + str(np.round(np.degrees(current_joints), 1).tolist())
+                )
+                self._scrape_dbg(
+                    f"ROTATE j6 {j6_now:.1f} deg --({-rotate_degrees:.0f})--> target {j6_tgt:.1f} deg; "
+                    f"exceeds_155={abs(j6_tgt) > 155.0} exceeds_180={abs(j6_tgt) > 180.0}"
+                )
+
+                rot_ok = self.move_to_configuration(rotated_joints)
+                self._scrape_dbg(f"ROTATE move_to(rotated) ok={rot_ok}")
                 time.sleep(0.5)
                 # Restore original end-effector angle before placing the plate
-                self.move_to_configuration(current_joints)
+                res_ok = self.move_to_configuration(current_joints)
+                self._scrape_dbg(f"ROTATE move_to(restore) ok={res_ok} "
+                                 f"joints_after={np.round(np.degrees(self._current_arm_joints() or []),1).tolist()}")
                 time.sleep(0.5)
             else:
                 self.get_logger().warn(

@@ -1,3 +1,6 @@
+import os
+# Silence OpenCV's noisy V4L2/GStreamer probe warnings (must be set before cv2 import).
+os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 import cv2
 import numpy as np
 from flask import Flask, Response
@@ -6,6 +9,8 @@ import logging
 import time
 import subprocess
 import re
+import fcntl
+import struct
 from scipy.spatial.transform import Rotation as R
 import rclpy
 from rclpy.node import Node
@@ -16,12 +21,39 @@ from cv_bridge import CvBridge
 # Camera discovery
 # ------------------------------------------------------------------
 
+def _is_capture_device(index):
+    """True if /dev/video{index} supports video capture.
+
+    Modern UVC webcams expose extra metadata-only nodes (e.g. /dev/video1,3,5)
+    that aren't capture devices; opening them spews V4L2/GStreamer warnings.
+    We query V4L2 capabilities directly to skip them. Best-effort: on any error
+    we return True so the node still gets probed the normal way.
+    """
+    V4L2_CAP_VIDEO_CAPTURE = 0x00000001
+    V4L2_CAP_DEVICE_CAPS   = 0x80000000
+    VIDIOC_QUERYCAP = (2 << 30) | (104 << 16) | (ord('V') << 8) | 0  # _IOR('V', 0, v4l2_capability)
+    try:
+        fd = os.open(f"/dev/video{index}", os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            buf = bytearray(104)
+            fcntl.ioctl(fd, VIDIOC_QUERYCAP, buf)
+            caps, device_caps = struct.unpack_from("<II", buf, 84)  # capabilities, device_caps
+            effective = device_caps if (caps & V4L2_CAP_DEVICE_CAPS) else caps
+            return bool(effective & V4L2_CAP_VIDEO_CAPTURE)
+        finally:
+            os.close(fd)
+    except Exception:
+        return True  # can't tell -> let the normal open decide
+
+
 def select_camera(preset_keyword=None):
     """List cameras and auto-select by keyword or prompt the user."""
     cameras = []
     result = subprocess.run(['ls', '/sys/class/video4linux/'], capture_output=True, text=True)
     for device in sorted(result.stdout.strip().split()):
         index = int(re.search(r'\d+', device).group())
+        if not _is_capture_device(index):
+            continue  # skip metadata-only nodes
         with open(f'/sys/class/video4linux/{device}/name', 'r') as f:
             name = f.read().strip()
         cap = cv2.VideoCapture(index)
@@ -133,6 +165,10 @@ class WebVideoStream:
         self.found_markers = {}
         # When False, found_markers will not be updated with new detections.
         self.marker_updates_enabled = True
+        # Marker IDs that must NEVER be overwritten by camera detections (e.g. a
+        # fixed reference marker loaded from the save file). Takes precedence over
+        # marker_updates_enabled — these stay exactly as registered/loaded.
+        self.locked_marker_ids = set()
         # Per-marker EMA state used exclusively for the web panel display.
         # Does NOT affect found_markers or anything returned by detect().
         self._display_filter_states = {}
@@ -355,20 +391,24 @@ class WebVideoStream:
                     },
                 }
 
-                if self.marker_updates_enabled:
-                    # Always update with the latest base pose so the display stays live
-                    self.found_markers[marker_id] = entry.copy()
-
+                if self.marker_updates_enabled and marker_id not in self.locked_marker_ids:
                     if self.enrich_fn is not None:
                         enriched = self.enrich_fn(entry)
                         if enriched is not None:
+                            # Only commit a fully enriched entry (has positionInBase /
+                            # eulerInBase). This keeps found_markers usable downstream.
                             entry = enriched
-                            # Update found_markers with the enriched version
                             self.found_markers[marker_id] = entry
                         else:
-                            # enrich_fn failed — keep the latest base entry
+                            # Enrichment failed (e.g. TF lookup not ready this frame).
+                            # Do NOT overwrite the previous good pose with a base-less
+                            # camera-only entry, or scanToMarker() will KeyError on
+                            # 'positionInBase'. Keep whatever pose we already had.
                             _log = self.log_fn or print
-                            _log(f"[detect] ID={marker_id} enrich_fn returned None — using base entry")
+                            _log(f"[detect] ID={marker_id} enrich_fn returned None — keeping previous pose")
+                    else:
+                        # No enrichment configured: store the raw camera entry as-is.
+                        self.found_markers[marker_id] = entry.copy()
                 live_marker_poses.append(entry)
 
                 cv2.drawFrameAxes(output, self.camera_matrix, self.dist_coeffs,
