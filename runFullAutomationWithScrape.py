@@ -33,7 +33,7 @@ _mod.loader.exec_module(_automation)
 printerAutomation = _automation.printerAutomation
 
 from simulated3DPrinter import Simulated3DPrinter
-from printerclass import BambuPrinter
+from printerclass import BambuPrinter, load_printer_config
 
 
 # ---- Configuration ----
@@ -43,13 +43,15 @@ SCAN_DISTANCE   = 0.15        # Distance (m) used when scanning markers
 SCRAPE_STANDOFF = 0.38        # Distance (m) along scrape marker Z to approach from
 NUM_CYCLES      = 20           # Number of print-then-scrape cycles to run
 
-# Bambu printer credentials.
-PRINTER_IP          = "192.168.137.241"
-PRINTER_ACCESS_CODE = "14668855"
-PRINTER_SERIAL      = "0309CA460401528"
+# Bambu printer to use. Credentials are loaded from printer_config.yaml
+# (copy printer_config.example.yaml and fill it in). The previously hard-coded
+# values here matched the 'a1_mini_2' entry.
+PRINTER_NAME = "a1_mini"
 
 # File name on the printer's SD card to print each cycle.
-PRINT_FILENAME = "testPrints/BenchyFast.3mf"
+PRINT_FILENAME = "testPrints/bed_scraper_a1mini.gcode.3mf"
+
+#PRINT_FILENAME = "testPrints/BenchyFast.3mf"
 #PRINT_FILENAME = "testPrints/smallCylinderPLA15m17s.gcode.3mf"
 # ---- End Configuration ----
 
@@ -101,6 +103,13 @@ def main():
         )
         return
 
+    # The scrape marker is a fixed reference: pin it to the file-loaded pose so
+    # neither the camera nor the geometry re-registration / scan below can change
+    # it. This keeps the scrape approach identical on every cycle and avoids the
+    # marker-drift collisions fixed in runScrapePlate.py. (lock_marker is honoured
+    # by both the camera update path and register_estimated_marker.)
+    node.lock_marker(SCRAPE_ID)
+
     # Reconstruct Simulated3DPrinter geometry estimates as a fallback.
     for p in getattr(node, '_saved_printer_configs', []):
         printer = Simulated3DPrinter(
@@ -117,32 +126,29 @@ def main():
             )
 
     # Connect the Bambu printer and register it with the node.
+    printer_cfg = load_printer_config(PRINTER_NAME)
     bambu = BambuPrinter(
-        ip=PRINTER_IP,
-        access_code=PRINTER_ACCESS_CODE,
-        serial=PRINTER_SERIAL,
+        ip=printer_cfg["ip"],
+        access_code=printer_cfg["access_code"],
+        serial=printer_cfg["serial"],
     )
     bambu.connect()
     bambu.enable_debug_listener()
     node.register_bambu_printer(SOURCE_ID, bambu)
     bambu.upload_file_timeout(PRINT_FILENAME)
 
-    # Scan for markers 1 and 2 (mirrors scanFor2Markers.py non-virtual procedure).
+    # Set up markers (mirrors scanFor2Markers.py non-virtual procedure). Marker 1
+    # (scrape) is locked to the file pose above, so it is NOT estimated or scanned
+    # here — those calls would be no-ops. Only marker 2 (the pickup source) is
+    # estimated and scanned, since it is re-detected fresh each cycle.
     viewing_distance = SCAN_DISTANCE
     node.marker_offset_config[1] = 'box_offset'
     node.marker_offset_config[2] = 'printer_offset'
 
-    printer2 = Simulated3DPrinter(
-        node=node, pos=[0.40, -0.3, 0.065], orient=[0.0, 0.0, np.pi],
-        door_marker_texture='materials/textures/marker6x6_1.png',
-    )
     printer3 = Simulated3DPrinter(
         node=node, pos=[0.65, 0.1, 0.075], orient=[0.0, 0.0, 3/2*np.pi],
         door_marker_texture='materials/textures/marker6x6_2.png',
     )
-
-    bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
-    node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
     bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
     node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
 
@@ -153,8 +159,7 @@ def main():
          "door_marker_texture": 'materials/textures/marker6x6_2.png'},
     ])
 
-    node.get_logger().info("Scanning for markers 1 and 2...")
-    node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
+    node.get_logger().info("Scanning for source marker 2...")
     node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
     node.get_logger().info("Initial scan complete.")
 

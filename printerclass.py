@@ -3,6 +3,7 @@ import json
 import ssl
 import ftplib
 import socket
+import struct
 import os
 import sys
 import time
@@ -77,7 +78,22 @@ class BambuPrinter:
     # ------------------------------------------
 
     def connect(self):
-        """Establishes connection to the printer's MQTT broker."""
+        """Establishes connection to the printer's MQTT broker.
+
+        Tries the configured IP first; if the printer isn't reachable there
+        (e.g. DHCP handed it a new address), searches the local network by
+        serial via SSDP and uses the discovered IP instead.
+        """
+        if not self._is_reachable(self.ip):
+            print(f"Printer not reachable at {self.ip}; searching the local network...")
+            found_ip = self.discover_ip()
+            if found_ip:
+                print(f"Found printer {self.serial} at {found_ip} (was {self.ip}).")
+                self.ip = found_ip
+            else:
+                print(f"Warning: printer {self.serial} not found on the network; "
+                      f"trying {self.ip} anyway.")
+
         self.client.connect(self.ip, 8883, 60)
         self.client.loop_start()  # Starts background thread for networking
         print(f"Connected to printer {self.serial}")
@@ -86,6 +102,93 @@ class BambuPrinter:
         """Stops the background loop and disconnects MQTT."""
         self.client.loop_stop()
         self.client.disconnect()
+
+    def _is_reachable(self, ip, port=8883, timeout=3.0):
+        """Return True if a TCP connection to ip:port (the MQTT port) succeeds."""
+        if not ip:
+            return False
+        try:
+            with socket.create_connection((ip, port), timeout=timeout):
+                return True
+        except OSError:
+            return False
+
+    def discover_ip(self, serial=None, timeout=10.0):
+        """Find the printer's IP on the LAN via Bambu's SSDP broadcasts.
+
+        Bambu printers periodically multicast SSDP NOTIFY packets to
+        239.255.255.250 (UDP 2021/1990) carrying their serial (USN header) and
+        IP (Location header / source address). Listens up to *timeout* seconds
+        and returns the IP whose USN matches *serial* (defaults to this
+        printer's serial), or None if it isn't seen in time.
+        """
+        serial = serial or self.serial
+        mcast_grp = "239.255.255.250"
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except OSError:
+                pass
+
+        bound = False
+        for port in (2021, 1990):  # Bambu broadcasts on both; share via SO_REUSE*
+            try:
+                sock.bind(("", port))
+                bound = True
+                break
+            except OSError:
+                continue
+        if not bound:
+            print("Discovery: could not bind SSDP port (2021/1990).")
+            sock.close()
+            return None
+
+        # Join the SSDP multicast group on all interfaces.
+        mreq = struct.pack("4s4s", socket.inet_aton(mcast_grp), socket.inet_aton("0.0.0.0"))
+        try:
+            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+        except OSError:
+            pass  # may still receive on the bound port without an explicit join
+
+        sock.settimeout(1.0)
+        print(f"Searching local network for printer {serial} (up to {timeout:.0f}s)...")
+        deadline = time.time() + timeout
+        seen = {}
+        try:
+            while time.time() < deadline:
+                try:
+                    data, addr = sock.recvfrom(2048)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+
+                text = data.decode(errors="ignore")
+                if "USN" not in text and "bambu" not in text.lower():
+                    continue
+
+                headers = {}
+                for line in text.split("\r\n"):
+                    key, sep, val = line.partition(":")
+                    if sep:
+                        headers[key.strip().lower()] = val.strip()
+
+                usn = headers.get("usn", "")
+                ip = headers.get("location", "") or addr[0]
+                if usn:
+                    seen[usn] = ip
+                if serial and serial in usn:
+                    return ip
+        finally:
+            sock.close()
+
+        if seen:
+            others = ", ".join(f"{s}@{i}" for s, i in seen.items())
+            print(f"Discovery: printer {serial} not found. Other Bambu devices seen: {others}")
+        return None
 
     def enable_debug_listener(self):
         """Sets the callback and subscribes without blocking the script."""
@@ -401,7 +504,12 @@ if __name__ == "__main__":
     print("Moving to max X, Y and Z position (180mm, 180mm, 180mm)")
 
     #filepath = "testPrints/cylinderFast.3mf"
-    filepath = "testPrints/bed_scraper_a1mini.gcode.3mf"
+    #filepath = "testPrints/bed_scraper_a1mini.gcode.3mf"
+    #filepath = "testPrints/Cat_Toys_V2_-_Complete_Project_file_-_normal_speed_Multicolor with AMS.gcode.3mf"
+    filepath = "testPrints/Shoe_Horn_3MF.gcode.3mf"
+
+
+
     remote_filename = os.path.basename(filepath)  # file lands at SD card root on upload
     my_a1_mini.enable_debug_listener()
     my_a1_mini.upload_file_timeout(filepath) # Use the timeout version or the file might stall, default is 10s use bigger numbers for bigger files

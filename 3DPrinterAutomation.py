@@ -1000,14 +1000,33 @@ class printerAutomation(ArucoDetectionViewer):
                     f"exceeds_155={abs(j6_tgt) > 155.0} exceeds_180={abs(j6_tgt) > 180.0}"
                 )
 
-                rot_ok = self.move_to_configuration(rotated_joints)
-                self._scrape_dbg(f"ROTATE move_to(rotated) ok={rot_ok}")
-                time.sleep(0.5)
-                # Restore original end-effector angle before placing the plate
-                res_ok = self.move_to_configuration(current_joints)
-                self._scrape_dbg(f"ROTATE move_to(restore) ok={res_ok} "
-                                 f"joints_after={np.round(np.degrees(self._current_arm_joints() or []),1).tolist()}")
-                time.sleep(0.5)
+                # Roll the held plate SLOWLY. At full speed (vel scaling 0.9) the
+                # J6 stepper stalls under the plate's load → the controller never
+                # reaches the goal and reports CONTROL_FAILED(-4) after a 15 s hang.
+                # Lower velocity/accel for the rotation, and use max_retries=0 so we
+                # don't thrash a stalled motor for 45 s (which desyncs the arm and
+                # corrupts the subsequent place). Velocity is always restored.
+                _prev_v = self.moveit2.max_velocity
+                _prev_a = self.moveit2.max_acceleration
+                try:
+                    self.moveit2.max_velocity = 0.2
+                    self.moveit2.max_acceleration = 0.2
+                    rot_ok = self.move_to_configuration(rotated_joints, max_retries=0)
+                    self._scrape_dbg(f"ROTATE move_to(rotated) ok={rot_ok}")
+                    time.sleep(0.5)
+                    # Restore original end-effector angle before placing the plate
+                    res_ok = self.move_to_configuration(current_joints, max_retries=0)
+                    self._scrape_dbg(f"ROTATE move_to(restore) ok={res_ok} "
+                                     f"joints_after={np.round(np.degrees(self._current_arm_joints() or []),1).tolist()}")
+                    time.sleep(0.5)
+                finally:
+                    self.moveit2.max_velocity = _prev_v
+                    self.moveit2.max_acceleration = _prev_a
+                if not rot_ok:
+                    self.get_logger().warn(
+                        "scrapePlate: post-scrape rotation failed (likely J6 stall/CONTROL_FAILED). "
+                        "Skipping it and continuing to place from the restored config."
+                    )
             else:
                 self.get_logger().warn(
                     "scrapePlate: joint state unavailable — skipping rotation."
