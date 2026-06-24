@@ -668,9 +668,16 @@ class printerAutomation(ArucoDetectionViewer):
             if self.move_to_configuration(replay['lift']) and self.move_to_configuration(replay['grasp']):
                 self.open_gripper()
                 return True
-            self.get_logger().warn(
-                "placePlate: joint replay failed — falling back to pose-based placement."
+            # Do NOT fall back to pose-based placement here. A pose goal lets MoveIt's
+            # IK choose any wrist angle, which sets the plate down flipped/at an angle
+            # (exactly the failure seen when a post-scrape J6 move aborts). Abort
+            # instead, keeping the plate HELD so it can be recovered cleanly rather
+            # than dropped at the wrong orientation.
+            self.get_logger().error(
+                "placePlate: wrist-continuous joint replay failed; aborting WITHOUT placing "
+                "to avoid an angled/flipped drop. Plate is still held — recover and re-run."
             )
+            return False
 
         handle_offset, _ = self._get_offsets_for_marker(markerID)
         # Move above destination
@@ -1000,32 +1007,22 @@ class printerAutomation(ArucoDetectionViewer):
                     f"exceeds_155={abs(j6_tgt) > 155.0} exceeds_180={abs(j6_tgt) > 180.0}"
                 )
 
-                # Roll the held plate SLOWLY. At full speed (vel scaling 0.9) the
-                # J6 stepper stalls under the plate's load → the controller never
-                # reaches the goal and reports CONTROL_FAILED(-4) after a 15 s hang.
-                # Lower velocity/accel for the rotation, and use max_retries=0 so we
-                # don't thrash a stalled motor for 45 s (which desyncs the arm and
-                # corrupts the subsequent place). Velocity is always restored.
-                _prev_v = self.moveit2.max_velocity
-                _prev_a = self.moveit2.max_acceleration
-                try:
-                    self.moveit2.max_velocity = 0.2
-                    self.moveit2.max_acceleration = 0.2
-                    rot_ok = self.move_to_configuration(rotated_joints, max_retries=0)
-                    self._scrape_dbg(f"ROTATE move_to(rotated) ok={rot_ok}")
-                    time.sleep(0.5)
-                    # Restore original end-effector angle before placing the plate
-                    res_ok = self.move_to_configuration(current_joints, max_retries=0)
-                    self._scrape_dbg(f"ROTATE move_to(restore) ok={res_ok} "
-                                     f"joints_after={np.round(np.degrees(self._current_arm_joints() or []),1).tolist()}")
-                    time.sleep(0.5)
-                finally:
-                    self.moveit2.max_velocity = _prev_v
-                    self.moveit2.max_acceleration = _prev_a
+                # Roll the held plate, then return. (The earlier velocity drop and
+                # max_retries=0 were added on a wrong "J6 stall" theory; the real
+                # cause was racy completion detection, now fixed in
+                # move_to_configuration, so run at normal speed with normal retries.)
+                rot_ok = self.move_to_configuration(rotated_joints)
+                self._scrape_dbg(f"ROTATE move_to(rotated) ok={rot_ok}")
+                time.sleep(0.5)
+                # Restore original end-effector angle before placing the plate
+                res_ok = self.move_to_configuration(current_joints)
+                self._scrape_dbg(f"ROTATE move_to(restore) ok={res_ok} "
+                                 f"joints_after={np.round(np.degrees(self._current_arm_joints() or []),1).tolist()}")
+                time.sleep(0.5)
                 if not rot_ok:
                     self.get_logger().warn(
-                        "scrapePlate: post-scrape rotation failed (likely J6 stall/CONTROL_FAILED). "
-                        "Skipping it and continuing to place from the restored config."
+                        "scrapePlate: post-scrape rotation failed. Continuing to place "
+                        "(placePlate replay will return the wrist to the grasp config)."
                     )
             else:
                 self.get_logger().warn(

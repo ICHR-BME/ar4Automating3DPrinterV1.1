@@ -20,6 +20,7 @@ import math
 
 import tf2_ros
 from rclpy.time import Time
+from rclpy.duration import Duration
 
 def quat_to_euler(x: float, y: float, z: float, w: float):
 	roll, pitch, yaw = R.from_quat([x, y, z, w]).as_euler("XYZ", degrees=False)
@@ -156,17 +157,101 @@ class PoseReader(Node):
 		# Brief pause so TrajectoryExecutionManager has released the lock.
 		time.sleep(0.3)
 
+	def _reached_configuration(self, joint_positions, tol=0.10):
+		"""True if the latest measured joint state is within *tol* rad of target.
+
+		Used as a ground-truth completion check that doesn't depend on pymoveit2's
+		result callback (which can be missed under a loaded executor). tol=0.10 rad
+		(~5.7 deg) matches the controller's loosest goal tolerance (J6), so if the
+		controller considers the goal reached, so do we.
+		"""
+		actual = self._last_joint_msg
+		if actual is None or len(actual) != len(joint_positions):
+			return False
+		return all(abs(a - t) <= tol for a, t in zip(actual, joint_positions))
+
+	def _eef_pose_truth(self):
+		"""Current end-effector (link_6) pose in base_link as (pos[3], quat_xyzw[4]).
+
+		Primary source is the TF buffer. Under the loaded MultiThreadedExecutor the
+		buffer can momentarily lag, so the lookup is given a short blocking window;
+		if it still fails we fall back to MoveIt FK from the latest measured joint
+		state. FK is fed by the same joint_states stream but does NOT depend on the
+		TF buffer being current, so it breaks the false "not reached" readings that
+		a starved TF buffer otherwise produces (and which manufacture false 15 s
+		move_to_pose timeouts -> cancel/retry thrash -> arm desync). Returns
+		(None, None) if neither source is available."""
+		try:
+			tf = self.tf_buffer.lookup_transform(
+				self.base_link_name, self.end_effector_name, Time(),
+				timeout=Duration(seconds=0.1))
+			t = tf.transform.translation
+			r = tf.transform.rotation
+			return (np.array([t.x, t.y, t.z]), np.array([r.x, r.y, r.z, r.w]))
+		except Exception:
+			pass
+		# TF-independent fallback: forward kinematics from the latest joint state.
+		if not self._last_joint_msg:
+			return (None, None)
+		try:
+			js = JointState()
+			js.name = list(self.moveit2.joint_names)
+			js.position = list(self._last_joint_msg)
+			ps = self.moveit2.compute_fk(
+				joint_state=js, fk_link_names=[self.end_effector_name])
+		except Exception:
+			return (None, None)
+		if isinstance(ps, list):
+			ps = ps[0] if ps else None
+		if ps is None:
+			return (None, None)
+		# Only trust FK expressed in the base frame we compare against.
+		frame = (ps.header.frame_id or self.base_link_name).lstrip('/')
+		if frame != self.base_link_name.lstrip('/'):
+			return (None, None)
+		p = ps.pose.position
+		q = ps.pose.orientation
+		return (np.array([p.x, p.y, p.z]), np.array([q.x, q.y, q.z, q.w]))
+
+	def _reached_pose(self, target_pos, target_quat, pos_tol=0.025, ang_tol=0.17):
+		"""True if the end-effector (link_6 in base_link) is within pos_tol (m) and
+		ang_tol (rad) of the target pose. Ground-truth completion check for
+		move_to_pose, independent of pymoveit2's racy result callback.
+
+		Tolerances are intentionally a bit loose (~2.5 cm / ~10 deg): the AR4's
+		joint goal tolerances (0.02 rad, J6 0.10) leave that much Cartesian slack
+		on a *successfully* settled move, so tighter values would cause false
+		failures on moves that actually completed."""
+		cur_pos, cur_q = self._eef_pose_truth()
+		if cur_pos is None:
+			return False
+		if np.linalg.norm(cur_pos - np.asarray(target_pos, dtype=float)) > pos_tol:
+			return False
+		tq = np.asarray(target_quat, dtype=float)
+		# Angle between orientations; |dot| handles the q/-q double cover.
+		dot = min(1.0, abs(float(np.dot(cur_q, tq))))
+		return (2.0 * np.arccos(dot)) <= ang_tol
+
 	def move_to_configuration(self, joint_positions, timeout=15.0, max_retries=2):
 		"""Move to *joint_positions* with automatic retry on transient failures.
 
 		Mirrors the move_to_pose() pattern: cancels any in-flight trajectory
 		before each attempt and polls the MoveIt flags with a deadline instead
-		of calling wait_until_executed() (which has no timeout).
+		of calling wait_until_executed() (which has no timeout).  Also treats the
+		move as done as soon as the arm physically reaches the target config, so a
+		missed result callback can't turn a completed move into a false timeout.
 
 		Returns True if the motion succeeded, False if all attempts failed.
 		"""
 		for attempt in range(max_retries + 1):
 			if attempt > 0:
+				# Same ground-truth guard as move_to_pose: a "failed" attempt may
+				# have actually reached the config (missed result callback under the
+				# loaded executor). Don't stop+replan a move that already arrived —
+				# that cancel is what desyncs the arm.
+				if self._reached_configuration(joint_positions):
+					time.sleep(self.move_settle_delay)
+					return True
 				self.get_logger().warn(
 					f"[move_to_configuration] Retry {attempt}/{max_retries}…"
 				)
@@ -180,6 +265,14 @@ class PoseReader(Node):
 			timed_out = False
 			while (getattr(self.moveit2, '_MoveIt2__is_motion_requested', False) or
 			       getattr(self.moveit2, '_MoveIt2__is_executing', False)):
+				# Ground-truth success: the arm physically reached the commanded
+				# config. Under a loaded executor the pymoveit2 result callback can
+				# be missed, leaving these flags stuck set; without this check we
+				# time out and cancel a move the controller actually completed,
+				# yielding a false CONTROL_FAILED. Trust where the robot actually is.
+				if self._reached_configuration(joint_positions):
+					time.sleep(self.move_settle_delay)
+					return True
 				if time.time() > _deadline:
 					self.get_logger().error(
 						f"[move_to_configuration] timed out after {timeout}s."
@@ -189,7 +282,15 @@ class PoseReader(Node):
 					break
 				time.sleep(0.05)
 
-			if self.moveit2.motion_suceeded:
+			# Success ONLY if the arm physically reached the target config. We do
+			# NOT trust motion_suceeded: under the loaded executor that flag is racy
+			# in BOTH directions — it can stay False on a move that completed (false
+			# failure) AND read True from a stale/previous result on a move that did
+			# NOT actually move (false success). A false success here is what let
+			# placePlate open the gripper while the wrist was still rotated, dropping
+			# the plate at an angle. Ground truth (where the joints actually are) is
+			# the only reliable signal.
+			if self._reached_configuration(joint_positions):
 				time.sleep(self.move_settle_delay)
 				return True
 
@@ -229,6 +330,16 @@ class PoseReader(Node):
 
 		for attempt in range(max_retries + 1):
 			if attempt > 0:
+				# Before disturbing the arm with a stop+replan, check whether the
+				# previous attempt actually arrived. Under the loaded executor the
+				# result callback is frequently missed, so an attempt flagged as
+				# "failed" may have physically reached the goal. Cancelling and
+				# replanning such a move is exactly what desyncs the arm (lost
+				# steps / start-state deviation) and caused the downstream scrape
+				# approach collision — so trust ground truth before retrying.
+				if self._reached_pose(bad_pos, q):
+					time.sleep(self.move_settle_delay)
+					return True
 				self.get_logger().warn(
 					f"[move_to_pose] Retry {attempt}/{max_retries}…"
 				)
@@ -255,6 +366,13 @@ class PoseReader(Node):
 			timed_out = False
 			while (getattr(self.moveit2, '_MoveIt2__is_motion_requested', False) or
 			       getattr(self.moveit2, '_MoveIt2__is_executing', False)):
+				# Ground-truth success: the end-effector physically reached the
+				# target pose. Same fix as move_to_configuration — the pymoveit2
+				# result callback is racy under the loaded executor, so we trust
+				# where the arm actually is rather than the motion_suceeded flag.
+				if self._reached_pose(bad_pos, q):
+					time.sleep(self.move_settle_delay)
+					return True
 				if time.time() > _deadline:
 					self.get_logger().error(
 						f"[move_to_pose] timed out after {_timeout}s waiting for trajectory to finish."
@@ -263,7 +381,9 @@ class PoseReader(Node):
 					break
 				time.sleep(0.05)
 
-			if self.moveit2.motion_suceeded:
+			# Success ONLY if the end-effector actually reached the target pose.
+			# motion_suceeded is not trusted (racy both ways — see move_to_configuration).
+			if self._reached_pose(bad_pos, q):
 				time.sleep(self.move_settle_delay)
 				return True
 
