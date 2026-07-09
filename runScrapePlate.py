@@ -105,7 +105,7 @@ def main():
             node.register_estimated_marker(
                 marker_id=p["marker_id"], bad_pos=bad_pos, bad_euler=bad_euler
             )
-    for i in range(1):
+    for i in range(30):
         ok = node.scrapePlate(
             source_id=SOURCE_ID,
             scrape_id=SCRAPE_ID,

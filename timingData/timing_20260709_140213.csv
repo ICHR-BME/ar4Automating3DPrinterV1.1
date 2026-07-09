@@ -1,0 +1,146 @@
+timestamp,call_chain,duration_s
+2026-07-09T14:02:16.099915,scrapePlate > scanToMarker,2.3439
+2026-07-09T14:02:19.924767,scrapePlate > pickupPlate > moveToMarker,3.8193
+2026-07-09T14:02:25.359240,scrapePlate > pickupPlate,9.2538
+2026-07-09T14:02:50.327477,scrapePlate > placePlate,5.9025
+2026-07-09T14:02:54.037201,scrapePlate,40.2904
+2026-07-09T14:02:56.376085,scrapePlate > scanToMarker,2.3198
+2026-07-09T14:03:00.240284,scrapePlate > pickupPlate > moveToMarker,3.8562
+2026-07-09T14:03:05.662155,scrapePlate > pickupPlate,9.2781
+2026-07-09T14:03:30.703011,scrapePlate > placePlate,5.9407
+2026-07-09T14:03:34.390880,scrapePlate,40.3432
+2026-07-09T14:03:36.736329,scrapePlate > scanToMarker,2.3286
+2026-07-09T14:03:40.578819,scrapePlate > pickupPlate > moveToMarker,3.838
+2026-07-09T14:03:45.973394,scrapePlate > pickupPlate,9.2326
+2026-07-09T14:04:10.888303,scrapePlate > placePlate,5.9038
+2026-07-09T14:04:14.535494,scrapePlate,40.1371
+2026-07-09T14:04:16.887766,scrapePlate > scanToMarker,2.3326
+2026-07-09T14:04:20.735492,scrapePlate > pickupPlate > moveToMarker,3.8433
+2026-07-09T14:04:26.163362,scrapePlate > pickupPlate,9.2712
+2026-07-09T14:04:51.198709,scrapePlate > placePlate,5.913
+2026-07-09T14:04:54.801959,scrapePlate,40.2656
+2026-07-09T14:04:57.166958,scrapePlate > scanToMarker,2.3468
+2026-07-09T14:05:01.013289,scrapePlate > pickupPlate > moveToMarker,3.8426
+2026-07-09T14:05:06.483341,scrapePlate > pickupPlate,9.3126
+2026-07-09T14:05:31.554449,scrapePlate > placePlate,5.965
+2026-07-09T14:05:35.197591,scrapePlate,40.39
+2026-07-09T14:05:37.545434,scrapePlate > scanToMarker,2.3226
+2026-07-09T14:05:41.436964,scrapePlate > pickupPlate > moveToMarker,3.8851
+2026-07-09T14:05:46.841619,scrapePlate > pickupPlate,9.2898
+2026-07-09T14:06:11.778977,scrapePlate > placePlate,5.912
+2026-07-09T14:06:15.396359,scrapePlate,40.1935
+2026-07-09T14:06:17.735928,scrapePlate > scanToMarker,2.3249
+2026-07-09T14:06:21.593573,scrapePlate > pickupPlate > moveToMarker,3.8515
+2026-07-09T14:06:27.008877,scrapePlate > pickupPlate,9.2668
+2026-07-09T14:06:51.992794,scrapePlate > placePlate,5.9434
+2026-07-09T14:06:55.625810,scrapePlate,40.2219
+2026-07-09T14:06:57.975092,scrapePlate > scanToMarker,2.3331
+2026-07-09T14:07:01.848095,scrapePlate > pickupPlate > moveToMarker,3.8689
+2026-07-09T14:07:07.247853,scrapePlate > pickupPlate,9.2686
+2026-07-09T14:07:32.387724,scrapePlate > placePlate,5.9508
+2026-07-09T14:07:35.989558,scrapePlate,40.3565
+2026-07-09T14:07:38.328090,scrapePlate > scanToMarker,2.3238
+2026-07-09T14:07:42.145451,scrapePlate > pickupPlate > moveToMarker,3.8105
+2026-07-09T14:07:47.574424,scrapePlate > pickupPlate,9.2395
+2026-07-09T14:08:12.609636,scrapePlate > placePlate,5.8923
+2026-07-09T14:08:16.194353,scrapePlate,40.2028
+2026-07-09T14:08:18.533678,scrapePlate > scanToMarker,2.3245
+2026-07-09T14:08:22.378935,scrapePlate > pickupPlate > moveToMarker,3.8412
+2026-07-09T14:08:27.814642,scrapePlate > pickupPlate,9.2769
+2026-07-09T14:08:52.703383,scrapePlate > placePlate,5.8614
+2026-07-09T14:08:56.471767,scrapePlate,40.2726
+2026-07-09T14:08:58.817645,scrapePlate > scanToMarker,2.3334
+2026-07-09T14:09:02.661730,scrapePlate > pickupPlate > moveToMarker,3.8392
+2026-07-09T14:09:08.126444,scrapePlate > pickupPlate,9.3039
+2026-07-09T14:09:32.959145,scrapePlate > placePlate,5.869
+2026-07-09T14:09:36.546187,scrapePlate,40.0722
+2026-07-09T14:09:38.865351,scrapePlate > scanToMarker,2.3136
+2026-07-09T14:09:42.699085,scrapePlate > pickupPlate > moveToMarker,3.8316
+2026-07-09T14:09:48.154037,scrapePlate > pickupPlate,9.2865
+2026-07-09T14:10:13.167602,scrapePlate > placePlate,5.8651
+2026-07-09T14:10:16.776886,scrapePlate,40.229
+2026-07-09T14:10:19.137119,scrapePlate > scanToMarker,2.3314
+2026-07-09T14:10:22.986719,scrapePlate > pickupPlate > moveToMarker,3.8435
+2026-07-09T14:10:28.448251,scrapePlate > pickupPlate,9.305
+2026-07-09T14:10:53.425680,scrapePlate > placePlate,5.8836
+2026-07-09T14:10:57.074473,scrapePlate,40.284
+2026-07-09T14:10:59.452903,scrapePlate > scanToMarker,2.3503
+2026-07-09T14:11:03.349431,scrapePlate > pickupPlate > moveToMarker,3.8907
+2026-07-09T14:11:08.748446,scrapePlate > pickupPlate,9.2897
+2026-07-09T14:11:33.681167,scrapePlate > placePlate,5.9195
+2026-07-09T14:11:37.276061,scrapePlate,40.1982
+2026-07-09T14:11:39.617987,scrapePlate > scanToMarker,2.3266
+2026-07-09T14:11:43.461804,scrapePlate > pickupPlate > moveToMarker,3.8404
+2026-07-09T14:11:48.877015,scrapePlate > pickupPlate,9.2556
+2026-07-09T14:12:14.019192,scrapePlate > placePlate,5.9741
+2026-07-09T14:12:17.621408,scrapePlate,40.3358
+2026-07-09T14:12:19.966327,scrapePlate > scanToMarker,2.3271
+2026-07-09T14:12:23.798308,scrapePlate > pickupPlate > moveToMarker,3.8266
+2026-07-09T14:12:29.225001,scrapePlate > pickupPlate,9.2533
+2026-07-09T14:12:54.100755,scrapePlate > placePlate,5.8926
+2026-07-09T14:12:57.756914,scrapePlate,40.1319
+2026-07-09T14:13:00.108382,scrapePlate > scanToMarker,2.3373
+2026-07-09T14:13:03.999378,scrapePlate > pickupPlate > moveToMarker,3.8772
+2026-07-09T14:13:09.391541,scrapePlate > pickupPlate,9.2693
+2026-07-09T14:13:34.283787,scrapePlate > placePlate,5.8664
+2026-07-09T14:13:37.818346,scrapePlate,40.0576
+2026-07-09T14:13:40.180051,scrapePlate > scanToMarker,2.3401
+2026-07-09T14:13:44.028717,scrapePlate > pickupPlate > moveToMarker,3.8412
+2026-07-09T14:13:49.449887,scrapePlate > pickupPlate,9.2624
+2026-07-09T14:14:14.335167,scrapePlate > placePlate,5.8795
+2026-07-09T14:14:17.943404,scrapePlate,40.1198
+2026-07-09T14:14:20.284446,scrapePlate > scanToMarker,2.3299
+2026-07-09T14:14:24.101055,scrapePlate > pickupPlate > moveToMarker,3.8109
+2026-07-09T14:14:29.476276,scrapePlate > pickupPlate,9.1861
+2026-07-09T14:14:54.421466,scrapePlate > placePlate,5.9133
+2026-07-09T14:14:58.055940,scrapePlate,40.107
+2026-07-09T14:15:00.400274,scrapePlate > scanToMarker,2.3294
+2026-07-09T14:15:04.243627,scrapePlate > pickupPlate > moveToMarker,3.8399
+2026-07-09T14:15:09.658543,scrapePlate > pickupPlate,9.2548
+2026-07-09T14:15:34.623401,scrapePlate > placePlate,5.8723
+2026-07-09T14:15:38.333508,scrapePlate,40.2747
+2026-07-09T14:15:40.684984,scrapePlate > scanToMarker,2.3385
+2026-07-09T14:15:44.490299,scrapePlate > pickupPlate > moveToMarker,3.8003
+2026-07-09T14:15:49.990741,scrapePlate > pickupPlate,9.3008
+2026-07-09T14:16:14.895454,scrapePlate > placePlate,5.8672
+2026-07-09T14:16:18.464046,scrapePlate,40.1258
+2026-07-09T14:16:20.811182,scrapePlate > scanToMarker,2.3328
+2026-07-09T14:16:24.661937,scrapePlate > pickupPlate > moveToMarker,3.8406
+2026-07-09T14:16:30.068637,scrapePlate > pickupPlate,9.2473
+2026-07-09T14:16:55.135550,scrapePlate > placePlate,5.9452
+2026-07-09T14:16:58.684203,scrapePlate,40.2137
+2026-07-09T14:17:01.013218,scrapePlate > scanToMarker,2.3197
+2026-07-09T14:17:04.830516,scrapePlate > pickupPlate > moveToMarker,3.8128
+2026-07-09T14:17:10.199842,scrapePlate > pickupPlate,9.1821
+2026-07-09T14:17:35.084582,scrapePlate > placePlate,5.8269
+2026-07-09T14:17:38.686997,scrapePlate,40.0
+2026-07-09T14:17:41.028883,scrapePlate > scanToMarker,2.328
+2026-07-09T14:17:44.876051,scrapePlate > pickupPlate > moveToMarker,3.8384
+2026-07-09T14:17:50.239117,scrapePlate > pickupPlate,9.2015
+2026-07-09T14:18:15.346558,scrapePlate > placePlate,5.9601
+2026-07-09T14:18:19.040642,scrapePlate,40.3505
+2026-07-09T14:18:21.378449,scrapePlate > scanToMarker,2.3215
+2026-07-09T14:18:25.260753,scrapePlate > pickupPlate > moveToMarker,3.8705
+2026-07-09T14:18:30.681149,scrapePlate > pickupPlate,9.2909
+2026-07-09T14:18:55.652330,scrapePlate > placePlate,5.9105
+2026-07-09T14:18:59.688598,scrapePlate,40.6383
+2026-07-09T14:19:02.051820,scrapePlate > scanToMarker,2.326
+2026-07-09T14:19:06.562288,scrapePlate > pickupPlate > moveToMarker,4.5048
+2026-07-09T14:19:06.567251,scrapePlate > pickupPlate,4.5098
+2026-07-09T14:19:06.572169,scrapePlate,6.8811
+2026-07-09T14:19:08.912579,scrapePlate > scanToMarker,2.3266
+2026-07-09T14:19:13.403668,scrapePlate > pickupPlate > moveToMarker,4.485
+2026-07-09T14:19:13.406917,scrapePlate > pickupPlate,4.4883
+2026-07-09T14:19:13.409127,scrapePlate,6.8351
+2026-07-09T14:19:15.745423,scrapePlate > scanToMarker,2.3236
+2026-07-09T14:19:20.252124,scrapePlate > pickupPlate > moveToMarker,4.4983
+2026-07-09T14:19:20.256202,scrapePlate > pickupPlate,4.5024
+2026-07-09T14:19:20.264167,scrapePlate,6.8512
+2026-07-09T14:19:22.603770,scrapePlate > scanToMarker,2.3203
+2026-07-09T14:19:27.053798,scrapePlate > pickupPlate > moveToMarker,4.4459
+2026-07-09T14:19:27.057920,scrapePlate > pickupPlate,4.45
+2026-07-09T14:19:27.061434,scrapePlate,6.7929
+2026-07-09T14:19:29.426892,scrapePlate > scanToMarker,2.3515
+2026-07-09T14:19:34.025902,scrapePlate > pickupPlate > moveToMarker,4.5935
+2026-07-09T14:19:34.030512,scrapePlate > pickupPlate,4.5981
+2026-07-09T14:19:34.034967,scrapePlate,6.9684
