@@ -692,6 +692,22 @@ class printerAutomation(ArucoDetectionViewer):
         return True
 
     @_timed
+    def _scan_with_retries(self, marker_id, scan_distance, caller):
+        """
+        scanToMarker with retries at 0.85x and 0.70x viewing distance if the
+        movement fails. Returns True on success; logs an abort error otherwise.
+        """
+        for factor in (1.0, 0.85, 0.70):
+            move_ok, _ = self.scanToMarker(
+                marker_id=marker_id, viewing_distance=factor * scan_distance
+            )
+            if move_ok:
+                return True
+        self.get_logger().error(
+            f"{caller}: could not reach marker {marker_id}. Aborting."
+        )
+        return False
+
     def transferPlate(self, source_id, dest_id, rescan_id, scan_distance=0.15):
         """
         Full plate-transfer sequence across three printers.
@@ -710,15 +726,7 @@ class printerAutomation(ArucoDetectionViewer):
 
         # Step 1 – scan source; retry at closer distances only if movement fails
         self.get_logger().info(f"Step 1: scanning source marker {source_id}")
-        move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=scan_distance)
-        if not move_ok:
-            move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=0.85 * scan_distance)
-        if not move_ok:
-            move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=0.70 * scan_distance)
-        if not move_ok:
-            self.get_logger().error(
-                f"transferPlate: could not reach source marker {source_id}. Aborting."
-            )
+        if not self._scan_with_retries(source_id, scan_distance, "transferPlate"):
             return False
 
         # Step 2 – pick up from source
@@ -749,15 +757,7 @@ class printerAutomation(ArucoDetectionViewer):
 
         # Step 5 – scan rescan marker; retry at closer distances only if movement fails
         self.get_logger().info(f"Step 5: scanning marker {rescan_id} at {scan_distance} m")
-        move_ok, _ = self.scanToMarker(marker_id=rescan_id, viewing_distance=scan_distance)
-        if not move_ok:
-            move_ok, _ = self.scanToMarker(marker_id=rescan_id, viewing_distance=0.85 * scan_distance)
-        if not move_ok:
-            move_ok, _ = self.scanToMarker(marker_id=rescan_id, viewing_distance=0.70 * scan_distance)
-        if not move_ok:
-            self.get_logger().error(
-                f"transferPlate: could not reach rescan marker {rescan_id}. Aborting."
-            )
+        if not self._scan_with_retries(rescan_id, scan_distance, "transferPlate"):
             return False
 
         # Step 6 – pick up from rescan printer
@@ -885,15 +885,7 @@ class printerAutomation(ArucoDetectionViewer):
 
         # Step 1 – scan source marker; retry at closer distances only if movement fails
         self.get_logger().info(f"Step 1: scanning source marker {source_id}")
-        move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=scan_distance)
-        if not move_ok:
-            move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=0.85 * scan_distance)
-        if not move_ok:
-            move_ok, _ = self.scanToMarker(marker_id=source_id, viewing_distance=0.70 * scan_distance)
-        if not move_ok:
-            self.get_logger().error(
-                f"scrapePlate: could not reach source marker {source_id}. Aborting."
-            )
+        if not self._scan_with_retries(source_id, scan_distance, "scrapePlate"):
             return False
 
         # Step 2 – pick up plate from source
@@ -914,19 +906,9 @@ class printerAutomation(ArucoDetectionViewer):
         # not corrupted by the camera seeing it at close range during the approach.
         self.freeze_markers()
 
-        '''# Step 3 – scan scrape marker; retry at closer distances only if movement fails
-        self.get_logger().info(f"Step 3: scanning scrape marker {scrape_id}")
-        move_ok, _ = self.scanToMarker(marker_id=scrape_id, viewing_distance=scan_distance)
-        if not move_ok:
-            move_ok, _ = self.scanToMarker(marker_id=scrape_id, viewing_distance=0.85 * scan_distance)
-        if not move_ok:
-            move_ok, _ = self.scanToMarker(marker_id=scrape_id, viewing_distance=0.70 * scan_distance)
-        if not move_ok:
-            self.get_logger().error(
-                f"scrapePlate: could not reach scrape marker {scrape_id}. Aborting."
-            )
-            return False
-            '''
+        # Step 3 (disabled) – scanning the scrape marker is skipped: it is locked
+        # to the file-loaded pose (see runScrapePlate.py), so a rescan would be a
+        # no-op at best and a close-range corruption at worst.
 
         # --- DIAG: record the scrape marker pose that Step 4 will actually use ---
         _e4 = self._find_marker_entry(scrape_id)

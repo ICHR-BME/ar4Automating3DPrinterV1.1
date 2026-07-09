@@ -139,7 +139,12 @@ class ArucoDetectionViewer(PoseReader):
         try:
             badPos, badEuler = self.applyFrameChange(posInFrame, eulerInFrame,
                                                      source_frame="base_link", target_frame="ee_camera_link")
-        except Exception:
+        except Exception as e:
+            # Expected during startup while the TF buffer fills; throttled so a
+            # persistent TF problem is still visible instead of silently dropping
+            # every marker update.
+            self.get_logger().warn(f"cameraToBase: TF transform failed: {e}",
+                                   throttle_duration_sec=5.0)
             return None, None
 
         # Low-pass filter (position: linear lerp, orientation: quaternion SLERP)
@@ -170,14 +175,17 @@ class ArucoDetectionViewer(PoseReader):
             q_raw = R.from_euler("XYZ", badEuler, degrees=False).as_quat()
             q_cam = R.from_euler("XYZ", eulerInFrame, degrees=False).as_quat()
             self._on_raw_marker_measurement(markerID, badPos, q_raw, posInFrame, q_cam)
-        except Exception:
-            pass
+        except Exception as e:
+            self.get_logger().warn(f"raw-measurement hook failed: {e}",
+                                   throttle_duration_sec=5.0)
 
         try:
             self.broadcast_marker_transform(filteredPos, filteredEuler,
                                             child_frame=f"{self.markerNamePrefix}{markerID}")
-        except Exception:
-            pass  # TF broadcast failure is non-fatal
+        except Exception as e:
+            # TF broadcast failure is non-fatal
+            self.get_logger().warn(f"marker TF broadcast failed: {e}",
+                                   throttle_duration_sec=5.0)
         return filteredPos, filteredEuler
 
     def _on_raw_marker_measurement(self, marker_id, pos_in_base, quat_in_base,

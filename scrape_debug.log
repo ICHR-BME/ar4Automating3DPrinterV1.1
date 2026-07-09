@@ -467,3 +467,11 @@
 [14:18:41] ROTATE j6 52.0 deg --(-60)--> target -8.0 deg; exceeds_155=False exceeds_180=False
 [14:18:44] ROTATE move_to(rotated) ok=True
 [14:18:48] ROTATE move_to(restore) ok=True joints_after=[-30.6, 49.6, -0.8, -66.3, 19.2, 51.7]
+[14:30:01] STEP4 scrape marker 1 pos=[-0.2023 -0.3855  0.0925] euler_deg=[-124.69   88.7  -144.66] estimated=False
+[14:30:05] STEP4 arrived standoff joints_deg=[-31.0, 49.5, 0.7, -67.0, 19.1, 53.3]
+[14:30:09] STEP5 arrived DEPTH joints_deg=[3.3, 43.2, 16.7, -94.2, -1.5, 59.3]
+[14:30:09] STEP6 scrape marker 1 pos=[-0.2023 -0.3855  0.0925] euler_deg=[-124.69   88.7  -144.66] estimated=False
+[14:30:12] ROTATE current_joints_deg=[-30.9, 49.3, 1.1, -66.6, 19.1, 53.6]
+[14:30:12] ROTATE j6 53.6 deg --(-60)--> target -6.4 deg; exceeds_155=False exceeds_180=False
+[14:30:15] ROTATE move_to(rotated) ok=True
+[14:30:19] ROTATE move_to(restore) ok=True joints_after=[-30.9, 49.3, 1.1, -66.6, 19.1, 53.2]

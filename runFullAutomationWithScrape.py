@@ -14,24 +14,13 @@ Edit the ---- Configuration ---- section before running.
 
 import sys
 import os
-import time
-import threading
-import importlib
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 import numpy as np
 import rclpy
 
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, _SCRIPT_DIR)
-
-# 3DPrinterAutomation.py starts with a digit, so use importlib.
-_mod = importlib.util.spec_from_file_location(
-    "ThreeDPrinterAutomation",
-    os.path.join(_SCRIPT_DIR, "3DPrinterAutomation.py"),
-)
-_automation = importlib.util.module_from_spec(_mod)
-_mod.loader.exec_module(_automation)
-printerAutomation = _automation.printerAutomation
-
+from runner_common import start_webcam_node, restore_saved_printers
 from simulated3DPrinter import Simulated3DPrinter
 from printerclass import BambuPrinter, load_printer_config
 
@@ -58,48 +47,12 @@ PRINT_FILENAME = "testPrints/bed_scraper_a1mini.gcode.3mf"
 
 def main():
     rclpy.init()
-
-    node = printerAutomation(
-        calibration_mode=False,
-        stream_source="webcam",
-        feed_rotation_deg=90.0,
-        marker_sizes=[0.03, 0.025],
-    )
-    node.stream.distance_scale = 1.0 / 0.702
-
-    # Executor
-    executor = rclpy.executors.MultiThreadedExecutor()
-    executor.add_node(node)
-    if hasattr(node.stream, "_ros_node"):
-        executor.add_node(node.stream._ros_node)
-    else:
-        stream_thread = threading.Thread(target=node.stream.run, daemon=True)
-        stream_thread.start()
-
-    def _resilient_spin(executor):
-        while rclpy.ok():
-            try:
-                executor.spin_once(timeout_sec=0.1)
-            except Exception as e:
-                node.get_logger().warn(f"Executor spin error (recovering): {e}")
-                time.sleep(0.01)
-
-    spin_thread = threading.Thread(target=_resilient_spin, args=(executor,), daemon=True)
-    spin_thread.start()
-
-    # Wait for joint_states
-    node.get_logger().info("Waiting for joint_states...")
-    for _ in range(100):
-        if node._last_joint_msg is not None:
-            break
-        time.sleep(0.1)
-    else:
-        node.get_logger().warn("Timed out waiting for joint_states — proceeding anyway")
+    node = start_webcam_node()
 
     # Load save file — restores marker poses, offset config, and printer configs
     if not node.load_state():
         node.get_logger().error(
-            "No save file found — run 3DPrinterAutomation.py first to create one."
+            "No save file found — run printer_automation.py first to create one."
         )
         return
 
@@ -110,20 +63,7 @@ def main():
     # by both the camera update path and register_estimated_marker.)
     node.lock_marker(SCRAPE_ID)
 
-    # Reconstruct Simulated3DPrinter geometry estimates as a fallback.
-    for p in getattr(node, '_saved_printer_configs', []):
-        printer = Simulated3DPrinter(
-            node=node,
-            pos=p["pos"],
-            orient=p["orient"],
-            door_marker_texture=p["door_marker_texture"],
-        )
-        bad_pos, bad_euler = printer.get_door_marker_pose_in_base()
-        existing = node._find_marker_entry(p["marker_id"])
-        if existing is None or existing.get("estimated"):
-            node.register_estimated_marker(
-                marker_id=p["marker_id"], bad_pos=bad_pos, bad_euler=bad_euler
-            )
+    restore_saved_printers(node)
 
     # Connect the Bambu printer and register it with the node.
     printer_cfg = load_printer_config(PRINTER_NAME)
