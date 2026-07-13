@@ -1,0 +1,16 @@
+# Print queue for runFullAutomationWithScrape.py
+#
+# print_folder: folder (relative to this directory) containing the print files.
+# prints:       list of files to print; each is printed 'count' times.
+#               The queue runs in order: all copies of the first entry, then
+#               all copies of the second, and so on. One scrape per print.
+
+print_folder: testPrints
+
+prints:
+  - name: smallCylinderPLA15m17s.gcode.3mf
+    count: 1
+  - name: BenchyFast.3mf
+    count: 1
+  - name: Cat_Toy_PLA.gcode.3mf
+    count: 1

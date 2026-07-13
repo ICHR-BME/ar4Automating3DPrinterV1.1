@@ -99,6 +99,19 @@ fi
 echo "Starting 2.4 GHz hotspot on $HOTSPOT_IFACE (SSID: $SSID)..."
 nmcli device wifi hotspot ifname "$HOTSPOT_IFACE" ssid "$SSID" band "$BAND" password "$PASSWORD"
 
+# Pin the hotspot to plain WPA2 (PMF/802.11w disabled). Without this,
+# NetworkManager runs the AP in WPA2/WPA3-SAE transition mode, which Bambu
+# printers associate to and then drop within seconds (repeating flap).
+HOTSPOT_CON=$(nmcli -t -f NAME,DEVICE connection show --active | awk -F: -v i="$HOTSPOT_IFACE" '$2==i{print $1}')
+if [[ -n "$HOTSPOT_CON" ]]; then
+  CURRENT_PMF=$(nmcli -g 802-11-wireless-security.pmf connection show "$HOTSPOT_CON")
+  if [[ "$CURRENT_PMF" != "1" ]]; then
+    echo "Disabling PMF/WPA3 on '$HOTSPOT_CON' (Bambu compatibility)..."
+    nmcli connection modify "$HOTSPOT_CON" 802-11-wireless-security.pmf disable
+    nmcli connection up "$HOTSPOT_CON"
+  fi
+fi
+
 echo
 echo "Active connections:"
 nmcli -t -f NAME,TYPE,DEVICE connection show --active

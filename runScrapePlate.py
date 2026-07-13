@@ -42,7 +42,7 @@ def main():
 
     restore_saved_printers(node)
 
-    for i in range(30):
+    for i in range(1):
         ok = node.scrapePlate(
             source_id=SOURCE_ID,
             scrape_id=SCRAPE_ID,

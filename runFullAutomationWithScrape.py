@@ -2,14 +2,15 @@
 """
 Print-and-scrape loop.
 
-Each iteration:
-  1. Start a print on the Bambu printer associated with SOURCE_ID.
+The prints to run come from a YAML queue file (PRINT_QUEUE_FILE, default
+print_queue.yaml) that lists the print folder, the file names and how many
+times to print each one. For every print in the queue:
+  1. Start the print on the Bambu printer associated with SOURCE_ID.
   2. Wait for the print to finish.
   3. Move the printer head out of the way (prepare_for_pickup).
   4. Scrape the plate (pick up from SOURCE_ID, scrape against SCRAPE_ID, return).
-  5. Repeat for NUM_CYCLES iterations.
 
-Edit the ---- Configuration ---- section before running.
+Edit the ---- Configuration ---- section and the queue file before running.
 """
 
 import sys
@@ -19,10 +20,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import rclpy
+import yaml
 
 from runner_common import start_webcam_node, restore_saved_printers
 from simulated3DPrinter import Simulated3DPrinter
-from printerclass import BambuPrinter, load_printer_config
+from printerclass import BambuPrinter, load_printer_config, strip_startup_gcode
 
 
 # ---- Configuration ----
@@ -30,22 +32,67 @@ SOURCE_ID       = 2           # Marker to pick up the plate from (and return it 
 SCRAPE_ID       = 1           # Marker whose surface the plate is scraped against
 SCAN_DISTANCE   = 0.15        # Distance (m) used when scanning markers
 SCRAPE_STANDOFF = 0.38        # Distance (m) along scrape marker Z to approach from
-NUM_CYCLES      = 20           # Number of print-then-scrape cycles to run
 
 # Bambu printer to use. Credentials are loaded from printer_config.yaml
 # (copy printer_config.example.yaml and fill it in). The previously hard-coded
 # values here matched the 'a1_mini_2' entry.
 PRINTER_NAME = "a1_mini"
 
-# File name on the printer's SD card to print each cycle.
-PRINT_FILENAME = "testPrints/bed_scraper_a1mini.gcode.3mf"
+# YAML file describing the prints to run: the print folder, the file names
+# and how many times to print each one (see print_queue.yaml).
+PRINT_QUEUE_FILE = "print_queue.yaml"
 
-#PRINT_FILENAME = "testPrints/BenchyFast.3mf"
-#PRINT_FILENAME = "testPrints/smallCylinderPLA15m17s.gcode.3mf"
+# Remove the printer's startup procedures (sound, purge, mech-mode check,
+# nozzle wipe on the plate, bed leveling, re-homing) from the print file
+# before uploading. Keeps only a heat-and-home preamble plus the nozzle-load
+# blob squirt, so the print starts directly. The startup shoves the plate
+# around and breaks the scrape automation.
+STRIP_STARTUP = True
 # ---- End Configuration ----
 
 
+def load_print_queue(queue_file):
+    """
+    Reads the YAML print queue and returns the flat, ordered list of local
+    print-file paths to run — each file repeated 'count' times.
+
+    Expected format:
+        print_folder: testPrints
+        prints:
+          - name: bed_scraper_a1mini.gcode.3mf
+            count: 20
+          - name: BenchyFast.3mf
+            count: 1
+    """
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    queue_path = os.path.join(base_dir, queue_file)
+    with open(queue_path, "r") as f:
+        cfg = yaml.safe_load(f)
+
+    folder = cfg.get("print_folder", "")
+    entries = cfg.get("prints") or []
+    if not entries:
+        raise ValueError(f"No 'prints' entries found in {queue_path}")
+
+    queue = []
+    for entry in entries:
+        name = entry["name"]
+        count = int(entry.get("count", 1))
+        if count < 1:
+            continue
+        local_file = os.path.join(folder, name)
+        if not os.path.exists(os.path.join(base_dir, local_file)):
+            raise FileNotFoundError(f"Print file not found: {local_file} "
+                                    f"(from {queue_path})")
+        queue.extend([local_file] * count)
+    return queue
+
+
 def main():
+    # Load and validate the queue first so a bad YAML fails before any
+    # hardware is touched.
+    print_queue = load_print_queue(PRINT_QUEUE_FILE)
+
     rclpy.init()
     node = start_webcam_node()
 
@@ -75,7 +122,31 @@ def main():
     bambu.connect()
     bambu.enable_debug_listener()
     node.register_bambu_printer(SOURCE_ID, bambu)
-    bambu.upload_file_timeout(PRINT_FILENAME)
+
+    # Prepare and upload each unique file in the queue once, and remember the
+    # name to print it under. upload_file_timeout stores files at the SD card
+    # root under their basename, so prints are started by basename.
+    remote_names = {}
+    for local_file in dict.fromkeys(print_queue):  # unique, in queue order
+        if STRIP_STARTUP:
+            try:
+                local_file_prepped = strip_startup_gcode(local_file)
+                node.get_logger().info(
+                    f"Stripped startup gcode: {local_file} -> {local_file_prepped}"
+                )
+            except ValueError as e:
+                # e.g. a file sliced with a custom start-gcode profile that
+                # doesn't have the stock Bambu markers — print it as-is.
+                node.get_logger().warning(
+                    f"Could not strip startup from {local_file}: {e} "
+                    f"Uploading it UNMODIFIED (full startup will run)."
+                )
+                local_file_prepped = local_file
+        else:
+            local_file_prepped = local_file
+        if not bambu.upload_file_timeout(local_file_prepped):
+            raise RuntimeError(f"Upload failed for {local_file_prepped}")
+        remote_names[local_file] = os.path.basename(local_file_prepped)
 
     # Set up markers (mirrors scanFor2Markers.py non-virtual procedure). Marker 1
     # (scrape) is locked to the file pose above, so it is NOT estimated or scanned
@@ -103,17 +174,21 @@ def main():
     node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
     node.get_logger().info("Initial scan complete.")
 
-    # Main print-and-scrape loop
-    for cycle in range(1, NUM_CYCLES + 1):
-        node.get_logger().info(f"=== Cycle {cycle}/{NUM_CYCLES}: starting print ===")
+    # Main print-and-scrape loop over the queue
+    total = len(print_queue)
+    for cycle, local_file in enumerate(print_queue, start=1):
+        remote_file = remote_names[local_file]
+        node.get_logger().info(
+            f"=== Cycle {cycle}/{total}: starting print {remote_file} ==="
+        )
 
-        bambu.start_print(PRINT_FILENAME)
+        bambu.start_print(remote_file)
         bambu.waitUntilPrintFinished()
 
-        node.get_logger().info(f"=== Cycle {cycle}/{NUM_CYCLES}: print done, preparing for pickup ===")
+        node.get_logger().info(f"=== Cycle {cycle}/{total}: print done, preparing for pickup ===")
         bambu.prepare_for_pickup()
 
-        node.get_logger().info(f"=== Cycle {cycle}/{NUM_CYCLES}: scraping plate ===")
+        node.get_logger().info(f"=== Cycle {cycle}/{total}: scraping plate ===")
         ok = node.scrapePlate(
             source_id=SOURCE_ID,
             scrape_id=SCRAPE_ID,
@@ -124,7 +199,7 @@ def main():
             rotate_after_scrape=True,
         )
         node.get_logger().info(
-            f"=== Cycle {cycle}/{NUM_CYCLES}: scrapePlate {'succeeded' if ok else 'FAILED'} ==="
+            f"=== Cycle {cycle}/{total}: scrapePlate {'succeeded' if ok else 'FAILED'} ==="
         )
 
         #node.save_state()
