@@ -26,7 +26,7 @@ tools/                           Standalone utilities (servo teleop, gripper,
 scripts/                         Shell launchers (virtual robot, physical robot
                                  calibration, wifi hotspot for the printers).
 gcode/                           Print files (.gcode / .3mf) used by the queue.
-models/                          Gazebo models (installed by CMake).
+models/                          Gazebo models (spawned by file path from the sim code).
 data/                            Runtime output: printer_state.json,
                                  timing/ CSVs, logs/ (scan + scrape debug).
 analysis/                        Experiment data and plotting scripts for the paper.

@@ -1,8 +1,12 @@
 __pycache__/
+
+# colcon artifacts (run colcon from ~/ar4_ws, never from this folder)
 build/
-env-hooks/
 install/
 log/
 
 # Real printer credentials (use printer_config.example.yaml as a template)
 printer_config.yaml
+
+# Temp SDFs written next to the marker model by the sim at runtime
+models/aruco_marker/tmp*.sdf
