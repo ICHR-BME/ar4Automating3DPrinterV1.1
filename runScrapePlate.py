@@ -32,8 +32,8 @@ RUN_SIM         = 1           # 1 = run in Gazebo (sim camera + spawned printers
 SOURCE_ID       = 2           # Marker to pick up the plate from (and return it to)
 SCRAPE_ID       = 1           # Marker whose surface the plate is scraped against
 SCAN_DISTANCE   = 0.15         # Distance (m) used when scanning markers
-SCRAPE_STANDOFF = 0.38         # Distance (m) along scrape marker Z to approach from
-# Scrape contact offset is set via node.scrape_offset (defined in printerAutomation.__init__)
+# Scrape motion (standoff/depth/retract) comes from the 'scrape' waypoint list
+# of the scrape marker's offset config in printerAutomation.__init__.
 
 
 def main():
@@ -62,7 +62,6 @@ def main():
             source_id=SOURCE_ID,
             scrape_id=SCRAPE_ID,
             scan_distance=SCAN_DISTANCE,
-            scrape_standoff=SCRAPE_STANDOFF,
             wait_after_pickup=False,
             wait_duration=10.0,
             rotate_after_scrape=True,

@@ -31,7 +31,8 @@ from ar4_automation.printerclass import BambuPrinter, load_printer_config, strip
 SOURCE_ID       = 2           # Marker to pick up the plate from (and return it to)
 SCRAPE_ID       = 1           # Marker whose surface the plate is scraped against
 SCAN_DISTANCE   = 0.15        # Distance (m) used when scanning markers
-SCRAPE_STANDOFF = 0.38        # Distance (m) along scrape marker Z to approach from
+# Scrape motion (standoff/depth/retract) comes from the 'scrape' waypoint list
+# of the scrape marker's offset config in printerAutomation.__init__.
 
 # Bambu printer to use. Credentials are loaded from printer_config.yaml
 # (copy printer_config.example.yaml and fill it in). The previously hard-coded
@@ -203,7 +204,6 @@ def main():
             source_id=SOURCE_ID,
             scrape_id=SCRAPE_ID,
             scan_distance=SCAN_DISTANCE,
-            scrape_standoff=SCRAPE_STANDOFF,
             wait_after_pickup=True,
             wait_duration=90.0,
             rotate_after_scrape=True,

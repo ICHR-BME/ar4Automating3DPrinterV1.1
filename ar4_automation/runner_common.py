@@ -299,17 +299,13 @@ def run_command_menu(node):
             source_id, scrape_id = int(ids[0]), int(ids[1])
             dist = _parse_floats("  Scan distance [0.15]: ", 1)
             dist = dist[0] if dist else 0.15
-            standoff = _parse_floats("  Scrape standoff distance [0.15]: ", 1)
-            standoff = standoff[0] if standoff else 0.15
-            offset = _parse_floats("  Scrape offset in marker frame (x y z) [0 0 0.05]: ", 3)
-            offset = offset if offset else None
+            # Scrape motion comes from the 'scrape' waypoint list of the scrape
+            # marker's offset config.
             node.get_logger().info(
-                f"User requested scrapePlate({source_id}, {scrape_id}, scan_distance={dist}, "
-                f"scrape_standoff={standoff}, scrape_offset={offset})"
+                f"User requested scrapePlate({source_id}, {scrape_id}, scan_distance={dist})"
             )
             node.scrapePlate(
-                source_id=source_id, scrape_id=scrape_id,
-                scan_distance=dist, scrape_standoff=standoff, scrape_offset=offset,
+                source_id=source_id, scrape_id=scrape_id, scan_distance=dist,
             )
 
         else:

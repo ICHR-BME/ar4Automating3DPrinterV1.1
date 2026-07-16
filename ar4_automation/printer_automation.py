@@ -76,6 +76,10 @@ class printerAutomation(ArucoDetectionViewer):
         # When True, scanToMarker pauses for 10 s after arriving to collect raw orientation
         # noise data instead of the normal 1 s observation window.
         self.collect_orientation_noise_data = False
+        # How many times scanToMarker visits the viewing pose. Passes after the
+        # first re-aim at the freshly detected marker pose, so the final
+        # measurement is taken from a consistent, head-on viewing position.
+        self.scan_passes = 1
 
         ## For the small handle
         #self.markerToHandleOffset = np.array([0.0, 0.05, 0.06])
@@ -90,27 +94,103 @@ class printerAutomation(ArucoDetectionViewer):
         #self.markerToPickupOffset = np.array([0.09, 0.155, 0.22])
 
 
-        ## Named offset configs: each entry maps a name to handle and pickup offsets
-        ## in the marker's local frame. Add new entries here for different printer types.
+        ## Named offset configs: each entry maps a printer type to one numbered
+        ## waypoint list per procedure ('pickup', 'place', 'scrape'), all in the
+        ## marker's local frame. Add new entries here for different printer
+        ## types; extend a procedure by adding waypoints to its list.
+        ##
+        ## Each waypoint is a dict:
+        ##   'description' — free text for the human reading this config;
+        ##                   never read by the program
+        ##   'pos'         — [x, y, z] position in the marker's local frame
+        ##   'angle_deg'   — tool tilt (degrees) about the marker's X axis at
+        ##                   this waypoint; None means no tilt (the default
+        ##                   tool orientation)
+        ##
+        ## How the procedures walk the lists:
+        ##   pickup — traversed in order with the gripper open; the gripper
+        ##            closes at the LAST waypoint, then the arm lifts to
+        ##            place[0]. [0] doubles as the withdraw pose between
+        ##            operations. Keep the final two waypoints aligned in
+        ##            marker X/Y so the grasp move is purely along marker Z.
+        ##   place  — [0] is the lift/carry pose (pickup ends here, placement
+        ##            starts here); the rest is the placement descent, plate
+        ##            released at the LAST waypoint. With only [0], placement
+        ##            descends straight back to the grasp waypoint.
+        ##   scrape — traversed in order against the SCRAPE marker while
+        ##            holding the plate (standoff -> depth -> retract ...).
+        ##            None means this printer type is not a scrape surface.
         self.offset_configs = {
             # Printer with the handle above the marker
-            'printer_offset': {
-                'handleOffset': np.array([0.0, 0.07, 0.077]),
-                'pickupOffset': np.array([0.0, 0.17, 0.077]),
+            'printer_offset_old': {
+                'pickup': [
+                    {'description': 'approach standoff in front of the handle',
+                     'pos': np.array([0.0, 0.07, 0.15]), 'angle_deg': None},
+                    {'description': 'grasp the handle (gripper closes here)',
+                     'pos': np.array([0.0, 0.07, 0.077]), 'angle_deg': None},
+                ],
+                'place': [
+                    {'description': 'lift / carry pose',
+                     'pos': np.array([0.0, 0.17, 0.077]), 'angle_deg': None},
+                ],
+                'scrape': None,
             },
-            # Printer with the marker to the side
+            'printer_offset': {
+                'pickup': [
+                    {'description': 'approach standoff in front of the handle',
+                     'pos': np.array([0.0, 0.082, 0.15]), 'angle_deg': -10.0},
+                    {'description': 'grasp the handle (gripper closes here)',
+                     'pos': np.array([0.0, 0.082, 0.047]), 'angle_deg': -10.0},
+                ],
+                'place': [
+                    {'description': 'lift / carry pose',
+                     'pos': np.array([0.0, 0.19, 0.057]), 'angle_deg': -10.0},
+                    {'description': 'partial descent, tucked toward the marker',
+                     'pos': np.array([0.0, 0.12, 0.057]), 'angle_deg': -10.0},
+                    {'description': 'shift out along marker Z',
+                     'pos': np.array([0.0, 0.12, 0.032]), 'angle_deg': -10.0},
+                    {'description': 'set down and release',
+                     'pos': np.array([0.0, 0.09, 0.032]), 'angle_deg': -10.0},
+                ],
+                'scrape': None,
+            },
+            # Printer with the marker to the side; also the scrape fixture
             'box_offset': {
-                'handleOffset': np.array([0.0, 0.05, 0.102]),
-                'pickupOffset': np.array([0.0, 0.15, 0.102]),
+                'pickup': [
+                    {'description': 'approach standoff in front of the handle',
+                     'pos': np.array([0.0, 0.03, 0.15]), 'angle_deg': None},
+                    {'description': 'grasp the handle (gripper closes here)',
+                     'pos': np.array([0.0, 0.03, 0.102]), 'angle_deg': None},
+                ],
+                'place': [
+                    {'description': 'lift / carry pose',
+                     'pos': np.array([0.0, 0.13, 0.102]), 'angle_deg': None},
+                ],
+                'scrape': [
+                    {'description': 'scrape standoff along marker Z',
+                     'pos': np.array([0.0, 0.092, 0.38]), 'angle_deg': 5.0},
+                    {'description': 'full scrape depth',
+                     'pos': np.array([0.0, 0.092, 0.13]), 'angle_deg': 5.0},
+                    {'description': 'retract to standoff',
+                     'pos': np.array([0.0, 0.092, 0.38]), 'angle_deg': 5.0},
+                ],
+            },
+            'box_offset_old': {
+                'pickup': [
+                    {'description': 'approach standoff in front of the handle',
+                     'pos': np.array([0.0, 0.05, 0.15]), 'angle_deg': None},
+                    {'description': 'grasp the handle (gripper closes here)',
+                     'pos': np.array([0.0, 0.05, 0.102]), 'angle_deg': None},
+                ],
+                'place': [
+                    {'description': 'lift / carry pose',
+                     'pos': np.array([0.0, 0.15, 0.102]), 'angle_deg': None},
+                ],
+                'scrape': None,
             },
         }
         ## Map marker_id -> config name. IDs not listed fall back to 'box_offset'.
         self.marker_offset_config = {}
-
-        ## Offset from the scrape marker origin in the marker's local frame [x, y, z]
-        ## used by scrapePlate().  z is the closest approach distance along the marker's
-        ## outward Z axis; x/y shift the contact point laterally in the marker plane.
-        self.scrape_offset = np.array([0.0, 0.112, 0.13])
 
         self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
 
@@ -393,11 +473,32 @@ class printerAutomation(ArucoDetectionViewer):
         self.unfreeze_markers()
         return move_ok
 
-    def _get_offsets_for_marker(self, marker_id):
-        """Return (handleOffset, pickupOffset) for the given marker ID."""
+    def _get_waypoints_for_marker(self, marker_id, procedure):
+        """Return the marker's waypoint list for *procedure*, or None.
+
+        *procedure* is 'pickup', 'place', or 'scrape'.  See the offset_configs
+        comment for the waypoint format and how each procedure walks its list.
+        """
         config_name = self.marker_offset_config.get(marker_id, 'box_offset')
-        config = self.offset_configs[config_name]
-        return config['handleOffset'], config['pickupOffset']
+        waypoints = self.offset_configs[config_name].get(procedure)
+        return waypoints if waypoints else None
+
+    def _follow_waypoints(self, markerID, waypoints, caller):
+        """Move through the waypoints in order.
+
+        Each waypoint uses its own angle_deg (None = default, untilted tool
+        orientation).  Returns False on the first failed move.
+        """
+        n = len(waypoints)
+        for i, wp in enumerate(waypoints):
+            tilt_ori = self._tilted_offset_ori(wp.get('angle_deg'))
+            pos = np.asarray(wp['pos'], dtype=float)
+            if not self._move_to_marker_offset(markerID, pos, tilt_ori):
+                self.get_logger().error(
+                    f"{caller}: waypoint {i+1}/{n} failed for marker {markerID}."
+                )
+                return False
+        return True
 
     # ---- BambuPrinter integration ----
 
@@ -528,38 +629,58 @@ class printerAutomation(ArucoDetectionViewer):
 
     @_timed
     def scanToMarker(self, marker_id=0, viewing_distance=0.20):
-        """Move the camera to face a known/estimated marker using its TF frame."""
-        entry = self._find_marker_entry(marker_id)
-        if entry is None:
-            self.get_logger().error(f"Marker {marker_id} not found in found_markers. Register it first.")
-            return False
+        """Move the camera to face a known/estimated marker using its TF frame.
 
-        offsetPos = np.array([0.0, 0.0, viewing_distance])
-        badPos, badEuler = self._apply_offset_in_marker_frame(
-            entry['positionInBase'], entry['eulerInBase'], offsetPos, self.offsetOri,
-        )
-        # Shift up in base-link Z so the camera (below the gripper) faces the marker
-        badPos = badPos + np.array([0.0, 0.0, self.camera_z_offset])
+        The viewing pose is visited self.scan_passes times: each pass re-aims
+        at the marker pose refreshed by the previous pass's detection, so the
+        final measurement is taken head-on from a consistent position instead
+        of from a pose computed off a rough estimate.
+        """
+        move_ok = False
+        marker_spotted = False
+        for scan_pass in range(max(1, 2)):
+            entry = self._find_marker_entry(marker_id)
+            if entry is None:
+                self.get_logger().error(f"Marker {marker_id} not found in found_markers. Register it first.")
+                return False
 
-        goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
-        self.get_logger().info(f"Scanning marker {marker_id}: moving to viewing pos={goodPos}")
-        self.freeze_markers()
-        move_ok = self.move_to_pose(goodPos, goodEuler)
-        self.unfreeze_markers()
+            offsetPos = np.array([0.0, 0.0, viewing_distance])
+            badPos, badEuler = self._apply_offset_in_marker_frame(
+                entry['positionInBase'], entry['eulerInBase'], offsetPos, self.offsetOri,
+            )
+            # Shift up in base-link Z so the camera (below the gripper) faces the marker
+            badPos = badPos + np.array([0.0, 0.0, self.camera_z_offset])
 
-        # Activate raw-measurement logging for this marker/distance while the camera
-        # observes.  Logging is stopped as soon as the observation window ends.
-        self._scan_log_movement_id += 1
-        self._scan_log_marker_id = marker_id
-        self._scan_log_distance = viewing_distance
-        # Pause to allow camera to observe the marker
-        observation_pause = 10.0 if self.collect_orientation_noise_data else 1.0
-        time.sleep(observation_pause)
-        self._scan_log_marker_id = None
-        self._scan_log_distance = None
+            goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
+            self.get_logger().info(
+                f"Scanning marker {marker_id} (pass {scan_pass + 1}/{max(1, self.scan_passes)}): "
+                f"moving to viewing pos={goodPos}"
+            )
+            self.freeze_markers()
+            move_ok = self.move_to_pose(goodPos, goodEuler)
+            self.unfreeze_markers()
+            if not move_ok:
+                break
+
+            # Activate raw-measurement logging for this marker/distance while the camera
+            # observes.  Logging is stopped as soon as the observation window ends.
+            self._scan_log_movement_id += 1
+            self._scan_log_marker_id = marker_id
+            self._scan_log_distance = viewing_distance
+            # Pause to allow camera to observe the marker
+            observation_pause = 10.0 if self.collect_orientation_noise_data else 1.0
+            time.sleep(observation_pause)
+            self._scan_log_marker_id = None
+            self._scan_log_distance = None
+
+            observed_entry = self._find_marker_entry(marker_id)
+            marker_spotted = observed_entry is not None and not observed_entry.get('estimated', False)
+            if not marker_spotted:
+                # No fresh detection to re-aim at — further passes would just
+                # repeat the same pose.
+                break
 
         observed_entry = self._find_marker_entry(marker_id)
-        marker_spotted = observed_entry is not None and not observed_entry.get('estimated', False)
         if not move_ok:
             print(f"[SCAN] Marker {marker_id}: movement FAILED (pose unreachable).")
         elif not marker_spotted:
@@ -623,33 +744,26 @@ class printerAutomation(ArucoDetectionViewer):
 
     # ---- Plate operations ----
 
-    def _move_to_approach(self, markerID, approach_standoff=0.15):
-        """Move to the standoff position along the marker Z axis (no gripper action)."""
-        handle_offset, _ = self._get_offsets_for_marker(markerID)
-        approach_offset = np.array([handle_offset[0], handle_offset[1], approach_standoff])
-        return self._move_to_marker_offset(markerID, approach_offset)
+    def _move_to_approach(self, markerID):
+        """Move to pickup waypoint [0] (the approach/withdraw standoff; no gripper action)."""
+        wp = self._get_waypoints_for_marker(markerID, 'pickup')[0]
+        return self._move_to_marker_offset(markerID, np.asarray(wp['pos'], dtype=float))
 
     @_timed
-    def moveToMarker(self, markerID=0, approach_standoff=0.15, angle_deg=0.0):
+    def moveToMarker(self, markerID=0):
+        """Open the gripper and walk the pickup waypoints to the grasp pose."""
         self.open_gripper()
-        handle_offset, _ = self._get_offsets_for_marker(markerID)
-        tilt_ori = self._tilted_offset_ori(angle_deg)
-        # Move to approach pose: same X,Y as handle in marker frame, but at standoff
-        # distance on the marker Z axis.  This guarantees the final move to the handle
-        # is purely along the marker's Z axis, avoiding collisions with the handle.
-        approach_offset = np.array([handle_offset[0], handle_offset[1], approach_standoff])
-        if not self._move_to_marker_offset(markerID, approach_offset, tilt_ori):
-            return False
-        return self._move_to_marker_offset(markerID, handle_offset, tilt_ori)
+        waypoints = self._get_waypoints_for_marker(markerID, 'pickup')
+        return self._follow_waypoints(markerID, waypoints, "moveToMarker")
 
-    def liftPlate(self, markerID=0, angle_deg=0.0):
-        _, pickup_offset = self._get_offsets_for_marker(markerID)
-        return self._move_to_marker_offset(markerID, pickup_offset,
-                                           self._tilted_offset_ori(angle_deg))
+    def liftPlate(self, markerID=0):
+        """Move to place waypoint [0] (the lift/carry pose, plate held clear)."""
+        waypoints = self._get_waypoints_for_marker(markerID, 'place')
+        return self._follow_waypoints(markerID, waypoints[0:1], "liftPlate")
 
     @_timed
-    def pickupPlate(self, markerID=0, angle_deg=0.0):
-        if not self.moveToMarker(markerID, angle_deg=angle_deg):
+    def pickupPlate(self, markerID=0):
+        if not self.moveToMarker(markerID):
             self.get_logger().error(f"pickupPlate: moveToMarker failed for marker {markerID}.")
             return False
         # Record the joint config at the grasp so placePlate can return the plate
@@ -657,19 +771,19 @@ class printerAutomation(ArucoDetectionViewer):
         grasp_joints = self._current_arm_joints()
         self.close_gripper()
         time.sleep(3.0)
-        if not self.liftPlate(markerID, angle_deg=angle_deg):
+        if not self.liftPlate(markerID):
             self.get_logger().error(f"pickupPlate: liftPlate failed for marker {markerID}.")
             return False
         lift_joints = self._current_arm_joints()
         if grasp_joints is not None and lift_joints is not None:
             self._pickup_replay = {'marker': markerID, 'grasp': grasp_joints,
-                                   'lift': lift_joints, 'angle': angle_deg}
+                                   'lift': lift_joints}
         else:
             self._pickup_replay = None
         return True
 
     @_timed
-    def placePlate(self, markerID=0, angle_deg=0.0):
+    def placePlate(self, markerID=0):
         """Place a held build plate at the specified marker location.
 
         If we recorded joint configs while picking the plate up at this same
@@ -680,11 +794,27 @@ class printerAutomation(ArucoDetectionViewer):
         failed post-scrape rotation.  Falls back to pose-based placement when no
         matching pickup record exists (e.g. transferPlate placing elsewhere).
         """
+        place_waypoints = self._get_waypoints_for_marker(markerID, 'place')
+        # Placement descent: the place waypoints past the lift/carry pose [0].
+        # A config with only the carry pose descends straight back down to the
+        # grasp waypoint (plain placement).
+        custom_descent = len(place_waypoints) > 1
+        if custom_descent:
+            descent_waypoints = place_waypoints[1:]
+        else:
+            descent_waypoints = self._get_waypoints_for_marker(markerID, 'pickup')[-1:]
         replay = getattr(self, '_pickup_replay', None)
-        # The joint replay reproduces the pickup orientation exactly, so it is
-        # only valid when the requested place angle matches the pickup angle.
-        if (replay is not None and replay.get('marker') == markerID
-                and replay.get('angle', 0.0) == angle_deg):
+        # The joint replay retraces the recorded pickup exactly, so a config
+        # with its own placement descent rules it out: the recorded joints
+        # descend straight down to the pickup grasp and cannot reproduce the
+        # custom placement path.
+        if custom_descent and replay is not None:
+            self.get_logger().warn(
+                f"placePlate: placement waypoints configured for marker {markerID}; "
+                "using pose-based placement instead of the wrist-continuous joint replay."
+            )
+            replay = None
+        if replay is not None and replay.get('marker') == markerID:
             self.get_logger().info(
                 f"placePlate: replaying recorded pickup joints for marker {markerID} (wrist-continuous)."
             )
@@ -702,15 +832,12 @@ class printerAutomation(ArucoDetectionViewer):
             )
             return False
 
-        handle_offset, _ = self._get_offsets_for_marker(markerID)
-        tilt_ori = self._tilted_offset_ori(angle_deg)
-        # Move above destination
-        if not self.liftPlate(markerID, angle_deg=angle_deg):
+        # Move above destination (the lift/carry pose), then run the placement
+        # descent and release the plate at its last waypoint.
+        if not self.liftPlate(markerID):
             self.get_logger().error(f"placePlate: liftPlate failed for marker {markerID}.")
             return False
-        # Lower to handle position
-        if not self._move_to_marker_offset(markerID, handle_offset, tilt_ori):
-            self.get_logger().error(f"placePlate: move to handle failed for marker {markerID}.")
+        if not self._follow_waypoints(markerID, descent_waypoints, "placePlate"):
             return False
         self.open_gripper()
         return True
@@ -871,14 +998,13 @@ class printerAutomation(ArucoDetectionViewer):
             return None
 
     @_timed
-    def scrapePlate(self, source_id, scrape_id, scan_distance=0.15, scrape_standoff=0.15, scrape_offset=None, wait_after_pickup=False, wait_duration=60.0, rotate_after_scrape=False, rotate_degrees=60.0, pickup_angle_deg=0.0, place_angle_deg=0.0, scrape_angle_deg=0.0):
+    def scrapePlate(self, source_id, scrape_id, scan_distance=0.15, wait_after_pickup=False, wait_duration=60.0, rotate_after_scrape=False, rotate_degrees=60.0):
         """
         Pick up a plate from source_id, scrape it against the scrape_id marker surface,
         then return it to source_id.
 
-        scrape_offset: 3-element [x, y, z] offset from the scrape marker origin in the
-          marker's local frame at which the scrape is carried out.  Falls back to
-          self.scrape_offset when not provided.
+        The scrape motion (standoff -> depth -> retract ...) is the 'scrape'
+        waypoint list of the scrape marker's offset config (see offset_configs).
         wait_after_pickup: if True, pause for wait_duration seconds after picking up the
           plate before moving to the scrape position (e.g. to allow a hot plate to cool).
           Defaults to False.
@@ -888,27 +1014,28 @@ class printerAutomation(ArucoDetectionViewer):
           to False.
         rotate_degrees: degrees to rotate the end-effector joint when rotate_after_scrape is
           True.  Defaults to 60.0.
-        pickup_angle_deg / place_angle_deg / scrape_angle_deg: extra tilt (degrees)
-          about the marker's local X axis applied to the tool orientation during
-          pickup, placement, and the scrape approach/depth/retract respectively.
-          0.0 (default) keeps the original behaviour.
+        Tool tilt angles come from each waypoint's own angle_deg in the offset
+          configs (pickup/place lists of the source marker, scrape list of the
+          scrape marker).
 
         1. Scan source marker  — retries at 0.85x and 0.70x if movement fails; aborts if all fail
         2. Pick up plate from source_id  — aborts on failure
         3. Scan scrape marker  — retries at 0.85x and 0.70x if movement fails; aborts if all fail
-        4. Move to standoff position along the scrape marker's Z axis
-        5. Move to scrape_offset position in the scrape marker's local frame
-        6. Retract back to standoff along the scrape marker's Z axis
-        6b. (optional) Rotate end-effector joint by rotate_degrees, then restore original angle
-        7. Place plate back at source_id  — aborts on failure
+        4. Walk the scrape waypoints against the scrape marker — aborts if any
+           waypoint but the last fails (a failed final retract only warns)
+        4b. (optional) Rotate end-effector joint by rotate_degrees, then restore original angle
+        5. Place plate back at source_id  — aborts on failure
         """
-        if scrape_offset is None:
-            scrape_offset = self.scrape_offset
-        else:
-            scrape_offset = np.array(scrape_offset, dtype=float)
+        scrape_waypoints = self._get_waypoints_for_marker(scrape_id, 'scrape')
+        if not scrape_waypoints:
+            self.get_logger().error(
+                f"scrapePlate: no 'scrape' waypoints configured for marker {scrape_id}'s "
+                "offset config. Aborting."
+            )
+            return False
         self.get_logger().info(
             f"scrapePlate: source={source_id}, scrape={scrape_id}, "
-            f"standoff={scrape_standoff}, scrape_offset={scrape_offset}"
+            f"{len(scrape_waypoints)} scrape waypoint(s)"
         )
 
         # Step 1 – scan source marker; retry at closer distances only if movement fails
@@ -918,7 +1045,7 @@ class printerAutomation(ArucoDetectionViewer):
 
         # Step 2 – pick up plate from source
         self.get_logger().info(f"Step 2: picking up plate from marker {source_id}")
-        if not self.pickupPlate(markerID=source_id, angle_deg=pickup_angle_deg):
+        if not self.pickupPlate(markerID=source_id):
             self.get_logger().error(
                 f"scrapePlate: pickupPlate failed for marker {source_id}. Aborting."
             )
@@ -938,61 +1065,39 @@ class printerAutomation(ArucoDetectionViewer):
         # to the file-loaded pose (see runScrapePlate.py), so a rescan would be a
         # no-op at best and a close-range corruption at worst.
 
-        # --- DIAG: record the scrape marker pose that Step 4 will actually use ---
+        # --- DIAG: record the scrape marker pose the waypoints will be applied to ---
         _e4 = self._find_marker_entry(scrape_id)
         if _e4 is not None:
             self._scrape_dbg(
-                f"STEP4 scrape marker {scrape_id} pos={np.round(_e4['positionInBase'],4)} "
+                f"SCRAPE marker {scrape_id} pos={np.round(_e4['positionInBase'],4)} "
                 f"euler_deg={np.round(np.degrees(_e4['eulerInBase']),2)} estimated={_e4.get('estimated')}"
             )
 
-        # Step 4 – move to standoff: same x, y as scrape_offset but at standoff Z distance,
-        # so the final approach and retract are purely along the marker's Z axis.
-        self.get_logger().info(f"Step 4: moving to scrape standoff (Z={scrape_standoff} m)")
-        scrape_ori = self._tilted_offset_ori(scrape_angle_deg)
-        standoff_offset = np.array([scrape_offset[0], scrape_offset[1], scrape_standoff])
-        if not self._move_to_marker_offset(scrape_id, standoff_offset, scrape_ori):
-            self.get_logger().error(
-                f"scrapePlate: could not reach scrape standoff for marker {scrape_id}. Aborting."
+        # Step 4 – walk the scrape waypoints (standoff -> depth -> retract ...).
+        # Any failed waypoint aborts, except the final one (the retract), which
+        # only warns so the plate can still be returned.
+        n = len(scrape_waypoints)
+        for i, wp in enumerate(scrape_waypoints):
+            self.get_logger().info(f"Step 4: scrape waypoint {i+1}/{n}")
+            move_ok = self._move_to_marker_offset(
+                scrape_id, np.asarray(wp['pos'], dtype=float),
+                self._tilted_offset_ori(wp.get('angle_deg')),
             )
-            return False
-        self._scrape_dbg(
-            "STEP4 arrived standoff joints_deg=" +
-            str(np.round(np.degrees(self._current_arm_joints() or []), 1).tolist())
-        )
-
-        # Step 5 – move to scrape_offset position in the marker's local frame
-        self.get_logger().info(f"Step 5: moving to scrape offset {scrape_offset} in marker frame")
-        if not self._move_to_marker_offset(scrape_id, scrape_offset, scrape_ori):
-            self.get_logger().error(
-                f"scrapePlate: could not reach scrape depth for marker {scrape_id}. Aborting."
-            )
-            return False
-        self._scrape_dbg(
-            "STEP5 arrived DEPTH joints_deg=" +
-            str(np.round(np.degrees(self._current_arm_joints() or []), 1).tolist())
-        )
-        self.pause_timing()
-        print(f"[scrapePlate] Plate at full scrape depth on marker {scrape_id}. Timing paused.")
-        self.resume_timing()
-
-        
-        self.freeze_markers()
-        # --- DIAG: record the scrape marker pose that Step 6 will actually use ---
-        _e6 = self._find_marker_entry(scrape_id)
-        if _e6 is not None:
             self._scrape_dbg(
-                f"STEP6 scrape marker {scrape_id} pos={np.round(_e6['positionInBase'],4)} "
-                f"euler_deg={np.round(np.degrees(_e6['eulerInBase']),2)} estimated={_e6.get('estimated')}"
+                f"SCRAPE wp {i+1}/{n} ok={move_ok} joints_deg=" +
+                str(np.round(np.degrees(self._current_arm_joints() or []), 1).tolist())
             )
-        # Step 6 – retract back along marker Z to standoff
-        self.get_logger().info(f"Step 6: retracting to standoff (Z={scrape_standoff} m)")
-        if not self._move_to_marker_offset(scrape_id, standoff_offset, scrape_ori):
-            self.get_logger().error(
-                f"scrapePlate: retraction to standoff failed for marker {scrape_id}. Continuing."
-            )
+            if not move_ok:
+                if i < n - 1:
+                    self.get_logger().error(
+                        f"scrapePlate: scrape waypoint {i+1}/{n} failed for marker {scrape_id}. Aborting."
+                    )
+                    return False
+                self.get_logger().error(
+                    f"scrapePlate: final scrape waypoint (retract) failed for marker {scrape_id}. Continuing."
+                )
 
-        # Step 6b – optional end-effector rotation to dislodge debris / change plate orientation
+        # Step 4b – optional end-effector rotation to dislodge debris / change plate orientation
         if rotate_after_scrape:
             self.get_logger().info(
                 f"scrapePlate: rotating end-effector joint by {rotate_degrees:.1f}° after scrape."
@@ -1040,11 +1145,11 @@ class printerAutomation(ArucoDetectionViewer):
                     "scrapePlate: joint state unavailable — skipping rotation."
                 )
 
-        # Step 7 – place plate back at source
+        # Step 5 – place plate back at source
         # Unfreeze so the camera can refresh the source marker pose before placing.
         self.unfreeze_markers()
-        self.get_logger().info(f"Step 7: placing plate back at marker {source_id}")
-        if not self.placePlate(markerID=source_id, angle_deg=place_angle_deg):
+        self.get_logger().info(f"Step 5: placing plate back at marker {source_id}")
+        if not self.placePlate(markerID=source_id):
             self.get_logger().error(
                 f"scrapePlate: placePlate failed for marker {source_id}. Aborting."
             )

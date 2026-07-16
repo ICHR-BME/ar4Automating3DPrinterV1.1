@@ -1,0 +1,7 @@
+timestamp,call_chain,duration_s
+2026-07-16T15:21:52.546437,scrapePlate > _scan_with_retries > scanToMarker,2.7515
+2026-07-16T15:21:52.546487,scrapePlate > _scan_with_retries,2.7515
+2026-07-16T15:21:57.386517,scrapePlate > pickupPlate > moveToMarker,4.8368
+2026-07-16T15:22:02.692712,scrapePlate > pickupPlate,10.143
+2026-07-16T15:22:27.193732,scrapePlate > placePlate,5.6126
+2026-07-16T15:22:31.273359,scrapePlate,41.4923
