@@ -7,9 +7,9 @@ the save file written by printer_automation.py, then runs scrapePlate once:
   source=SOURCE_ID  — marker to pick up the plate from and return it to
   scrape=SCRAPE_ID  — marker whose surface the plate is scraped against
 
-Pass --sim to run against Gazebo instead of hardware (start the sim first with
-scripts/launchVirtualRobot.sh): the camera comes from the simulated RGBD
-camera and two simulated printers are spawned in place of the save file.
+Set RUN_SIM = 1 below to run against Gazebo instead of hardware (start the sim
+first with scripts/launchVirtualRobot.sh): the camera comes from the simulated
+RGBD camera and two simulated printers are spawned in place of the save file.
 """
 
 import sys
@@ -28,6 +28,7 @@ from ar4_automation.runner_common import (
 
 
 # ---- Configuration ----
+RUN_SIM         = 0           # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
 SOURCE_ID       = 2           # Marker to pick up the plate from (and return it to)
 SCRAPE_ID       = 1           # Marker whose surface the plate is scraped against
 SCAN_DISTANCE   = 0.15         # Distance (m) used when scanning markers
@@ -36,11 +37,10 @@ SCRAPE_STANDOFF = 0.38         # Distance (m) along scrape marker Z to approach 
 
 
 def main():
-    sim = "--sim" in sys.argv
     rclpy.init()
-    node = start_node(sim=sim)
+    node = start_node(sim=RUN_SIM)
 
-    if sim:
+    if RUN_SIM:
         # Spawn simulated printers (markers 1 and 2) instead of loading the
         # hardware save file — its real-world poses don't match the sim scene.
         spawn_sim_printers(node, SIM_PRINTER_SPECS_2)

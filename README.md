@@ -39,17 +39,19 @@ themselves and can be run from anywhere.
 
 ## Testing in Gazebo
 
-Most entry points accept `--sim` to run against the simulator instead of the
+Most entry points have a sim switch at the top of the file — `RUN_SIM = 1` in
+`runScrapePlate.py` / `runDoubleTransfer.py`, `runVirtual = 1` in the
+`scanForNMarkers` scripts — to run against the simulator instead of the
 physical robot: the camera feed comes from the simulated RGBD camera
 (`/rgbd_camera/image` + `camera_info`, bridged by `annin_ar4_gazebo`), and
 simulated printers are spawned in the scene in place of the hardware save file.
 
 ```bash
 ./scripts/launchVirtualRobot.sh        # Gazebo + MoveIt (wait until loaded)
-python3 runScrapePlate.py --sim        # markers 1, 2
-python3 runDoubleTransfer.py --sim     # markers 0, 1, 2
-python3 scanFor2Markers.py --sim       # interactive menu
-python3 scanFor3Markers.py --sim
+python3 runScrapePlate.py              # markers 1, 2   (with RUN_SIM = 1)
+python3 runDoubleTransfer.py           # markers 0, 1, 2 (with RUN_SIM = 1)
+python3 scanFor2Markers.py             # interactive menu (with runVirtual = 1)
+python3 scanFor3Markers.py
 ```
 
 The gripper is disabled in sim (physics instability), and the webcam-specific
