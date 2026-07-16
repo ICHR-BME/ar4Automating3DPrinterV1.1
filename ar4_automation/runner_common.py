@@ -11,6 +11,7 @@ scanFor3Markers.py):
   - the interactive command menu used by the scanForNMarkers scripts
 """
 
+import math
 import time
 import threading
 
@@ -28,6 +29,26 @@ WEBCAM_NODE_KWARGS = dict(
 )
 WEBCAM_DISTANCE_SCALE = 1.0 / 0.702
 
+# Gazebo configuration: camera images come from the simulated RGBD camera
+# bridged by annin_ar4_gazebo (topics /rgbd_camera/image + camera_info, so no
+# webcam calibration file or distance-scale correction applies).
+SIM_NODE_KWARGS = dict(
+    calibration_mode=False,
+    stream_source="ros",
+)
+
+# Standard simulated printer layouts (poses match the Gazebo table setup used
+# by the scanForNMarkers scripts). Marker IDs correspond to the door textures.
+SIM_PRINTER_SPECS_3 = [
+    {"marker_id": 0, "pos": [0.22, -0.2, 0.21], "orient": [0.0, 0.0, math.pi],
+     "door_marker_texture": 'materials/textures/marker6x6_0.png'},
+    {"marker_id": 1, "pos": [0.44, -0.2, 0.21], "orient": [0.0, 0.1, math.pi],
+     "door_marker_texture": 'materials/textures/marker6x6_1.png'},
+    {"marker_id": 2, "pos": [0.60, 0.1, 0.21], "orient": [0.0, 0.0, 3/2*math.pi],
+     "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+]
+SIM_PRINTER_SPECS_2 = SIM_PRINTER_SPECS_3[1:]
+
 
 def make_webcam_node(**overrides):
     """Build a printerAutomation node with the standard webcam config."""
@@ -36,6 +57,47 @@ def make_webcam_node(**overrides):
     node = printerAutomation(**kwargs)
     node.stream.distance_scale = WEBCAM_DISTANCE_SCALE
     return node
+
+
+def make_sim_node(**overrides):
+    """Build a printerAutomation node fed by the Gazebo camera."""
+    kwargs = dict(SIM_NODE_KWARGS)
+    kwargs.update(overrides)
+    node = printerAutomation(**kwargs)
+    # Gripper action is unstable in sim (see printerAutomation.gripper_disabled)
+    node.gripper_disabled = True
+    return node
+
+
+def start_node(sim=False, **overrides):
+    """(make_webcam_node or make_sim_node) + spin_in_background + wait_for_joint_states."""
+    node = make_sim_node(**overrides) if sim else make_webcam_node(**overrides)
+    spin_in_background(node)
+    wait_for_joint_states(node)
+    return node
+
+
+def spawn_sim_printers(node, specs):
+    """
+    Spawn Simulated3DPrinter models in Gazebo (one per spec) and register each
+    door marker's geometric pose as the node's estimated marker, so scans know
+    where to look. Returns the list of Simulated3DPrinter objects.
+    """
+    printers = []
+    for p in specs:
+        printer = Simulated3DPrinter(
+            node=node,
+            pos=p["pos"],
+            orient=p["orient"],
+            door_marker_texture=p["door_marker_texture"],
+        )
+        printer.spawn_fast()
+        bad_pos, bad_euler = printer.get_door_marker_pose_in_base()
+        node.register_estimated_marker(
+            marker_id=p["marker_id"], bad_pos=bad_pos, bad_euler=bad_euler
+        )
+        printers.append(printer)
+    return printers
 
 
 def spin_in_background(node):

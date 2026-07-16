@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """
 Scan for markers 1 and 2 only, then start the interactive command menu.
+
+Pass --sim to run against Gazebo (start it first with scripts/launchVirtualRobot.sh)
+instead of the physical robot + webcam.
 """
 
 import sys
@@ -23,7 +26,7 @@ from ar4_automation.simulated3DPrinter import Simulated3DPrinter
 
 def main():
     rclpy.init()
-    runVirtual = 0
+    runVirtual = "--sim" in sys.argv
 
     if runVirtual:
         node = printerAutomation(calibration_mode=False, stream_source="ros")
