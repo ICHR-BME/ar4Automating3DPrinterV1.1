@@ -9,7 +9,7 @@ finished prints off the build plate, and cycles the print queue.
 ```
 runFullAutomationWithScrape.py   Entry points — run these from the repo root.
 runScrapePlate.py, runDoubleTransfer.py,
-scanFor2Markers.py, scanFor3Markers.py, multipleScriptLaunch.py
+scanFor2Markers.py, scanFor3Markers.py
 
 printer_config.yaml              Printer credentials (copy the .example file).
 print_queue.yaml                 What to print and how many times.

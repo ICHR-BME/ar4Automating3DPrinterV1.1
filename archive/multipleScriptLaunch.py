@@ -1,6 +1,11 @@
+import os
+import sys
+
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 
+# Make the repo root importable so ar4_automation resolves when run directly.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ar4_automation.webcam_node import WebcamPublisher
 from ar4_automation.aruco_detector import ArucoDetectionViewer
 
