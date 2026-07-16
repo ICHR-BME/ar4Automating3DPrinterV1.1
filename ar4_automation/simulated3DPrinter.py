@@ -194,6 +194,20 @@ class Simulated3DPrinter:
         self.tf_broadcaster.sendTransform(transform)
         return transform
 
+    def _spin_or_sleep(self, timeout_sec):
+        """Let the node's callbacks be processed for ~timeout_sec.
+
+        Never call rclpy.spin_once() on a node that a background executor
+        already owns: it re-attaches the node to the global executor and
+        detaches it on exit, which permanently kills callback delivery for the
+        node (TF, joint_states, MoveIt action results all go silent). If an
+        executor is spinning the node, just sleep and let it do the work.
+        """
+        if self.node.executor is None:
+            rclpy.spin_once(self.node, timeout_sec=timeout_sec)
+        else:
+            time.sleep(timeout_sec)
+
     def _get_transform_with_retry(self, target_frame, source_frame, timeout_sec=5.0):
         """Get a TF transform with retry logic."""
         start_time = time.time()
@@ -202,7 +216,7 @@ class Simulated3DPrinter:
                 return self.tf_buffer.lookup_transform(target_frame, source_frame, rclpy.time.Time())
             except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
                 self._broadcast_printer_frame()
-                rclpy.spin_once(self.node, timeout_sec=0.1)
+                self._spin_or_sleep(0.1)
         raise tf2_ros.LookupException(
             f"Could not get transform from {source_frame} to {target_frame} after {timeout_sec}s"
         )
@@ -429,7 +443,7 @@ class Simulated3DPrinter:
         # Broadcast printer frame and ensure TF is ready
         for _ in range(10):
             self._broadcast_printer_frame()
-            rclpy.spin_once(self.node, timeout_sec=0.1)
+            self._spin_or_sleep(0.1)
 
         # Delete existing entities (both from spawn_fast and spawn_complete)
         self._delete_entity(body_name)

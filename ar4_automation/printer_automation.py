@@ -352,6 +352,19 @@ class printerAutomation(ArucoDetectionViewer):
         target_euler = (R_marker * R.from_euler("XYZ", offset_ori, degrees=False)).as_euler("XYZ", degrees=False)
         return target_pos, target_euler
 
+    def _tilted_offset_ori(self, angle_deg):
+        """self.offsetOri with an extra tilt of angle_deg about the marker's X axis.
+
+        The tilt is applied in the marker's local frame (premultiplied), so a
+        positive angle pitches the tool about the marker's horizontal X axis
+        while the approach still runs along the marker's Z axis. Returns None
+        for a zero angle so callers fall through to the default orientation.
+        """
+        if not angle_deg:
+            return None
+        tilt = R.from_euler("x", np.radians(angle_deg))
+        return (tilt * R.from_euler("XYZ", self.offsetOri, degrees=False)).as_euler("XYZ", degrees=False)
+
     def _move_to_marker_offset(self, marker_id, offset_pos, offset_ori=None):
         """
         Core routine: find marker, compute offset, and move.
@@ -617,24 +630,26 @@ class printerAutomation(ArucoDetectionViewer):
         return self._move_to_marker_offset(markerID, approach_offset)
 
     @_timed
-    def moveToMarker(self, markerID=0, approach_standoff=0.15):
+    def moveToMarker(self, markerID=0, approach_standoff=0.15, angle_deg=0.0):
         self.open_gripper()
         handle_offset, _ = self._get_offsets_for_marker(markerID)
+        tilt_ori = self._tilted_offset_ori(angle_deg)
         # Move to approach pose: same X,Y as handle in marker frame, but at standoff
         # distance on the marker Z axis.  This guarantees the final move to the handle
         # is purely along the marker's Z axis, avoiding collisions with the handle.
         approach_offset = np.array([handle_offset[0], handle_offset[1], approach_standoff])
-        if not self._move_to_marker_offset(markerID, approach_offset):
+        if not self._move_to_marker_offset(markerID, approach_offset, tilt_ori):
             return False
-        return self._move_to_marker_offset(markerID, handle_offset)
+        return self._move_to_marker_offset(markerID, handle_offset, tilt_ori)
 
-    def liftPlate(self, markerID=0):
+    def liftPlate(self, markerID=0, angle_deg=0.0):
         _, pickup_offset = self._get_offsets_for_marker(markerID)
-        return self._move_to_marker_offset(markerID, pickup_offset)
+        return self._move_to_marker_offset(markerID, pickup_offset,
+                                           self._tilted_offset_ori(angle_deg))
 
     @_timed
-    def pickupPlate(self, markerID=0):
-        if not self.moveToMarker(markerID):
+    def pickupPlate(self, markerID=0, angle_deg=0.0):
+        if not self.moveToMarker(markerID, angle_deg=angle_deg):
             self.get_logger().error(f"pickupPlate: moveToMarker failed for marker {markerID}.")
             return False
         # Record the joint config at the grasp so placePlate can return the plate
@@ -642,18 +657,19 @@ class printerAutomation(ArucoDetectionViewer):
         grasp_joints = self._current_arm_joints()
         self.close_gripper()
         time.sleep(3.0)
-        if not self.liftPlate(markerID):
+        if not self.liftPlate(markerID, angle_deg=angle_deg):
             self.get_logger().error(f"pickupPlate: liftPlate failed for marker {markerID}.")
             return False
         lift_joints = self._current_arm_joints()
         if grasp_joints is not None and lift_joints is not None:
-            self._pickup_replay = {'marker': markerID, 'grasp': grasp_joints, 'lift': lift_joints}
+            self._pickup_replay = {'marker': markerID, 'grasp': grasp_joints,
+                                   'lift': lift_joints, 'angle': angle_deg}
         else:
             self._pickup_replay = None
         return True
 
     @_timed
-    def placePlate(self, markerID=0):
+    def placePlate(self, markerID=0, angle_deg=0.0):
         """Place a held build plate at the specified marker location.
 
         If we recorded joint configs while picking the plate up at this same
@@ -665,7 +681,10 @@ class printerAutomation(ArucoDetectionViewer):
         matching pickup record exists (e.g. transferPlate placing elsewhere).
         """
         replay = getattr(self, '_pickup_replay', None)
-        if replay is not None and replay.get('marker') == markerID:
+        # The joint replay reproduces the pickup orientation exactly, so it is
+        # only valid when the requested place angle matches the pickup angle.
+        if (replay is not None and replay.get('marker') == markerID
+                and replay.get('angle', 0.0) == angle_deg):
             self.get_logger().info(
                 f"placePlate: replaying recorded pickup joints for marker {markerID} (wrist-continuous)."
             )
@@ -684,12 +703,13 @@ class printerAutomation(ArucoDetectionViewer):
             return False
 
         handle_offset, _ = self._get_offsets_for_marker(markerID)
+        tilt_ori = self._tilted_offset_ori(angle_deg)
         # Move above destination
-        if not self.liftPlate(markerID):
+        if not self.liftPlate(markerID, angle_deg=angle_deg):
             self.get_logger().error(f"placePlate: liftPlate failed for marker {markerID}.")
             return False
         # Lower to handle position
-        if not self._move_to_marker_offset(markerID, handle_offset):
+        if not self._move_to_marker_offset(markerID, handle_offset, tilt_ori):
             self.get_logger().error(f"placePlate: move to handle failed for marker {markerID}.")
             return False
         self.open_gripper()
@@ -851,7 +871,7 @@ class printerAutomation(ArucoDetectionViewer):
             return None
 
     @_timed
-    def scrapePlate(self, source_id, scrape_id, scan_distance=0.15, scrape_standoff=0.15, scrape_offset=None, wait_after_pickup=False, wait_duration=60.0, rotate_after_scrape=False, rotate_degrees=60.0):
+    def scrapePlate(self, source_id, scrape_id, scan_distance=0.15, scrape_standoff=0.15, scrape_offset=None, wait_after_pickup=False, wait_duration=60.0, rotate_after_scrape=False, rotate_degrees=60.0, pickup_angle_deg=0.0, place_angle_deg=0.0, scrape_angle_deg=0.0):
         """
         Pick up a plate from source_id, scrape it against the scrape_id marker surface,
         then return it to source_id.
@@ -868,6 +888,10 @@ class printerAutomation(ArucoDetectionViewer):
           to False.
         rotate_degrees: degrees to rotate the end-effector joint when rotate_after_scrape is
           True.  Defaults to 60.0.
+        pickup_angle_deg / place_angle_deg / scrape_angle_deg: extra tilt (degrees)
+          about the marker's local X axis applied to the tool orientation during
+          pickup, placement, and the scrape approach/depth/retract respectively.
+          0.0 (default) keeps the original behaviour.
 
         1. Scan source marker  — retries at 0.85x and 0.70x if movement fails; aborts if all fail
         2. Pick up plate from source_id  — aborts on failure
@@ -894,7 +918,7 @@ class printerAutomation(ArucoDetectionViewer):
 
         # Step 2 – pick up plate from source
         self.get_logger().info(f"Step 2: picking up plate from marker {source_id}")
-        if not self.pickupPlate(markerID=source_id):
+        if not self.pickupPlate(markerID=source_id, angle_deg=pickup_angle_deg):
             self.get_logger().error(
                 f"scrapePlate: pickupPlate failed for marker {source_id}. Aborting."
             )
@@ -925,8 +949,9 @@ class printerAutomation(ArucoDetectionViewer):
         # Step 4 – move to standoff: same x, y as scrape_offset but at standoff Z distance,
         # so the final approach and retract are purely along the marker's Z axis.
         self.get_logger().info(f"Step 4: moving to scrape standoff (Z={scrape_standoff} m)")
+        scrape_ori = self._tilted_offset_ori(scrape_angle_deg)
         standoff_offset = np.array([scrape_offset[0], scrape_offset[1], scrape_standoff])
-        if not self._move_to_marker_offset(scrape_id, standoff_offset):
+        if not self._move_to_marker_offset(scrape_id, standoff_offset, scrape_ori):
             self.get_logger().error(
                 f"scrapePlate: could not reach scrape standoff for marker {scrape_id}. Aborting."
             )
@@ -938,7 +963,7 @@ class printerAutomation(ArucoDetectionViewer):
 
         # Step 5 – move to scrape_offset position in the marker's local frame
         self.get_logger().info(f"Step 5: moving to scrape offset {scrape_offset} in marker frame")
-        if not self._move_to_marker_offset(scrape_id, scrape_offset):
+        if not self._move_to_marker_offset(scrape_id, scrape_offset, scrape_ori):
             self.get_logger().error(
                 f"scrapePlate: could not reach scrape depth for marker {scrape_id}. Aborting."
             )
@@ -962,7 +987,7 @@ class printerAutomation(ArucoDetectionViewer):
             )
         # Step 6 – retract back along marker Z to standoff
         self.get_logger().info(f"Step 6: retracting to standoff (Z={scrape_standoff} m)")
-        if not self._move_to_marker_offset(scrape_id, standoff_offset):
+        if not self._move_to_marker_offset(scrape_id, standoff_offset, scrape_ori):
             self.get_logger().error(
                 f"scrapePlate: retraction to standoff failed for marker {scrape_id}. Continuing."
             )
@@ -1019,7 +1044,7 @@ class printerAutomation(ArucoDetectionViewer):
         # Unfreeze so the camera can refresh the source marker pose before placing.
         self.unfreeze_markers()
         self.get_logger().info(f"Step 7: placing plate back at marker {source_id}")
-        if not self.placePlate(markerID=source_id):
+        if not self.placePlate(markerID=source_id, angle_deg=place_angle_deg):
             self.get_logger().error(
                 f"scrapePlate: placePlate failed for marker {source_id}. Aborting."
             )

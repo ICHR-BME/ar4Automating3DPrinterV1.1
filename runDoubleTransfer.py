@@ -28,7 +28,7 @@ from ar4_automation.runner_common import (
 )
 
 
-RUN_SIM = 0      # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
+RUN_SIM = 1      # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
 NUM_REPEATS = 6  # Number of times to repeat the double transfer
 
 

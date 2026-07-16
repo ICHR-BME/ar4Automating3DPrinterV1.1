@@ -28,7 +28,7 @@ from ar4_automation.runner_common import (
 
 
 # ---- Configuration ----
-RUN_SIM         = 0           # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
+RUN_SIM         = 1           # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
 SOURCE_ID       = 2           # Marker to pick up the plate from (and return it to)
 SCRAPE_ID       = 1           # Marker whose surface the plate is scraped against
 SCAN_DISTANCE   = 0.15         # Distance (m) used when scanning markers

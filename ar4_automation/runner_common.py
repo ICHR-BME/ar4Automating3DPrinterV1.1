@@ -42,7 +42,10 @@ SIM_NODE_KWARGS = dict(
 SIM_PRINTER_SPECS_3 = [
     {"marker_id": 0, "pos": [0.22, -0.2, 0.21], "orient": [0.0, 0.0, math.pi],
      "door_marker_texture": 'materials/textures/marker6x6_0.png'},
-    {"marker_id": 1, "pos": [0.44, -0.2, 0.21], "orient": [0.0, 0.1, math.pi],
+    # y=-0.3 (matching the hardware layout's lateral offset) keeps the 0.38 m
+    # scrape standoff inside the arm's wrist envelope; at y=-0.2 the standoff
+    # pose has no IK solution and scrapePlate aborts at step 4.
+    {"marker_id": 1, "pos": [0.44, -0.3, 0.21], "orient": [0.0, 0.0, math.pi],
      "door_marker_texture": 'materials/textures/marker6x6_1.png'},
     {"marker_id": 2, "pos": [0.60, 0.1, 0.21], "orient": [0.0, 0.0, 3/2*math.pi],
      "door_marker_texture": 'materials/textures/marker6x6_2.png'},
@@ -110,9 +113,13 @@ def spin_in_background(node):
         threading.Thread(target=node.stream.run, daemon=True).start()
 
     def _resilient_spin():
+        # spin() (not a spin_once loop): a spin_once loop serves one callback per
+        # iteration, so the always-ready 30 Hz sim-camera callback starves TF,
+        # joint_states, and MoveIt action results — verification then compares
+        # against a frozen pose and every sim move "times out" despite executing.
         while rclpy.ok():
             try:
-                executor.spin_once(timeout_sec=0.1)
+                executor.spin()
             except Exception as e:
                 node.get_logger().warn(f"Executor spin error (recovering): {e}")
                 time.sleep(0.01)
