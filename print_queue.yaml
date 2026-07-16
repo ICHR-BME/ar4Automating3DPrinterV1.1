@@ -8,9 +8,11 @@
 print_folder: testPrints
 
 prints:
-  - name: smallCylinderPLA15m17s.gcode.3mf
-    count: 1
-  - name: BenchyFast.3mf
-    count: 1
-  - name: Cat_Toy_PLA.gcode.3mf
-    count: 1
+  - name: cylinderFast.3mf
+    count: 5
+  #- name: smallCylinderPLA15m17s.gcode.3mf
+  #  count: 1
+  #- name: BenchyFast.3mf
+  #  count: 1
+  #- name: Cat_Toy_PLA.gcode.3mf
+  #  count: 1

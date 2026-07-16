@@ -103,13 +103,6 @@ def main():
         )
         return
 
-    # The scrape marker is a fixed reference: pin it to the file-loaded pose so
-    # neither the camera nor the geometry re-registration / scan below can change
-    # it. This keeps the scrape approach identical on every cycle and avoids the
-    # marker-drift collisions fixed in runScrapePlate.py. (lock_marker is honoured
-    # by both the camera update path and register_estimated_marker.)
-    node.lock_marker(SCRAPE_ID)
-
     restore_saved_printers(node)
 
     # Connect the Bambu printer and register it with the node.
@@ -148,13 +141,22 @@ def main():
             raise RuntimeError(f"Upload failed for {local_file_prepped}")
         remote_names[local_file] = os.path.basename(local_file_prepped)
 
-    # Set up markers (mirrors scanFor2Markers.py non-virtual procedure). Marker 1
-    # (scrape) is locked to the file pose above, so it is NOT estimated or scanned
-    # here — those calls would be no-ops. Only marker 2 (the pickup source) is
-    # estimated and scanned, since it is re-detected fresh each cycle.
+    # Set up markers (mirrors scanFor2Markers.py non-virtual procedure). Both
+    # markers are estimated and scanned once at startup. Marker 1 (scrape) is
+    # then locked so this initial scan is the ONLY time it is ever updated —
+    # keeping the scrape approach identical on every cycle and avoiding the
+    # marker-drift collisions fixed in runScrapePlate.py. Marker 2 (the pickup
+    # source) stays unlocked and is re-detected fresh each cycle.
     viewing_distance = SCAN_DISTANCE
     node.marker_offset_config[1] = 'box_offset'
     node.marker_offset_config[2] = 'printer_offset'
+
+    printer2 = Simulated3DPrinter(
+        node=node, pos=[0.40, -0.3, 0.065], orient=[0.0, 0.0, np.pi],
+        door_marker_texture='materials/textures/marker6x6_1.png',
+    )
+    bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
+    node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
 
     printer3 = Simulated3DPrinter(
         node=node, pos=[0.65, 0.1, 0.075], orient=[0.0, 0.0, 3/2*np.pi],
@@ -169,6 +171,14 @@ def main():
         {"marker_id": 2, "pos": [0.65, 0.1, 0.07], "orient": [0.0, 0.0, 3/2*np.pi],
          "door_marker_texture": 'materials/textures/marker6x6_2.png'},
     ])
+
+    node.get_logger().info("Scanning for scrape marker 1...")
+    node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
+
+    # Lock the freshly scanned scrape pose. lock_marker is honoured by both the
+    # camera update path and register_estimated_marker, so nothing after this
+    # point can move marker 1.
+    node.lock_marker(SCRAPE_ID)
 
     node.get_logger().info("Scanning for source marker 2...")
     node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
