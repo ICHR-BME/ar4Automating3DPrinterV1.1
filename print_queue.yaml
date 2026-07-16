@@ -5,7 +5,7 @@
 #               The queue runs in order: all copies of the first entry, then
 #               all copies of the second, and so on. One scrape per print.
 
-print_folder: testPrints
+print_folder: gcode
 
 prints:
   - name: cylinderFast.3mf

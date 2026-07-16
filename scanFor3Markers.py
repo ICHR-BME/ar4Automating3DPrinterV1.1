@@ -11,14 +11,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 import rclpy
 
-from printer_automation import printerAutomation
-from runner_common import (
+from ar4_automation.printer_automation import printerAutomation
+from ar4_automation.runner_common import (
     make_webcam_node,
     spin_in_background,
     wait_for_joint_states,
     run_command_menu,
 )
-from simulated3DPrinter import Simulated3DPrinter
+from ar4_automation.simulated3DPrinter import Simulated3DPrinter
 
 
 def main():

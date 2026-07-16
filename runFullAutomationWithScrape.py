@@ -22,9 +22,9 @@ import numpy as np
 import rclpy
 import yaml
 
-from runner_common import start_webcam_node, restore_saved_printers
-from simulated3DPrinter import Simulated3DPrinter
-from printerclass import BambuPrinter, load_printer_config, strip_startup_gcode
+from ar4_automation.runner_common import start_webcam_node, restore_saved_printers
+from ar4_automation.simulated3DPrinter import Simulated3DPrinter
+from ar4_automation.printerclass import BambuPrinter, load_printer_config, strip_startup_gcode
 
 
 # ---- Configuration ----
@@ -57,7 +57,7 @@ def load_print_queue(queue_file):
     print-file paths to run — each file repeated 'count' times.
 
     Expected format:
-        print_folder: testPrints
+        print_folder: gcode
         prints:
           - name: bed_scraper_a1mini.gcode.3mf
             count: 20

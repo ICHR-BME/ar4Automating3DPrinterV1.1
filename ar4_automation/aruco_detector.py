@@ -17,9 +17,9 @@ import tf2_ros
 from rclpy.callback_groups import ReentrantCallbackGroup
 from tf2_geometry_msgs import do_transform_pose
 
-from webVideoServer import WebVideoStream
-from poseReader import PoseReader
-from simulated3DPrinter import Simulated3DPrinter
+from .web_video_server import WebVideoStream
+from .pose_reader import PoseReader
+from .simulated3DPrinter import Simulated3DPrinter
 
 
 class ArucoDetectionViewer(PoseReader):

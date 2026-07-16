@@ -16,8 +16,8 @@ import threading
 
 import rclpy
 
-from printer_automation import printerAutomation
-from simulated3DPrinter import Simulated3DPrinter
+from .printer_automation import printerAutomation
+from .simulated3DPrinter import Simulated3DPrinter
 
 # Standard hardware configuration shared by all runner scripts.
 WEBCAM_NODE_KWARGS = dict(

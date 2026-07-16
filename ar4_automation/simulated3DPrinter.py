@@ -49,8 +49,10 @@ class Simulated3DPrinter:
         enable_door_flapping_animation: Whether to animate the door
     """
     
-    # Default paths
-    DEFAULT_MODEL_DIR = '/home/koghalai/ar4_ws/src/ar4Automating3DPrinter/models/aruco_marker/'
+    # Default paths (models/ lives at the repo root, one level above this package)
+    DEFAULT_MODEL_DIR = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'models', 'aruco_marker', '')
     
     def __init__(
         self,

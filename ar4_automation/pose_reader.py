@@ -50,9 +50,8 @@ def _moveit_err_str(moveit2):
 	except Exception:
 		return "?"
 
-import sys
-sys.path.insert(0, "/home/koghalai/ar4_ws/src/ar4Automating3DPrinter")
-from moveit2 import MoveIt2
+# Patched local copy of pymoveit2's moveit2.py (kept verbatim in this package).
+from .moveit2 import MoveIt2
 
 class PoseReader(Node):
 	"""ROS 2 node that prints the gripper pose every second using pymoveit2."""

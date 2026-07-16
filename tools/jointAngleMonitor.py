@@ -6,7 +6,7 @@ place. Use it to check encoder direction: turn a joint by hand in its + directio
 and watch whether the reported position goes UP (correct) or DOWN (inverted), and
 whether its velocity sign matches the others for the same physical motion.
 
-Run:  python3 jointAngleMonitor.py
+Run:  python3 tools/jointAngleMonitor.py
 """
 import rclpy
 from rclpy.node import Node

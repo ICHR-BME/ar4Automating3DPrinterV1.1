@@ -8,6 +8,7 @@ from nav_msgs.msg import Odometry, Path
 from cv_bridge import CvBridge
 import cv2
 import numpy as np
+import os
 import subprocess
 import threading
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
@@ -113,7 +114,8 @@ class RTABMapVisualizer(Node):
     def spawn_objects(self, scene_type='random', count=20, seed=None):
         self.get_logger().info(f'Spawning {count} {scene_type} objects...')
         try:
-            cmd = ['python3', '/home/koghalai/ar4_ws/src/ar4Automating3DPrinter/object_generator.py',
+            _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            cmd = ['python3', os.path.join(_repo_root, 'tools', 'object_generator.py'),
                    '--scene', scene_type, '--count', str(count)]
             if seed is not None:
                 cmd.extend(['--seed', str(seed)])

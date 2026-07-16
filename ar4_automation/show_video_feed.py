@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-from webVideoServer import WebVideoStream
+from .web_video_server import WebVideoStream
 
 
 class CameraViewer(Node):

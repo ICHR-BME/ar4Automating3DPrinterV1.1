@@ -7,7 +7,7 @@ import warnings
 # inherit the filter without each having to set it.
 warnings.filterwarnings("ignore", message="Gimbal lock detected", category=UserWarning)
 
-from ArucoDetector import ArucoDetectionViewer
+from .aruco_detector import ArucoDetectionViewer
 import rclpy
 import numpy as np
 import os
@@ -16,16 +16,20 @@ import csv
 import datetime
 import functools
 from pymoveit2 import GripperInterface
-from printerclass import BambuPrinter
+from .printerclass import BambuPrinter
 from scipy.spatial.transform import Rotation as R
 from geometry_msgs.msg import TransformStamped
 import tf2_ros
-from simulated3DPrinter import Simulated3DPrinter
+from .simulated3DPrinter import Simulated3DPrinter
 import time
 import threading
 
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
+_DATA_DIR = os.path.join(_REPO_ROOT, "data")
+_LOG_DIR = os.path.join(_DATA_DIR, "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
 
 
 def _timed(method):
@@ -59,7 +63,7 @@ class printerAutomation(ArucoDetectionViewer):
                          camera_info_topic=camera_info_topic,
                          feed_rotation_deg=feed_rotation_deg,
                          marker_sizes=marker_sizes,
-                         calibration_file=os.path.join(_SCRIPT_DIR, "camera_matrix.npz"))
+                         calibration_file=os.path.join(_REPO_ROOT, "calibration", "camera_matrix.npz"))
         self.get_logger().info(f"printerAutomation initialized, calibration_mode={calibration_mode}")
 
         # Estimated marker frame name prefix
@@ -115,11 +119,11 @@ class printerAutomation(ArucoDetectionViewer):
         self.camera_z_offset = 0.06
 
         # Persistent state save file — written every 5 s and loaded at startup
-        self._state_save_path = os.path.join(_SCRIPT_DIR, "printer_state.json")
+        self._state_save_path = os.path.join(_DATA_DIR, "printer_state.json")
         self.create_timer(5.0, self._auto_save_state)
 
         # Timing log: one row per public-method call
-        _timing_dir = os.path.join(_SCRIPT_DIR, "timingData")
+        _timing_dir = os.path.join(_DATA_DIR, "timing")
         os.makedirs(_timing_dir, exist_ok=True)
         _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self._timing_csv_path = os.path.join(_timing_dir, f"timing_{_ts}.csv")
@@ -133,7 +137,7 @@ class printerAutomation(ArucoDetectionViewer):
 
         # Raw-measurement scan log (one row per video frame, written immediately).
         # Opened in write mode so old data is discarded on every restart.
-        self._scan_log_path = os.path.join(_SCRIPT_DIR, "scan_raw_measurements.csv")
+        self._scan_log_path = os.path.join(_LOG_DIR, "scan_raw_measurements.csv")
         self._scan_log_marker_id = None   # set by scanToMarker while active
         self._scan_log_distance = None
         self._scan_log_movement_id = 0     # increments each time a new scanToMarker observation window starts
@@ -830,7 +834,7 @@ class printerAutomation(ArucoDetectionViewer):
         line = f"[{time.strftime('%H:%M:%S')}] {msg}"
         self.get_logger().info(f"DBG {msg}")
         try:
-            with open(os.path.join(_SCRIPT_DIR, "scrape_debug.log"), "a") as f:
+            with open(os.path.join(_LOG_DIR, "scrape_debug.log"), "a") as f:
                 f.write(line + "\n")
         except Exception:
             pass

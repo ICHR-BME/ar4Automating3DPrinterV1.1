@@ -1,5 +1,10 @@
-from printerclass import BambuPrinter, load_printer_config
+import os
+import sys
 import time
+
+# Make the repo root importable so ar4_automation resolves when run directly.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from ar4_automation.printerclass import BambuPrinter, load_printer_config
 
 # Credentials come from printer_config.yaml (see printer_config.example.yaml)
 # instead of being hard-coded here.

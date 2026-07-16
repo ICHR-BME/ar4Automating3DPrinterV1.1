@@ -37,8 +37,8 @@ import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
 
 # ── load data ──────────────────────────────────────────────────────────────────
-_HERE = os.path.dirname(os.path.abspath(__file__))
-CSV_PATH = os.path.join(_HERE, "rawMeasurementsDebug.csv")
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CSV_PATH = os.path.join(_REPO_ROOT, "data", "logs", "rawMeasurementsDebug.csv")
 
 if not os.path.exists(CSV_PATH):
     print(f"Error: {CSV_PATH} not found.")

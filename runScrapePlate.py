@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import rclpy
 
-from runner_common import start_webcam_node, restore_saved_printers
+from ar4_automation.runner_common import start_webcam_node, restore_saved_printers
 
 
 # ---- Configuration ----

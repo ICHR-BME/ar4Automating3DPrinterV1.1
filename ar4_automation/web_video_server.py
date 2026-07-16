@@ -225,7 +225,7 @@ class WebVideoStream:
             print(f"Camera: {w}x{h} (index {camera_index})")
             if enable_aruco:
                 import pathlib
-                _default = pathlib.Path(__file__).parent / "camera_matrix.npz"
+                _default = pathlib.Path(__file__).resolve().parents[1] / "calibration" / "camera_matrix.npz"
                 _cal_path = pathlib.Path(calibration_file) if calibration_file is not None else _default
                 if not _cal_path.exists():
                     raise RuntimeError(

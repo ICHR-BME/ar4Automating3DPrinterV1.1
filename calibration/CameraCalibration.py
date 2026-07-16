@@ -4,8 +4,9 @@ import glob
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from webVideoServer import select_camera
+# Make the repo root importable so ar4_automation resolves when run directly.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from ar4_automation.web_video_server import select_camera
 
 # --- ChArUco board parameters (adjust to match your physical board) ---
 SQUARES_X = 11         # number of chessboard squares in X direction

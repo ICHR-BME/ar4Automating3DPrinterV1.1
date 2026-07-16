@@ -7,7 +7,12 @@ import cv2
 from scipy.spatial.transform import Rotation as R
 from scipy.optimize import minimize
 
-from ArucoDetector import ArucoDetectionViewer
+import os
+import sys
+
+# Make the repo root importable so ar4_automation resolves when run directly.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from ar4_automation.aruco_detector import ArucoDetectionViewer
 
 class HandEyeCalibration(ArucoDetectionViewer):
     def __init__(self):

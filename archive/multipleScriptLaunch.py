@@ -1,8 +1,8 @@
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 
-from webcamNode import WebcamPublisher
-from ArucoDetector import ArucoDetectionViewer
+from ar4_automation.webcam_node import WebcamPublisher
+from ar4_automation.aruco_detector import ArucoDetectionViewer
 
 
 def main():

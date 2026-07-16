@@ -2,8 +2,13 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CameraInfo
 import cv2
-from showVideoFeed import CameraViewer
-from poseReader import PoseReader
+import os
+import sys
+
+# Make the repo root importable so ar4_automation resolves when run directly.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from ar4_automation.show_video_feed import CameraViewer
+from ar4_automation.pose_reader import PoseReader
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 import subprocess
@@ -11,8 +16,6 @@ from geometry_msgs.msg import Pose, TransformStamped, PoseStamped
 import tf2_ros
 from rclpy.time import Time
 from tf2_geometry_msgs import do_transform_pose
-from poseReader import PoseReader 
-import sys
 import time
 from geometry_msgs.msg import Point, Quaternion, Pose
 from tf_transformations import quaternion_from_euler, euler_from_quaternion
