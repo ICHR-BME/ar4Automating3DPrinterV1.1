@@ -1,0 +1,3 @@
+timestamp,call_chain,duration_s
+2026-07-17T12:32:53.935060,scanMarkerApproach > scanToMarker,7.7312
+2026-07-17T12:32:53.935347,scanMarkerApproach,7.7315

@@ -709,3 +709,72 @@
 [16:14:00] ROTATE j6 55.3 deg --(-60)--> target -4.7 deg; exceeds_155=False exceeds_180=False
 [16:14:04] ROTATE move_to(rotated) ok=True
 [16:14:07] ROTATE move_to(restore) ok=True joints_after=[-31.7, 52.8, 1.6, -71.8, 20.0, 54.8]
+[12:34:50] SCRAPE marker 1 pos=[-0.1936 -0.4092  0.0887] euler_deg=[-88.66  85.1  179.65] estimated=False
+[12:34:55] SCRAPE wp 1/3 ok=True joints_deg=[-31.8, 52.2, 1.2, -70.7, 19.5, 54.5]
+[12:34:58] SCRAPE wp 2/3 ok=True joints_deg=[2.2, 48.0, 13.5, -98.7, 0.9, 60.8]
+[12:35:01] SCRAPE wp 3/3 ok=True joints_deg=[-31.9, 52.2, 1.5, -70.6, 19.6, 54.9]
+[12:35:01] ROTATE current_joints_deg=[-31.9, 52.2, 1.5, -70.6, 19.6, 54.9]
+[12:35:01] ROTATE j6 54.9 deg --(-60)--> target -5.1 deg; exceeds_155=False exceeds_180=False
+[12:35:04] ROTATE move_to(rotated) ok=True
+[12:35:08] ROTATE move_to(restore) ok=True joints_after=[-31.9, 52.2, 1.5, -70.5, 19.6, 54.5]
+[12:38:42] SCRAPE marker 1 pos=[-0.1936 -0.4092  0.0887] euler_deg=[-88.66  85.1  179.65] estimated=False
+[12:43:45] SCRAPE marker 1 pos=[-0.1936 -0.4092  0.0887] euler_deg=[-88.66  85.1  179.65] estimated=False
+[12:43:50] SCRAPE wp 1/3 ok=True joints_deg=[-32.1, 52.2, 1.4, -70.8, 19.5, 54.9]
+[12:43:53] SCRAPE wp 2/3 ok=True joints_deg=[2.1, 48.0, 13.5, -98.7, 0.9, 60.8]
+[12:43:56] SCRAPE wp 3/3 ok=True joints_deg=[-31.9, 52.3, 1.2, -70.6, 19.6, 54.7]
+[12:43:56] ROTATE current_joints_deg=[-31.9, 52.3, 1.2, -70.6, 19.6, 54.7]
+[12:43:56] ROTATE j6 54.7 deg --(-60)--> target -5.3 deg; exceeds_155=False exceeds_180=False
+[12:43:59] ROTATE move_to(rotated) ok=True
+[12:44:03] ROTATE move_to(restore) ok=True joints_after=[-31.8, 52.2, 1.2, -70.6, 19.6, 54.5]
+[12:44:40] SCRAPE marker 1 pos=[-0.2119 -0.4134  0.1035] euler_deg=[-24.03  76.51 114.77] estimated=None
+[12:44:45] SCRAPE wp 1/3 ok=True joints_deg=[-26.5, 35.4, 2.8, -71.4, 11.2, 41.4]
+[12:44:48] SCRAPE wp 2/3 ok=True joints_deg=[8.0, 41.0, 10.0, -96.1, -14.2, 50.8]
+[12:44:51] SCRAPE wp 3/3 ok=True joints_deg=[-26.2, 35.4, 3.1, -71.1, 11.2, 41.6]
+[12:44:51] ROTATE current_joints_deg=[-26.2, 35.4, 3.1, -71.1, 11.2, 41.6]
+[12:44:51] ROTATE j6 41.6 deg --(-60)--> target -18.4 deg; exceeds_155=False exceeds_180=False
+[12:44:54] ROTATE move_to(rotated) ok=True
+[12:44:58] ROTATE move_to(restore) ok=True joints_after=[-26.2, 35.5, 3.0, -71.1, 11.3, 41.4]
+[12:46:09] SCRAPE marker 1 pos=[-0.2119 -0.4134  0.1035] euler_deg=[-24.03  76.51 114.77] estimated=False
+[12:46:13] SCRAPE wp 1/3 ok=True joints_deg=[-26.4, 35.7, 2.9, -71.3, 11.0, 41.7]
+[12:46:17] SCRAPE wp 2/3 ok=True joints_deg=[8.0, 41.1, 9.9, -96.1, -14.3, 50.8]
+[12:46:20] SCRAPE wp 3/3 ok=True joints_deg=[-26.2, 35.5, 2.7, -71.2, 11.3, 41.3]
+[12:46:20] ROTATE current_joints_deg=[-26.2, 35.5, 2.7, -71.2, 11.3, 41.3]
+[12:46:20] ROTATE j6 41.3 deg --(-60)--> target -18.7 deg; exceeds_155=False exceeds_180=False
+[12:46:23] ROTATE move_to(rotated) ok=True
+[12:46:27] ROTATE move_to(restore) ok=True joints_after=[-26.2, 35.6, 2.7, -71.2, 11.3, 40.9]
+[12:47:33] SCRAPE marker 1 pos=[-0.2119 -0.4134  0.1035] euler_deg=[-24.03  76.51 114.77] estimated=False
+[12:47:37] SCRAPE wp 1/3 ok=True joints_deg=[-26.5, 35.5, 2.8, -71.3, 11.2, 41.4]
+[12:47:41] SCRAPE wp 2/3 ok=True joints_deg=[8.1, 40.9, 10.1, -96.1, -14.2, 50.8]
+[12:47:44] SCRAPE wp 3/3 ok=True joints_deg=[-26.3, 35.6, 3.0, -71.1, 11.3, 41.7]
+[12:47:44] ROTATE current_joints_deg=[-26.3, 35.6, 3.0, -71.1, 11.3, 41.7]
+[12:47:44] ROTATE j6 41.7 deg --(-60)--> target -18.3 deg; exceeds_155=False exceeds_180=False
+[12:47:47] ROTATE move_to(rotated) ok=True
+[12:47:51] ROTATE move_to(restore) ok=True joints_after=[-26.4, 35.5, 3.0, -71.1, 11.2, 41.4]
+[12:58:03] SCRAPE marker 1 pos=[-0.2119 -0.4134  0.1035] euler_deg=[-24.03  76.51 114.77] estimated=False
+[12:58:07] SCRAPE wp 1/3 ok=True joints_deg=[-26.4, 35.7, 2.8, -71.3, 11.1, 41.6]
+[12:58:10] SCRAPE wp 2/3 ok=True joints_deg=[8.0, 41.1, 10.1, -96.1, -14.1, 51.0]
+[12:58:13] SCRAPE wp 3/3 ok=True joints_deg=[-26.3, 35.5, 2.7, -71.1, 11.4, 41.4]
+[12:58:13] ROTATE current_joints_deg=[-26.3, 35.5, 2.7, -71.1, 11.4, 41.4]
+[12:58:13] ROTATE j6 41.4 deg --(-60)--> target -18.6 deg; exceeds_155=False exceeds_180=False
+[12:58:17] ROTATE move_to(rotated) ok=True
+[12:58:21] ROTATE move_to(restore) ok=True joints_after=[-26.3, 35.5, 2.7, -71.1, 11.3, 41.1]
+[13:03:52] SCRAPE marker 1 pos=[-0.2119 -0.4134  0.1035] euler_deg=[-24.03  76.51 114.77] estimated=False
+[13:03:56] SCRAPE wp 1/3 ok=True joints_deg=[-26.3, 35.4, 2.9, -71.4, 11.0, 41.4]
+[13:04:00] SCRAPE wp 2/3 ok=True joints_deg=[8.1, 41.1, 10.1, -96.2, -14.3, 51.0]
+[13:04:03] SCRAPE wp 3/3 ok=True joints_deg=[-26.2, 35.6, 2.8, -71.1, 11.3, 41.4]
+[13:04:03] ROTATE current_joints_deg=[-26.2, 35.6, 2.8, -71.1, 11.3, 41.4]
+[13:04:03] ROTATE j6 41.4 deg --(-60)--> target -18.6 deg; exceeds_155=False exceeds_180=False
+[13:04:06] ROTATE move_to(rotated) ok=True
+[13:04:10] ROTATE move_to(restore) ok=True joints_after=[-26.3, 35.6, 2.8, -71.1, 11.3, 41.2]
+[14:26:06] SCRAPE marker 1 pos=[-0.1934 -0.4118  0.0914] euler_deg=[ -90.81   86.04 -178.75] estimated=False
+[14:26:17] SCRAPE walk done joints_deg=[-31.4, 52.7, -0.9, -70.9, 20.7, 53.6]
+[14:26:17] ROTATE current_joints_deg=[-31.4, 52.7, -0.9, -70.9, 20.7, 53.6]
+[14:26:17] ROTATE j6 53.6 deg --(-60)--> target -6.4 deg; exceeds_155=False exceeds_180=False
+[14:26:21] ROTATE move_to(rotated) ok=True
+[14:26:25] ROTATE move_to(restore) ok=True joints_after=[-31.4, 52.7, -0.9, -70.9, 20.7, 53.2]
+[14:30:27] SCRAPE marker 1 pos=[-0.1932 -0.4108  0.089 ] euler_deg=[-84.96  86.04 176.23] estimated=False
+[14:30:38] SCRAPE walk done joints_deg=[-31.2, 52.7, -1.0, -70.9, 20.2, 52.9]
+[14:30:38] ROTATE current_joints_deg=[-31.2, 52.7, -1.0, -70.9, 20.2, 52.9]
+[14:30:38] ROTATE j6 52.9 deg --(-60)--> target -7.1 deg; exceeds_155=False exceeds_180=False
+[14:30:41] ROTATE move_to(rotated) ok=True
+[14:30:45] ROTATE move_to(restore) ok=True joints_after=[-31.2, 52.7, -1.1, -70.8, 20.3, 52.7]

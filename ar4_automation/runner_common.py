@@ -44,7 +44,7 @@ SIM_PRINTER_SPECS_3 = [
      "door_marker_texture": 'materials/textures/marker6x6_0.png'},
     # y=-0.3 (matching the hardware layout's lateral offset) keeps the 0.38 m
     # scrape standoff inside the arm's wrist envelope; at y=-0.2 the standoff
-    # pose has no IK solution and scrapePlate aborts at step 4.
+    # pose has no IK solution and scrapePlate aborts at the scrape waypoints.
     {"marker_id": 1, "pos": [0.44, -0.3, 0.21], "orient": [0.0, 0.0, math.pi],
      "door_marker_texture": 'materials/textures/marker6x6_1.png'},
     {"marker_id": 2, "pos": [0.60, 0.1, 0.21], "orient": [0.0, 0.0, 3/2*math.pi],
@@ -178,8 +178,8 @@ def _print_menu():
     print("  3D Printer Automation - Command Menu")
     print("=" * 50)
     print("  1) Scan location for markers (manual pos/orient)")
-    print("  2) Move to marker")
-    print("  3) Pickup plate (move + lift)")
+    print("  2) Walk pickup waypoints (scan/gripper entries included)")
+    print("  3) Pickup plate (walk pickup list, record grasp for replay)")
     print("  4) Place plate at marker")
     print("  5) List detected markers")
     print("  6) Scan to marker (by ID, uses TF)")
@@ -285,28 +285,22 @@ def run_command_menu(node):
             if ids is None:
                 continue
             source_id, dest_id, rescan_id = int(ids[0]), int(ids[1]), int(ids[2])
-            dist = _parse_floats("  Scan distance [0.15]: ", 1)
-            dist = dist[0] if dist else 0.15
             node.get_logger().info(
-                f"User requested transferPlate({source_id}, {dest_id}, {rescan_id}, scan_distance={dist})"
+                f"User requested transferPlate({source_id}, {dest_id}, {rescan_id})"
             )
-            node.transferPlate(source_id=source_id, dest_id=dest_id, rescan_id=rescan_id, scan_distance=dist)
+            node.transferPlate(source_id=source_id, dest_id=dest_id, rescan_id=rescan_id)
 
         elif choice == "9":
             ids = _parse_floats("  Source, scrape marker IDs (e.g. 1 2): ", 2)
             if ids is None:
                 continue
             source_id, scrape_id = int(ids[0]), int(ids[1])
-            dist = _parse_floats("  Scan distance [0.15]: ", 1)
-            dist = dist[0] if dist else 0.15
-            # Scrape motion comes from the 'scrape' waypoint list of the scrape
-            # marker's offset config.
+            # All motion (scans included) comes from the offset-config
+            # waypoint lists.
             node.get_logger().info(
-                f"User requested scrapePlate({source_id}, {scrape_id}, scan_distance={dist})"
+                f"User requested scrapePlate({source_id}, {scrape_id})"
             )
-            node.scrapePlate(
-                source_id=source_id, scrape_id=scrape_id, scan_distance=dist,
-            )
+            node.scrapePlate(source_id=source_id, scrape_id=scrape_id)
 
         else:
             print("  Unknown option. Try again.")

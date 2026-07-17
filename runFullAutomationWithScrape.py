@@ -203,7 +203,6 @@ def main():
         ok = node.scrapePlate(
             source_id=SOURCE_ID,
             scrape_id=SCRAPE_ID,
-            scan_distance=SCAN_DISTANCE,
             wait_after_pickup=True,
             wait_duration=90.0,
             rotate_after_scrape=True,

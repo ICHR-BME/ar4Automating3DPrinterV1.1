@@ -5,8 +5,10 @@ Automated double plate transfer.
 Loads all configuration (printer positions, marker poses, offset config) from
 the save file written by printer_automation.py, then runs transferPlate twice
 per iteration:
-  1. source=2, dest=0, rescan=1  (scan_distance=0.15)
-  2. source=2, dest=1, rescan=0  (scan_distance=0.15)
+  1. source=2, dest=0, rescan=1
+  2. source=2, dest=1, rescan=0
+(All motion, including the marker scans before each pickup, comes from the
+waypoint lists in printerAutomation.__init__'s offset_configs.)
 
 Set RUN_SIM = 1 below to run against Gazebo instead of hardware (start the sim
 first with scripts/launchVirtualRobot.sh): the camera comes from the simulated
@@ -52,10 +54,10 @@ def main():
         node.get_logger().info(f"=== Iteration {i + 1}/{NUM_REPEATS} ===")
 
         # Transfer 1: source=2, dest=0, rescan=1
-        ok1 = node.transferPlate(source_id=2, dest_id=0, rescan_id=1, scan_distance=0.15)
+        ok1 = node.transferPlate(source_id=2, dest_id=0, rescan_id=1)
 
         # Transfer 2: source=2, dest=1, rescan=0
-        ok2 = node.transferPlate(source_id=2, dest_id=1, rescan_id=0, scan_distance=0.15)
+        ok2 = node.transferPlate(source_id=2, dest_id=1, rescan_id=0)
 
     node.get_logger().info("All transfers complete.")
     node.save_state()

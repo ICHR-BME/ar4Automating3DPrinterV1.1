@@ -31,9 +31,9 @@ from ar4_automation.runner_common import (
 RUN_SIM         = 1           # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
 SOURCE_ID       = 2           # Marker to pick up the plate from (and return it to)
 SCRAPE_ID       = 1           # Marker whose surface the plate is scraped against
-SCAN_DISTANCE   = 0.15         # Distance (m) used when scanning markers
-# Scrape motion (standoff/depth/retract) comes from the 'scrape' waypoint list
-# of the scrape marker's offset config in printerAutomation.__init__.
+# All motion (scans, approach/grasp/carry, scrape standoff/depth/retract,
+# placement and withdraw) comes from the waypoint lists in
+# printerAutomation.__init__'s offset_configs.
 
 
 def main():
@@ -61,7 +61,6 @@ def main():
         ok = node.scrapePlate(
             source_id=SOURCE_ID,
             scrape_id=SCRAPE_ID,
-            scan_distance=SCAN_DISTANCE,
             wait_after_pickup=False,
             wait_duration=10.0,
             rotate_after_scrape=True,
