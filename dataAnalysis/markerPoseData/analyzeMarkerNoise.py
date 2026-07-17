@@ -123,7 +123,7 @@ XYZ_COLORS  = ["#6baed6", "#2171b5", "#084594"]
 XYZ_LABELS  = ["ΔX", "ΔY", "ΔZ"]
 
 # ---------------------------------------------------------------------------
-# Figure 1a/1b — Example time series per scan distance (separate figures)
+# Figure 1a/1b - Example time series per scan distance (separate figures)
 #   Position deviation per axis (mm) and orientation deviation (degrees)
 #   Example taken from trial 1, marker 0
 # ---------------------------------------------------------------------------
@@ -181,13 +181,13 @@ for col, dist in enumerate(scan_distances):
     print(f"Saved {out_ts_ori}")
 
 # ---------------------------------------------------------------------------
-# Figure 2 — Power Spectral Density (Welch), averaged by scan_distance
+# Figure 2 - Power Spectral Density (Welch), averaged by scan_distance
 #   Left:  position deviation magnitude  [m² / (cycles/frame)]
 #   Right: orientation deviation          [deg² / (cycles/frame)]
 #   Shaded band = ±1 σ across all groups at that distance
 # ---------------------------------------------------------------------------
 
-NPERSEG = 32   # segment length — fixed so all groups share the same freq grid
+NPERSEG = 32   # segment length - fixed so all groups share the same freq grid
 
 psd_pos = {d: [] for d in scan_distances}
 psd_ori = {d: [] for d in scan_distances}
@@ -262,7 +262,7 @@ plt.savefig(out2_ori, dpi=150, bbox_inches="tight")
 print(f"Saved {out2_ori}")
 
 # ---------------------------------------------------------------------------
-# Figure 3 — Frame-to-frame jump distributions (violin plots)
+# Figure 3 - Frame-to-frame jump distributions (violin plots)
 #   Left:  position jump magnitude (mm)
 #   Right: orientation jump magnitude (°)
 #   x-axis: scan distance   (all files and markers combined)
@@ -326,7 +326,7 @@ plt.savefig(out3_ori, dpi=150, bbox_inches="tight")
 print(f"Saved {out3_ori}")
 
 # ---------------------------------------------------------------------------
-# Figure 4 — Orientation noise: before vs after a Butterworth low-pass filter
+# Figure 4 - Orientation noise: before vs after a Butterworth low-pass filter
 #
 # Left subplot:  mean Welch PSD of orientation deviation, unfiltered vs
 #                filtered at a representative cutoff, one curve per scan

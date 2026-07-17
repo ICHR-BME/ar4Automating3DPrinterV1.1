@@ -72,12 +72,8 @@ def main():
 
     node.get_logger().info("Starting initial scan for markers...")
     node.load_state()
-    # NOTE: unlike runScrapePlate.py / runFullAutomationWithScrape.py, this script
-    # does NOT lock the scrape marker. If you drive scrapePlate from the menu and
-    # see the scrape approach drift / collide between repetitions, add
-    #   node.lock_marker(<scrape_marker_id>)
-    # here so the scrape marker stays pinned to its file pose. (Left off because
-    # this is an interactive scan/debug tool, not a fixed scrape loop.)
+    # scrape marker is not locked here (interactive tool). If menu scrapes
+    # drift between repetitions, add node.lock_marker(<scrape_marker_id>).
 
     if runVirtual:
         bad_pos, bad_euler = printer1.get_door_marker_pose_in_base()

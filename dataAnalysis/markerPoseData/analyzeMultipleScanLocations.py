@@ -105,7 +105,7 @@ def point_color(marker_id: int, scan_distance: float):
     return adjust_lightness(BASE_COLORS[marker_id], dist_lightness[scan_distance])
 
 # ---------------------------------------------------------------------------
-# Plot 1a — Marker Positions (scatter)
+# Plot 1a - Marker Positions (scatter)
 # ---------------------------------------------------------------------------
 
 fig_pos = plt.figure(figsize=FIG_SIZE)
@@ -149,7 +149,7 @@ plt.savefig(out_path_pos, dpi=150, bbox_inches="tight")
 print(f"Saved plot to {out_path_pos}")
 
 # ---------------------------------------------------------------------------
-# Plot 1b — Marker Orientations (scatter)
+# Plot 1b - Marker Orientations (scatter)
 # ---------------------------------------------------------------------------
 
 fig_ori = plt.figure(figsize=FIG_SIZE)
@@ -231,7 +231,7 @@ trial_handles = [
 ]
 
 # ---------------------------------------------------------------------------
-# Plot 2a — Mean Marker Positions (per trial)
+# Plot 2a - Mean Marker Positions (per trial)
 # ---------------------------------------------------------------------------
 
 fig_mpos = plt.figure(figsize=FIG_SIZE)
@@ -271,7 +271,7 @@ plt.savefig(out_path_mpos, dpi=150, bbox_inches="tight")
 print(f"Saved plot to {out_path_mpos}")
 
 # ---------------------------------------------------------------------------
-# Plot 2b — Mean Marker Orientations (per trial)
+# Plot 2b - Mean Marker Orientations (per trial)
 # ---------------------------------------------------------------------------
 
 fig_mori = plt.figure(figsize=FIG_SIZE)
@@ -411,11 +411,11 @@ agg_df.to_csv(out_csv, index=False, float_format="%.6f")
 print(f"Saved summary CSV to {out_csv}")
 
 # ---------------------------------------------------------------------------
-# Plot 3 — Position & Orientation Error vs Scan Distance (dual y-axis)
+# Plot 3 - Position & Orientation Error vs Scan Distance (dual y-axis)
 # ---------------------------------------------------------------------------
 
-AX_COLOR_POS = "#1a6faf"   # blue  — left axis / position error
-AX_COLOR_ORI = "#cc4c02"   # orange — right axis / orientation error
+AX_COLOR_POS = "#1a6faf"   # blue  - left axis / position error
+AX_COLOR_ORI = "#cc4c02"   # orange - right axis / orientation error
 
 fig_err, ax_left = plt.subplots(figsize=FIG_SIZE_ERR)
 ax_right = ax_left.twinx()

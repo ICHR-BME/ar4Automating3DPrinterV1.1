@@ -116,20 +116,14 @@ class CameraViewer(Node):
             self.get_logger().info(f'Camera calibration parameters received (frame: {self.camera_frame})')
 
     def set_webcam_calibration(self, camera_matrix: np.ndarray, dist_coeffs: np.ndarray):
-        """
-        Manually set camera calibration for webcam mode.
-        Call this if you have calibration data for your webcam.
-        """
+        """Set webcam calibration from known data."""
         self.camera_matrix = camera_matrix
         self.dist_coeffs = dist_coeffs
         self.camera_frame = "webcam"
         self.get_logger().info('Webcam calibration set manually')
 
     def set_default_webcam_calibration(self, width: int, height: int):
-        """
-        Set an approximate camera matrix based on frame dimensions.
-        Suitable for rough ArUco detection when no real calibration is available.
-        """
+        """Approximate camera matrix from frame size; rough detection only."""
         focal_length = max(width, height)
         cx, cy = width / 2.0, height / 2.0
         self.camera_matrix = np.array([
@@ -245,10 +239,7 @@ class CameraViewer(Node):
     # ------------------------------------------------------------------
 
     def _detect_aruco_markers(self, image: np.ndarray) -> tuple:
-        """
-        Detect ArUco markers in the image, draw them, and estimate poses.
-        Returns (annotated_image, list_of_marker_pose_dicts).
-        """
+        """Detect and draw markers; returns (annotated_image, pose dicts)."""
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         all_corners = []
@@ -347,11 +338,8 @@ class CameraViewer(Node):
         return output_image, marker_poses
 
     def _enrich_marker_pose(self, entry: dict) -> dict:
-        """
-        Hook for subclasses to add world-frame pose data to a detected marker entry.
-        The base implementation returns the entry unchanged (camera-frame only).
-        Return None to skip this marker.
-        """
+        """Subclass hook to add world-frame pose data to a detection.
+        Base leaves it camera-frame only; return None to skip the marker."""
         return entry
 
     def _log_marker_pose(self, entry: dict):

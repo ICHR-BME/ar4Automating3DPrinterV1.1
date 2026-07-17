@@ -32,13 +32,10 @@ class PID:
     def step(self, err, dt):
         if dt <= 0.0:
             return 0.0
-        # Integral
         self._i += err * dt
         self._i = np.clip(self._i, -self.i_limit, self.i_limit)
-        # Derivative
         d = 0.0 if self._prev_err is None else (err - self._prev_err) / dt
         self._prev_err = err
-        # Output and clamp
         out = self.kp * err + self.ki * self._i + self.kd * d
         return float(np.clip(out, -self.out_limit, self.out_limit))
 
@@ -47,7 +44,7 @@ class AR4ServoPID(Node):
     def __init__(self):
         super().__init__("ar4_servo_pid")
 
-        # MoveIt2 interface (aligns with old_ar4Robot.py)
+        # same setup as old_ar4Robot.py
         self.moveit2 = MoveIt2(
             node=self,
             joint_names=["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"],
@@ -58,7 +55,7 @@ class AR4ServoPID(Node):
         self.moveit2.max_velocity = 1.5
         self.moveit2.max_acceleration = 3.0
 
-        # Position and orientation PID (per-axis, same gains each axis)
+        # per-axis PIDs, same gains each axis
         self.pid_pos = [PID(kp=1.0, ki=0.0, kd=0.1, i_limit=0.1, out_limit=0.02) for _ in range(3)]
         self.pid_rot = [PID(kp=1.0, ki=0.0, kd=0.05, i_limit=0.2, out_limit=0.05) for _ in range(3)]
 
@@ -94,7 +91,7 @@ class AR4ServoPID(Node):
 
     @staticmethod
     def _angle_wrap(err):
-        # Wrap angle error to [-pi, pi]
+        # wrap to [-pi, pi]
         return (err + np.pi) % (2.0 * np.pi) - np.pi
 
     def servo_to_delta(
@@ -106,20 +103,14 @@ class AR4ServoPID(Node):
         rate_hz=20.0,
         max_duration=8.0,
     ):
-        """
-        PID servo to achieve a delta in position (m) and orientation (rad) from current pose.
-        - delta_pos: [dx, dy, dz] in meters
-        - delta_rpy: [droll, dpitch, dyaw] in radians
-        """
+        """PID servo a position (m) / orientation (rad) delta from the current pose."""
 
-        # Reset controllers
         for pid in self.pid_pos + self.pid_rot:
             pid.reset()
 
         start = time.time()
         dt_target = 1.0 / float(rate_hz)
 
-        # Snapshot current as start, compute goal
         curr_pos, curr_rpy = self._get_current_pose()
         if curr_pos is None:
             self.get_logger().error("Could not read current pose")
@@ -128,7 +119,6 @@ class AR4ServoPID(Node):
         goal_pos = curr_pos + np.asarray(delta_pos, dtype=float)
         goal_rpy = curr_rpy + np.asarray(delta_rpy, dtype=float)
 
-        # Control loop
         while True:
             now = time.time()
             if now - start > max_duration:
@@ -140,7 +130,6 @@ class AR4ServoPID(Node):
                 self.get_logger().warn("Failed to get pose during servo; aborting")
                 break
 
-            # Errors
             e_pos = goal_pos - pos  # meters
             e_rot = np.array(
                 [
@@ -150,48 +139,38 @@ class AR4ServoPID(Node):
                 ]
             )
 
-            # Check convergence
             if np.linalg.norm(e_pos) <= pos_tol and np.linalg.norm(e_rot) <= rot_tol:
                 self.get_logger().info("Goal reached within tolerances")
                 break
 
-            # PID outputs (per-axis, integrated over dt into small steps)
-            # We compute incremental targets relative to current pose
-            dt = dt_target  # fixed dt to keep behavior consistent even with blocking motion
+            dt = dt_target  # fixed dt, keeps behavior consistent even though moves block
             u_pos = np.array([pid.step(e_pos[i], dt) for i, pid in enumerate(self.pid_pos)])
             u_rot = np.array([pid.step(e_rot[i], dt) for i, pid in enumerate(self.pid_rot)])
 
             next_pos = pos + u_pos
             next_rpy = rpy + u_rot
 
-            # Command small step
             self._move_to_pose(next_pos, next_rpy)
 
-            # Try to maintain approximate loop rate
             spent = time.time() - now
             sleep_t = max(0.0, dt_target - spent)
             if sleep_t > 0.0:
                 time.sleep(sleep_t)
 
-        # Final nudge to exact goal (single motion)
+        # final nudge to the exact goal
         self._move_to_pose(goal_pos, goal_rpy)
         return True
 
 
 def _read_key(timeout=0.1):
-    """Non-blocking single-key read with timeout (seconds). Returns None if no key."""
+    """Non-blocking single-key read, None if nothing pressed within timeout."""
     dr, _, _ = select.select([sys.stdin], [], [], timeout)
     if dr:
         return sys.stdin.read(1)
     return None
 
 def teleop_loop(node: AR4ServoPID, linear_step=0.002, angular_step=np.deg2rad(1.0), rate_hz=30.0, max_duration=1.2):
-    """
-    Teleop: map keys to incremental servo moves.
-    q w e r t y -> +[x, y, z, roll, pitch, yaw]
-    a s d f g h -> -[x, y, z, roll, pitch, yaw]
-    ESC or x    -> exit
-    """
+    """Keyboard teleop: qwerty row = +[x y z r p y], asdfgh = minus, ESC/x quits."""
     print("\nKeyboard teleop:")
     print("  q/a: +X / -X")
     print("  w/s: +Y / -Y")
@@ -217,7 +196,6 @@ def teleop_loop(node: AR4ServoPID, linear_step=0.002, angular_step=np.deg2rad(1.
         "h": (np.zeros(3), np.array([0, 0, -angular_step])),
     }
 
-    # Put terminal into raw mode
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
     try:
@@ -262,7 +240,7 @@ def main():
 
     node = AR4ServoPID()
 
-    # If --teleop is set or all deltas are zero, enter teleop
+    # no deltas given means teleop
     if args.teleop or (args.dx == 0.0 and args.dy == 0.0 and args.dz == 0.0 and args.dr == 0.0 and args.dp == 0.0 and args.dyaw == 0.0):
         teleop_loop(
             node,

@@ -107,7 +107,7 @@ ax.bar(
     label=[f"{lbl.replace(chr(10), ' ')} (n={n})" for lbl, n in zip(labels, counts)],
 )
 
-# Legend with n= counts (bars can't take list labels directly — use patches)
+# Legend with n= counts (bars can't take list labels directly - use patches)
 import matplotlib.patches as mpatches
 handles = [
     mpatches.Patch(facecolor=COLORS[i], label=f"{labels[i].replace(chr(10), ' ')} (n={counts[i]})")

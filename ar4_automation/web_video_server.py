@@ -22,13 +22,9 @@ from cv_bridge import CvBridge
 # ------------------------------------------------------------------
 
 def _is_capture_device(index):
-    """True if /dev/video{index} supports video capture.
-
-    Modern UVC webcams expose extra metadata-only nodes (e.g. /dev/video1,3,5)
-    that aren't capture devices; opening them spews V4L2/GStreamer warnings.
-    We query V4L2 capabilities directly to skip them. Best-effort: on any error
-    we return True so the node still gets probed the normal way.
-    """
+    """True if /dev/video{index} supports capture. UVC webcams expose extra
+    metadata-only nodes that spew warnings when opened; skip them. On any
+    error return True so the node still gets probed normally."""
     V4L2_CAP_VIDEO_CAPTURE = 0x00000001
     V4L2_CAP_DEVICE_CAPS   = 0x80000000
     VIDIOC_QUERYCAP = (2 << 30) | (104 << 16) | (ord('V') << 8) | 0  # _IOR('V', 0, v4l2_capability)
@@ -123,12 +119,8 @@ ARUCO_DICT_MAP = {
 # ------------------------------------------------------------------
 
 class WebVideoStream:
-    """
-    All-in-one: MJPEG web server + ArUco detection + webcam or ROS source.
-
-    Markers are stored permanently in self.found_markers (dict keyed by marker ID).
-    Access the list via the self.marker_poses property.
-    """
+    """MJPEG web server + ArUco detection over a webcam or ROS source.
+    Markers persist in found_markers (by ID); see the marker_poses property."""
 
     def __init__(self,
                  source="webcam",
@@ -150,9 +142,7 @@ class WebVideoStream:
                  feed_rotation_deg=0.0):
 
         self.source = source.lower()
-        # Rotate the webcam feed by this angle (degrees) to compensate for
-        # calibration differences between simulation and the real camera.
-        # Only applied when source is "webcam".
+        # feed rotation (deg), webcam source only
         self.feed_rotation_deg = float(feed_rotation_deg) if self.source == "webcam" else 0.0
         self.fps = fps
         self.display_scale = display_scale
@@ -165,9 +155,8 @@ class WebVideoStream:
         self.found_markers = {}
         # When False, found_markers will not be updated with new detections.
         self.marker_updates_enabled = True
-        # Marker IDs that must NEVER be overwritten by camera detections (e.g. a
-        # fixed reference marker loaded from the save file). Takes precedence over
-        # marker_updates_enabled — these stay exactly as registered/loaded.
+        # marker IDs camera detections may never overwrite (fixed references
+        # from the save file); takes precedence over marker_updates_enabled
         self.locked_marker_ids = set()
         # Per-marker EMA state used exclusively for the web panel display.
         # Does NOT affect found_markers or anything returned by detect().
@@ -400,10 +389,8 @@ class WebVideoStream:
                             entry = enriched
                             self.found_markers[marker_id] = entry
                         else:
-                            # Enrichment failed (e.g. TF lookup not ready this frame).
-                            # Do NOT overwrite the previous good pose with a base-less
-                            # camera-only entry, or scanToMarker() will KeyError on
-                            # 'positionInBase'. Keep whatever pose we already had.
+                            # enrichment failed (TF not ready); keep the old
+                            # pose, a camera-only entry would break scanToMarker
                             _log = self.log_fn or print
                             _log(f"[detect] ID={marker_id} enrich_fn returned None — keeping previous pose")
                     else:
@@ -445,7 +432,7 @@ class WebVideoStream:
         result = []
         for entry in marker_list:
             mid = entry['id']
-            p = dict(entry)        # shallow copy — arrays replaced below
+            p = dict(entry)        # shallow copy, arrays replaced below
 
             if mid not in self._display_filter_states:
                 self._display_filter_states[mid] = {}

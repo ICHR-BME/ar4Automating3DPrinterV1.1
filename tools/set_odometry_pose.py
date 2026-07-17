@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""
-Script to manually set the odometry initial pose.
-This aligns the odometry frame with a specified robot pose.
-"""
+"""Manually set the odometry initial pose so the odom frame lines up with the robot."""
 
 import rclpy
 from rclpy.node import Node
@@ -38,7 +35,7 @@ class OdometryPoseSetter(Node):
         pose_msg.pose.orientation.z = q[2]
         pose_msg.pose.orientation.w = q[3]
         
-        # Publish multiple times to ensure it's received
+        # publish a few times so it actually lands
         for _ in range(5):
             self.pose_pub.publish(pose_msg)
             rclpy.spin_once(self, timeout_sec=0.1)

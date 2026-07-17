@@ -70,12 +70,8 @@ class ImplicitFTP_TLS(ftplib.FTP_TLS):
 
 class BambuPrinter:
     def __init__(self, ip, access_code, serial):
-        """
-        Initializes the connection parameters for the Bambu Printer.
-        :param ip: Local IP address of the printer '192.xxxxxxx '
-        :param access_code: 8-digit access code found in printer settings 'xxxxxx'
-        :param serial: Printer serial number 'xxAbeasax12da32xxxxxx'
-        """
+        """ip: printer's LAN address; access_code: 8 digits from the printer
+        settings screen; serial: printer serial number."""
         self.ip = ip
         self.access_code = access_code
         self.serial = serial
@@ -91,9 +87,8 @@ class BambuPrinter:
 
         self._print_finished = False
 
-        # Reconnect machinery: a watchdog thread monitors message flow and
-        # rebuilds the connection (rediscovering the IP if DHCP moved the
-        # printer) whenever the link goes quiet — e.g. the hotspot dropped.
+        # watchdog rebuilds the connection (rediscovering the IP if needed)
+        # whenever the link goes quiet, e.g. after a hotspot drop
         self.stale_timeout = 30.0        # s without any message -> assume dead
         self._watchdog_poll = 5.0        # s between watchdog checks
         self._connected = threading.Event()
@@ -119,11 +114,8 @@ class BambuPrinter:
     # ------------------------------------------
 
     def _setup_client(self):
-        """Create and configure a fresh MQTT client with persistent callbacks.
-
-        Called from __init__ and again whenever the watchdog rebuilds a dead
-        connection, so all callbacks must be methods (not one-shot closures).
-        """
+        """Fresh MQTT client. Also called on watchdog rebuilds, so callbacks
+        must be methods, not one-shot closures."""
         self.client = mqtt.Client()
         self.client.username_pw_set("bblp", self.access_code)
         self.client.tls_set(cert_reqs=ssl.CERT_NONE)
@@ -140,10 +132,8 @@ class BambuPrinter:
             return
         self._connected.set()
         self._last_msg_time = time.time()
-        # (Re)subscribe on every connect: the broker does not keep the
-        # session across a hotspot drop, so a reconnect without this never
-        # receives another report. The pushall refreshes the status panel
-        # (and finish detection) with anything missed while offline.
+        # resubscribe every connect (broker drops the session on disconnect);
+        # the pushall catches up on anything missed while offline
         client.subscribe(self.topic_subscribe)
         client.publish(self.topic_publish, json.dumps(
             {"pushing": {"sequence_id": "0", "command": "pushall"}}))
@@ -165,26 +155,17 @@ class BambuPrinter:
         self._parse_message(payload)
 
     def connect(self):
-        """Establishes connection to the printer's MQTT broker.
-
-        Tries the configured IP first; if the printer isn't reachable there
-        (e.g. DHCP handed it a new address), searches the local network by
-        serial via SSDP and uses the discovered IP instead. Also starts a
-        watchdog that reconnects automatically if the link later goes dead
-        (e.g. the hotspot drops), so status messages resume on their own.
-        """
+        """Connect to the printer's MQTT broker. Falls back to network
+        discovery if the configured IP is stale, and starts the reconnect
+        watchdog."""
         self._establish()
         print(f"Connected to printer {self.serial}")
         self._start_watchdog()
 
     def _establish(self, connack_timeout=10.0):
-        """Discover the printer if needed, connect, and wait for CONNACK.
-
-        Waiting for the broker's CONNACK matters: commands published before
-        the session is accepted are dropped silently, and a wrong access code
-        otherwise looks like a successful connection (the printer rejects the
-        login asynchronously).
-        """
+        """Discover if needed, connect, wait for CONNACK. The wait matters:
+        publishes before the session is accepted vanish silently, and a bad
+        access code otherwise looks like a successful connection."""
         if not self._is_reachable(self.ip):
             print(f"Printer not reachable at {self.ip}; searching the local network...")
             found_ip = self.discover_ip()
@@ -224,14 +205,9 @@ class BambuPrinter:
         self._watchdog.start()
 
     def _connection_watchdog(self):
-        """Monitors message flow and repairs the connection when it dies.
-
-        If nothing has arrived for stale_timeout seconds, first nudge the
-        printer with a pushall (it may simply be idle and quiet). If it stays
-        silent — or paho already flagged the link down — rebuild the client
-        and reconnect, rediscovering the IP if DHCP moved the printer. Keeps
-        retrying every poll interval until the printer is back.
-        """
+        """After stale_timeout of silence, nudge with a pushall (may just be
+        idle); if still quiet, rebuild the client and reconnect. Retries every
+        poll until the printer is back."""
         while not self._watchdog_stop.wait(self._watchdog_poll):
             silent = time.time() - self._last_msg_time
             if silent < self.stale_timeout:
@@ -248,9 +224,7 @@ class BambuPrinter:
                 self._nudged = False
 
     def _reconnect(self):
-        """Tear down the client and reconnect from scratch. Returns True on
-        success. Safe to call repeatedly; each failure is logged and the
-        watchdog simply tries again on its next pass."""
+        """Tear down and reconnect from scratch. Safe to call repeatedly."""
         try:
             self.client.loop_stop()
             self.client.disconnect()
@@ -268,7 +242,7 @@ class BambuPrinter:
         return True
 
     def disconnect(self):
-        """Stops the watchdog and background loop and disconnects MQTT."""
+        """Stop the watchdog and MQTT loop."""
         self._watchdog_stop.set()
         if self._watchdog is not None:
             self._watchdog.join(timeout=1.0)
@@ -288,14 +262,9 @@ class BambuPrinter:
             return False
 
     def discover_ip(self, serial=None, timeout=10.0):
-        """Find the printer's IP on the LAN via Bambu's SSDP broadcasts.
-
-        Bambu printers periodically multicast SSDP NOTIFY packets to
-        239.255.255.250 (UDP 2021/1990) carrying their serial (USN header) and
-        IP (Location header / source address). Listens up to *timeout* seconds
-        and returns the IP whose USN matches *serial* (defaults to this
-        printer's serial), or None if it isn't seen in time.
-        """
+        """Find the printer's IP from Bambu's SSDP broadcasts (multicast to
+        239.255.255.250, UDP 2021/1990, serial in the USN header). None if
+        not seen within timeout."""
         serial = serial or self.serial
         mcast_grp = "239.255.255.250"
 
@@ -320,11 +289,8 @@ class BambuPrinter:
             sock.close()
             return None
 
-        # Join the SSDP multicast group on EVERY interface. Joining with
-        # 0.0.0.0 only subscribes via the default-route interface, which
-        # drops the printer's announcements when it sits on a secondary
-        # interface — e.g. a hotspot hosted by this machine while the
-        # default route is a different wifi network.
+        # join on every interface: 0.0.0.0 only covers the default route and
+        # misses a printer on a locally hosted hotspot
         for _name, if_ip, _mask in _local_ipv4_interfaces():
             mreq = struct.pack("4s4s", socket.inet_aton(mcast_grp),
                                socket.inet_aton(if_ip))
@@ -376,14 +342,9 @@ class BambuPrinter:
         return None
 
     def discover_ip_by_scan(self, port=8883, timeout=0.4, verify_timeout=5.0):
-        """Fallback discovery when SSDP is not seen: TCP-scan small private
-        local subnets for the MQTT port, then confirm each hit is *this*
-        printer by connecting with its access code and requesting a report.
-
-        Meant for the hotspot-hosted-by-this-machine setup, where the printer
-        sits on e.g. 10.42.0.0/24. Only private subnets of /24 or smaller are
-        scanned, so this never sweeps the upstream wifi/campus network.
-        """
+        """SSDP fallback: TCP-scan private /24-or-smaller local subnets for
+        the MQTT port and verify each hit is this printer. Never sweeps the
+        upstream wifi network."""
         candidates = []
         for name, if_ip, mask in _local_ipv4_interfaces():
             net = ipaddress.IPv4Network(f"{if_ip}/{mask}", strict=False)
@@ -403,10 +364,8 @@ class BambuPrinter:
         return None
 
     def _verify_printer(self, ip, timeout=5.0):
-        """True if the printer with our serial + access code answers at *ip*:
-        connects over MQTT, asks for a status push and waits for a report on
-        this serial's topic. A different Bambu printer either rejects the
-        access code or never publishes on our serial's report topic."""
+        """True if the printer at ip answers a status push on this serial's
+        topic (a different printer rejects the code or never publishes)."""
         got_report = threading.Event()
         client = mqtt.Client()
         client.username_pw_set("bblp", self.access_code)
@@ -432,12 +391,7 @@ class BambuPrinter:
         return ok
 
     def enable_debug_listener(self):
-        """Enables report parsing (status panel + finish detection).
-
-        The actual on_message callback is persistent on the client (see
-        _setup_client) so it survives watchdog reconnects; this just switches
-        the parsing on and makes sure we are subscribed.
-        """
+        """Turn on report parsing (status panel + finish detection)."""
         self._listener_enabled = True
         self.client.subscribe(self.topic_subscribe)
         print(f"Listener active for {self.serial}")
@@ -502,13 +456,8 @@ class BambuPrinter:
         print("Print finished. Continuing.")
 
     def _send_command(self, command_dict, reconnect_wait=120.0):
-        """Internal helper to package and send JSON payloads over MQTT.
-
-        If the connection is currently down (hotspot dropped), waits up to
-        reconnect_wait seconds for the watchdog to bring it back before
-        publishing, since QoS-0 publishes on a dead connection are dropped
-        silently by paho. Returns True if the message was handed to the
-        network layer; a False means the printer never saw the command."""
+        """Publish a JSON command. If the link is down, wait for the watchdog
+        to restore it first (QoS-0 publishes on a dead connection vanish)."""
         if not self._connected.is_set():
             print(f"MQTT to printer {self.serial} is down; waiting up to "
                   f"{reconnect_wait:.0f}s for it to reconnect before sending...")
@@ -624,10 +573,8 @@ class BambuPrinter:
             print(f"FTP Error: {e}")
 
     def upload_file(self, local_path):
-        """
-        Uploads a file to the SD card via FTPS.
-        Note: Known issue where some transfers may hang at 100%.
-        """
+        """Upload to the SD card via FTPS. Can hang at 100% on some firmware,
+        prefer upload_file_timeout."""
         local_path = os.path.join(_REPO_ROOT, local_path)
         filename = os.path.basename(local_path)
         file_size = os.path.getsize(local_path)
@@ -661,10 +608,8 @@ class BambuPrinter:
             print(f"\nUpload failed: {e}")
 
     def upload_file_timeout(self, local_path, timeout=10):
-        """
-        Uploads file with a socket timeout to mitigate 'hang at 100%' issues.
-        Returns: True if successful (or 100% sent), False otherwise.
-        """
+        """upload_file with a socket timeout to work around the hang-at-100%
+        issue. True if all bytes were sent."""
         local_path = os.path.join(_REPO_ROOT, local_path)
         filename = os.path.basename(local_path)
         file_size = os.path.getsize(local_path)
@@ -713,45 +658,30 @@ class BambuPrinter:
 # G-code post-processing
 # ==========================================
 
-# Markers delimiting the machine-start block in Bambu-sliced gcode.
+# markers delimiting the machine-start block in Bambu-sliced gcode
 _STARTUP_BEGIN_MARKER = ";===== machine:"          # first line of machine_start_gcode
 _STARTUP_END_MARKER   = ";===== nozzle load line"  # stock profile: blob squirt kept as-is
-# Custom community profiles (e.g. the "Cascade Media" A1 Mini profile) have no
-# nozzle-load section; their machine block ends at this hand-off comment and a
-# blob squirt is synthesized instead.
+# custom profiles have no nozzle-load section; their block ends here and a
+# blob squirt is synthesized instead
 _HANDOFF_END_MARKER   = "; ===== hand-off to slicer first move"
 _STRIP_SENTINEL       = ";===== startup stripped"
 
 
 def _strip_startup_from_text(gcode):
-    """
-    Removes the machine startup procedures from sliced Bambu gcode text.
-
-    Everything from the start of the machine_start_gcode block up to the
-    ';===== nozzle load line' section is deleted (printer sound, filament
-    purge, mech-mode check, nozzle wiping on the plate, bed leveling and
-    re-homing) and replaced with a minimal preamble that only heats, homes
-    and re-enables the saved bed mesh. The nozzle-load blob squirt, the
-    purge line and the actual print are kept unchanged.
-
-    Files sliced with custom profiles that lack a nozzle-load section (their
-    machine block ends at '; ===== hand-off to slicer first move') get the
-    same preamble plus a synthesized blob squirt over the waste chute, using
-    the bed/nozzle temperatures salvaged from the removed block.
-    """
+    """Cut the machine startup block (purge, wipe, bed level, re-home) and
+    replace it with a minimal heat-and-home preamble. The blob squirt and the
+    print itself are kept; custom profiles without a nozzle-load section get
+    a synthesized blob using temperatures salvaged from the removed block."""
     if re.search(r"^" + re.escape(_STRIP_SENTINEL), gcode, re.MULTILINE):
         return gcode  # already stripped
 
-    # Match markers only at line starts: the '; machine_start_gcode = ...'
-    # config comment embeds a copy of the whole startup block on a single
-    # line (with literal \n escapes), so a plain find() would hit that
-    # comment instead of the executable block and leave the real startup in.
+    # anchor at line starts: a config comment embeds a one-line copy of the
+    # whole block that a plain find() would hit instead
     begin_m = re.search(r"^" + re.escape(_STARTUP_BEGIN_MARKER), gcode, re.MULTILINE)
     end_m = re.search(r"^" + re.escape(_STARTUP_END_MARKER), gcode, re.MULTILINE)
     synthesize_blob = False
     if not end_m:
-        # Custom profile without a nozzle-load section: cut the whole machine
-        # block and squirt the blob ourselves.
+        # custom profile: cut the whole block, squirt the blob ourselves
         end_m = re.search(r"^" + re.escape(_HANDOFF_END_MARKER), gcode, re.MULTILINE)
         synthesize_blob = True
     if not begin_m or not end_m or end_m.start() < begin_m.start():
@@ -764,7 +694,7 @@ def _strip_startup_from_text(gcode):
 
     removed = gcode[begin:end]
 
-    # Salvage the temperatures the removed block would have set.
+    # salvage the temperatures the removed block would have set
     bed_heat = re.search(r"^M140 S(\d+)", removed, re.MULTILINE)
     bed_wait = re.search(r"^M190 S(\d+)", removed, re.MULTILINE)
     bed_temp = (bed_wait or bed_heat).group(1) if (bed_wait or bed_heat) else None
@@ -797,7 +727,7 @@ def _strip_startup_from_text(gcode):
     preamble.append("G29.2 S1 ; enable the saved bed mesh compensation")
 
     if not synthesize_blob:
-        # The kept ';===== nozzle load line' section does the blob squirt.
+        # the kept nozzle-load section does the blob squirt
         preamble += [
             "G1 Z5 F3000",
             "G1 X10 Y10 F20000",
@@ -835,26 +765,10 @@ def _strip_startup_from_text(gcode):
 
 
 def strip_startup_gcode(local_path, output_path=None):
-    """
-    Removes the 3D printer startup procedures from a sliced print file.
-
-    Deletes everything before the initial blob squirt (';===== nozzle load
-    line') and the actual print — the startup sound, filament purge,
-    mech-mode fast check, nozzle wiping against the plate, bed leveling and
-    re-homing — replacing it with a minimal heat-and-home preamble. Those
-    procedures shove the plate around and have been causing issues with the
-    scrape automation.
-
-    Accepts a plain .gcode file or a .gcode.3mf archive; for archives every
-    Metadata/*.gcode entry is stripped and its .md5 sidecar recomputed so the
-    printer still accepts the file. Relative paths are resolved against this
-    script's directory (same as upload_file).
-
-    :param local_path: Source .gcode or .gcode.3mf file. Not modified.
-    :param output_path: Where to write the stripped copy. Defaults to the
-                        source name with '_stripped' before the extension.
-    :returns: Absolute path of the stripped file.
-    """
+    """Strip the startup procedures from a print file; they shove the plate
+    around and break the scrape automation. Takes .gcode or .gcode.3mf (every
+    Metadata/*.gcode entry stripped, .md5 sidecars recomputed). Writes a
+    '_stripped' copy next to the source and returns its path."""
     local_path = os.path.join(_REPO_ROOT, local_path)
 
     if output_path is None:
@@ -874,8 +788,7 @@ def strip_startup_gcode(local_path, output_path=None):
             f.write(stripped)
         return output_path
 
-    # .3mf archive: rewrite every gcode entry, refresh its md5 sidecar and
-    # copy everything else through untouched.
+    # .3mf: rewrite the gcode entries, pass everything else through
     with zipfile.ZipFile(local_path, "r") as src:
         entries = {info.filename: src.read(info.filename) for info in src.infolist()}
 
@@ -899,14 +812,8 @@ def strip_startup_gcode(local_path, output_path=None):
 
 
 def load_printer_config(name=None, config_path=None):
-    """
-    Loads printer connection details from a YAML config file.
-
-    :param name: Which printer entry to use. Defaults to the file's 'active_printer'.
-    :param config_path: Path to the YAML file. Defaults to 'printer_config.yaml'
-                        at the repo root.
-    :returns: dict with keys 'ip', 'access_code', 'serial'.
-    """
+    """Load a printer's ip/access_code/serial from printer_config.yaml.
+    name defaults to the file's 'active_printer'."""
     if config_path is None:
         config_path = os.path.join(_REPO_ROOT, "printer_config.yaml")
 

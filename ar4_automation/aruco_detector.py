@@ -140,9 +140,8 @@ class ArucoDetectionViewer(PoseReader):
             badPos, badEuler = self.applyFrameChange(posInFrame, eulerInFrame,
                                                      source_frame="base_link", target_frame="ee_camera_link")
         except Exception as e:
-            # Expected during startup while the TF buffer fills; throttled so a
-            # persistent TF problem is still visible instead of silently dropping
-            # every marker update.
+            # expected while the TF buffer fills at startup; throttled so a
+            # persistent TF problem still shows
             self.get_logger().warn(f"cameraToBase: TF transform failed: {e}",
                                    throttle_duration_sec=5.0)
             return None, None
@@ -219,7 +218,7 @@ class ArucoDetectionViewer(PoseReader):
             _time.sleep(0.1)
 
     def _publish_rviz_markers_impl(self):
-        """Inner implementation — separated so exceptions are caught by the wrapper."""
+        """Split out so the wrapper can catch exceptions."""
         msg = MarkerArray()
         now = self.get_clock().now().to_msg()
         next_id = 0  # global unique id across all marker sub-parts
@@ -229,7 +228,7 @@ class ArucoDetectionViewer(PoseReader):
             if 'positionInBase' not in entry or 'eulerInBase' not in entry:
                 continue
 
-            # Use base_link values directly — RViz uses TF to transform to display frame
+            # base_link values directly; RViz transforms via TF for display
             pos = entry['positionInBase']
             euler_rad = entry['eulerInBase']
             q = R.from_euler('XYZ', euler_rad).as_quat()

@@ -26,7 +26,7 @@ def quat_to_euler(x: float, y: float, z: float, w: float):
 	roll, pitch, yaw = R.from_quat([x, y, z, w]).as_euler("XYZ", degrees=False)
 	return roll, pitch, yaw
 
-# MoveItErrorCodes values -> human-readable reason (canonical moveit_msgs values).
+# moveit_msgs error codes -> readable names
 _MOVEIT_ERR = {
 	1: "SUCCESS", 99999: "FAILURE",
 	-1: "PLANNING_FAILED", -2: "INVALID_MOTION_PLAN",
@@ -42,7 +42,7 @@ _MOVEIT_ERR = {
 }
 
 def _moveit_err_str(moveit2):
-	"""Return a readable MoveIt error-code string for the last execution, or '?'."""
+	"""Readable error string for the last MoveIt execution, or '?'."""
 	try:
 		code = moveit2.get_last_execution_error_code()
 		val = getattr(code, "val", code)
@@ -50,16 +50,16 @@ def _moveit_err_str(moveit2):
 	except Exception:
 		return "?"
 
-# Patched local copy of pymoveit2's moveit2.py (kept verbatim in this package).
+# patched local copy of pymoveit2's moveit2.py
 from .moveit2 import MoveIt2
 
 class PoseReader(Node):
-	"""ROS 2 node that prints the gripper pose every second using pymoveit2."""
+	"""Node that tracks (and optionally prints) the gripper pose via pymoveit2."""
 
 	def __init__(self, node_name: Optional[str] = None, enable_pose_print: bool = True):
 		super().__init__(node_name or "gripper_pose_reader")
 
-		# Robot specifics (AR4 / MoveIt config defaults)
+		# AR4 / MoveIt config defaults
 		joint_names = [
 			"joint_1",
 			"joint_2",
@@ -72,7 +72,6 @@ class PoseReader(Node):
 		end_effector_name = "link_6"  # AR4 end-effector link
 		group_name = "ar_manipulator"  # AR4 MoveIt group
 
-		# Initialize MoveIt2 helper
 		self._cb_group = ReentrantCallbackGroup()
 		self.moveit2 = MoveIt2(
 			node=self,
@@ -80,30 +79,26 @@ class PoseReader(Node):
 			base_link_name=base_link_name,
 			end_effector_name=end_effector_name,
 			group_name=group_name,
-			use_move_group_action=True,  # Use action instead of service
+			use_move_group_action=True,
 			callback_group=self._cb_group,
 		)
 
-		# Default speed limits (0.0 causes MoveIt to warn and fall back to 1.0)
+		# 0.0 makes MoveIt warn and fall back to 1.0
 		self.moveit2.max_velocity = 0.9
 		self.moveit2.max_acceleration = 0.9
 
-		# Seconds to pause after motion completes so MoveIt's TrajectoryExecutionManager
-		# fully releases before the next command is sent.
+		# pause after each move so TrajectoryExecutionManager releases before the next command
 		self.move_settle_delay = 0.5
 
 
-		# Keep local references for frames
 		self.base_link_name = base_link_name
 		self.end_effector_name = end_effector_name
 
 		self.tf_buffer = tf2_ros.Buffer()
 		self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
-		# Subscribe directly to joint states
 		self._last_joint_msg = None  # list[float] ordered by self.moveit2.joint_names
 		self._fk_future = None
-		# Hardcoded baseline orientation (home) so printed rpy is (0,0,0) at home
 		self.pose = np.array([-1,-1,-1,-1,-1,-1])
 		self.quat = np.array([-1, -1, -1, -1])
 		self.frame = ""
@@ -116,70 +111,49 @@ class PoseReader(Node):
 			self._on_joint_states,
 			10,
 		)
-		# Always update pose every 0.5s, but only print if enabled
 		self._timer = self.create_timer(0.5, self._on_timer)
 
 		self.get_logger().info(
 			f"PoseReader started; base='{base_link_name}', eef='{end_effector_name}'"
 		)
-		self.frameRotationAngles = np.array([0, 0, np.pi/2])  # Rotation from Bad Frame to Good Frame
-		self.frameOffsetAngles = np.array([-0.6162, -1.5706, -2.1870])  # No translation offset
+		self.frameRotationAngles = np.array([0, 0, np.pi/2])  # rotation from Bad Frame to Good Frame
+		self.frameOffsetAngles = np.array([-0.6162, -1.5706, -2.1870])
 
-		# Publisher used to cancel any in-progress MoveIt trajectory before sending a new one.
+		# publishes 'stop' to kill any in-flight trajectory before sending a new goal
 		self._cancellation_pub = self.create_publisher(String, '/trajectory_execution_event', 1)
 
 	def _cancel_and_wait(self, wait_timeout=3.0):
-		"""Cancel any in-flight MoveIt trajectory and wait for execution to stop.
-
-		Publishes a stop event, then waits up to *wait_timeout* seconds for
-		MoveIt's result callback to fire (which clears __is_executing).  After
-		the wait the flags are force-cleared so the next goal starts from a
-		clean state, followed by a brief pause for MoveIt's
-		TrajectoryExecutionManager to fully release the trajectory lock.
-		"""
+		"""Cancel any in-flight MoveIt trajectory and wait for it to go idle."""
 		_stop = String()
 		_stop.data = 'stop'
 		self._cancellation_pub.publish(_stop)
-		# Wait for any active trajectory's result callback to fire naturally
-		# (it will set __is_executing = False).  This prevents the next goal
-		# from arriving while MoveIt is still busy.
+		# let the result callback clear __is_executing before the next goal arrives
 		_deadline = time.time() + wait_timeout
 		while (getattr(self.moveit2, '_MoveIt2__is_executing', False) or
 		       getattr(self.moveit2, '_MoveIt2__is_motion_requested', False)):
 			if time.time() > _deadline:
 				break
 			time.sleep(0.05)
-		# Force-clear flags regardless (handles the case where the action server
-		# never sent a result, e.g. after a hard timeout or server restart).
+		# force-clear in case the server never sent a result (hard timeout, restart)
 		self.moveit2._MoveIt2__is_motion_requested = False
 		self.moveit2._MoveIt2__is_executing = False
-		# Brief pause so TrajectoryExecutionManager has released the lock.
+		# give TrajectoryExecutionManager a beat to release the lock
 		time.sleep(0.3)
 
 	def _reached_configuration(self, joint_positions, tol=0.10):
-		"""True if the latest measured joint state is within *tol* rad of target.
+		"""True if measured joints are within tol rad of target.
 
-		Used as a ground-truth completion check that doesn't depend on pymoveit2's
-		result callback (which can be missed under a loaded executor). tol=0.10 rad
-		(~5.7 deg) matches the controller's loosest goal tolerance (J6), so if the
-		controller considers the goal reached, so do we.
-		"""
+		Ground-truth completion check, independent of pymoveit2's result callback.
+		tol=0.10 rad matches the controller's loosest goal tolerance (J6)."""
 		actual = self._last_joint_msg
 		if actual is None or len(actual) != len(joint_positions):
 			return False
 		return all(abs(a - t) <= tol for a, t in zip(actual, joint_positions))
 
 	def _eef_pose_truth(self):
-		"""Current end-effector (link_6) pose in base_link as (pos[3], quat_xyzw[4]).
-
-		Primary source is the TF buffer. Under the loaded MultiThreadedExecutor the
-		buffer can momentarily lag, so the lookup is given a short blocking window;
-		if it still fails we fall back to MoveIt FK from the latest measured joint
-		state. FK is fed by the same joint_states stream but does NOT depend on the
-		TF buffer being current, so it breaks the false "not reached" readings that
-		a starved TF buffer otherwise produces (and which manufacture false 15 s
-		move_to_pose timeouts -> cancel/retry thrash -> arm desync). Returns
-		(None, None) if neither source is available."""
+		"""link_6 pose in base_link as (pos, quat_xyzw), or (None, None).
+		TF first, FK fallback: a starved TF buffer would fake "not reached"
+		and cause false timeouts and retry thrash."""
 		try:
 			tf = self.tf_buffer.lookup_transform(
 				self.base_link_name, self.end_effector_name, Time(),
@@ -189,7 +163,6 @@ class PoseReader(Node):
 			return (np.array([t.x, t.y, t.z]), np.array([r.x, r.y, r.z, r.w]))
 		except Exception:
 			pass
-		# TF-independent fallback: forward kinematics from the latest joint state.
 		if not self._last_joint_msg:
 			return (None, None)
 		try:
@@ -213,14 +186,9 @@ class PoseReader(Node):
 		return (np.array([p.x, p.y, p.z]), np.array([q.x, q.y, q.z, q.w]))
 
 	def _reached_pose(self, target_pos, target_quat, pos_tol=0.025, ang_tol=0.17):
-		"""True if the end-effector (link_6 in base_link) is within pos_tol (m) and
-		ang_tol (rad) of the target pose. Ground-truth completion check for
-		move_to_pose, independent of pymoveit2's racy result callback.
-
-		Tolerances are intentionally a bit loose (~2.5 cm / ~10 deg): the AR4's
-		joint goal tolerances (0.02 rad, J6 0.10) leave that much Cartesian slack
-		on a *successfully* settled move, so tighter values would cause false
-		failures on moves that actually completed."""
+		"""Ground-truth check that link_6 is within tolerance of the target.
+		Deliberately loose (~2.5 cm / ~10 deg): the joint goal tolerances leave
+		that much slack on a settled move, tighter would false-fail."""
 		cur_pos, cur_q = self._eef_pose_truth()
 		if cur_pos is None:
 			return False
@@ -232,22 +200,14 @@ class PoseReader(Node):
 		return (2.0 * np.arccos(dot)) <= ang_tol
 
 	def move_to_configuration(self, joint_positions, timeout=15.0, max_retries=2):
-		"""Move to *joint_positions* with automatic retry on transient failures.
-
-		Mirrors the move_to_pose() pattern: cancels any in-flight trajectory
-		before each attempt and polls the MoveIt flags with a deadline instead
-		of calling wait_until_executed() (which has no timeout).  Also treats the
-		move as done as soon as the arm physically reaches the target config, so a
-		missed result callback can't turn a completed move into a false timeout.
-
-		Returns True if the motion succeeded, False if all attempts failed.
-		"""
+		"""Joint-space move with retries. Polls with a deadline instead of
+		wait_until_executed (which has none), and counts the move done once the
+		arm physically reaches the config, so a missed result callback can't
+		turn a completed move into a timeout."""
 		for attempt in range(max_retries + 1):
 			if attempt > 0:
-				# Same ground-truth guard as move_to_pose: a "failed" attempt may
-				# have actually reached the config (missed result callback under the
-				# loaded executor). Don't stop+replan a move that already arrived —
-				# that cancel is what desyncs the arm.
+				# a "failed" attempt may actually have arrived (missed result
+				# callback); cancelling a completed move is what desyncs the arm
 				if self._reached_configuration(joint_positions):
 					time.sleep(self.move_settle_delay)
 					return True
@@ -264,11 +224,8 @@ class PoseReader(Node):
 			timed_out = False
 			while (getattr(self.moveit2, '_MoveIt2__is_motion_requested', False) or
 			       getattr(self.moveit2, '_MoveIt2__is_executing', False)):
-				# Ground-truth success: the arm physically reached the commanded
-				# config. Under a loaded executor the pymoveit2 result callback can
-				# be missed, leaving these flags stuck set; without this check we
-				# time out and cancel a move the controller actually completed,
-				# yielding a false CONTROL_FAILED. Trust where the robot actually is.
+				# ground truth: arm reached the config. A missed result callback
+				# leaves the flags stuck set, which would read as a false timeout.
 				if self._reached_configuration(joint_positions):
 					time.sleep(self.move_settle_delay)
 					return True
@@ -281,14 +238,7 @@ class PoseReader(Node):
 					break
 				time.sleep(0.05)
 
-			# Success ONLY if the arm physically reached the target config. We do
-			# NOT trust motion_suceeded: under the loaded executor that flag is racy
-			# in BOTH directions — it can stay False on a move that completed (false
-			# failure) AND read True from a stale/previous result on a move that did
-			# NOT actually move (false success). A false success here is what let
-			# placePlate open the gripper while the wrist was still rotated, dropping
-			# the plate at an angle. Ground truth (where the joints actually are) is
-			# the only reliable signal.
+			# only ground truth counts; motion_suceeded is racy both ways
 			if self._reached_configuration(joint_positions):
 				time.sleep(self.move_settle_delay)
 				return True
@@ -307,15 +257,8 @@ class PoseReader(Node):
 		return False
 
 	def move_to_pose(self, pos, euler, max_retries=2):
-		"""Move to *pos* / *euler* with automatic retry on transient failures.
-
-		A "transient failure" is one where MoveIt aborted or timed out because
-		it was still busy executing a previous trajectory.  On failure the
-		in-flight trajectory is properly cancelled before the next attempt so
-		that MoveIt is in a clean idle state.
-
-		Returns True if the motion succeeded, False if all attempts failed.
-		"""
+		"""Pose move with retries; cancels any in-flight trajectory before
+		each attempt so MoveIt starts from a clean idle state."""
 		bad_pos, bad_euler = self.to_bad_frame(pos, euler)
 		q = R.from_euler("XYZ", bad_euler, degrees=False).as_quat()  # [x, y, z, w]
 		q_msg = Quaternion(x=float(q[0]), y=float(q[1]), z=float(q[2]), w=float(q[3]))
@@ -329,13 +272,8 @@ class PoseReader(Node):
 
 		for attempt in range(max_retries + 1):
 			if attempt > 0:
-				# Before disturbing the arm with a stop+replan, check whether the
-				# previous attempt actually arrived. Under the loaded executor the
-				# result callback is frequently missed, so an attempt flagged as
-				# "failed" may have physically reached the goal. Cancelling and
-				# replanning such a move is exactly what desyncs the arm (lost
-				# steps / start-state deviation) and caused the downstream scrape
-				# approach collision — so trust ground truth before retrying.
+				# the previous attempt may actually have arrived; cancelling
+				# a completed move desyncs the arm
 				if self._reached_pose(bad_pos, q):
 					time.sleep(self.move_settle_delay)
 					return True
@@ -343,13 +281,9 @@ class PoseReader(Node):
 					f"[move_to_pose] Retry {attempt}/{max_retries}…"
 				)
 
-			# Cancel any in-flight trajectory and wait for MoveIt to go idle
-			# before sending a new goal.  This is the key fix: without waiting
-			# for the previous trajectory to finish, the new goal is aborted
-			# immediately with STATUS_ABORTED.
+			# wait for idle before sending a new goal, else it aborts immediately
 			self._cancel_and_wait()
-			# Reset the success flag so a stale result from a previous
-			# trajectory cannot be mistaken for this attempt's outcome.
+			# reset so a stale result can't count for this attempt
 			self.moveit2.motion_suceeded = False
 
 			self.moveit2.move_to_pose(
@@ -357,18 +291,13 @@ class PoseReader(Node):
 				quat_xyzw=q_msg,
 			)
 
-			# Poll both flags until the action server reports a final result.
-			# (wait_until_executed() can return early under MultiThreadedExecutor
-			# because the goal-accepted callback clears __is_motion_requested
-			# before wait_until_executed checks it.)
+			# poll both flags; wait_until_executed can return early under the
+			# multithreaded executor
 			_deadline = time.time() + _timeout
 			timed_out = False
 			while (getattr(self.moveit2, '_MoveIt2__is_motion_requested', False) or
 			       getattr(self.moveit2, '_MoveIt2__is_executing', False)):
-				# Ground-truth success: the end-effector physically reached the
-				# target pose. Same fix as move_to_configuration — the pymoveit2
-				# result callback is racy under the loaded executor, so we trust
-				# where the arm actually is rather than the motion_suceeded flag.
+				# ground truth, same as move_to_configuration
 				if self._reached_pose(bad_pos, q):
 					time.sleep(self.move_settle_delay)
 					return True
@@ -380,8 +309,7 @@ class PoseReader(Node):
 					break
 				time.sleep(0.05)
 
-			# Success ONLY if the end-effector actually reached the target pose.
-			# motion_suceeded is not trusted (racy both ways — see move_to_configuration).
+			# only ground truth counts (motion_suceeded is racy both ways)
 			if self._reached_pose(bad_pos, q):
 				time.sleep(self.move_settle_delay)
 				return True
@@ -428,14 +356,7 @@ class PoseReader(Node):
 		return good_position, good_euler_angles
 
 	def to_bad_frame(self, good_position, good_euler_angles):
-		"""
-		Inverse transformation: from Good Frame back to Bad Frame.
-		Args:
-			good_position: np.array([x, y, z]) in Good Frame
-			good_euler_angles: np.array([roll, pitch, yaw]) in Good Frame ("XYZ" order)
-		Returns:
-			bad_position, bad_euler_angles in Bad Frame
-		"""
+		"""Inverse of to_good_frame."""
 		# Inverse rotation from Good Frame to Bad Frame
 		R_BF_GF_Vec = R.from_euler("XYZ", self.frameRotationAngles, degrees=False)
 		R_GF_BF = R_BF_GF_Vec.as_matrix().T

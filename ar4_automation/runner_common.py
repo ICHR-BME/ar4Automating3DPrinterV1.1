@@ -1,15 +1,5 @@
 #!/usr/bin/env python3
-"""
-Shared boilerplate for the runner/entry scripts (runScrapePlate.py,
-runDoubleTransfer.py, runFullAutomationWithScrape.py, scanFor2Markers.py,
-scanFor3Markers.py):
-
-  - building a printerAutomation node with the standard webcam configuration
-  - spinning it on a background MultiThreadedExecutor
-  - waiting for joint_states
-  - reconstructing Simulated3DPrinter estimates from a loaded save file
-  - the interactive command menu used by the scanForNMarkers scripts
-"""
+"""Shared setup/menu boilerplate for the run*/scanFor* entry scripts."""
 
 import math
 import time
@@ -20,7 +10,7 @@ import rclpy
 from .printer_automation import printerAutomation
 from .simulated3DPrinter import Simulated3DPrinter
 
-# Standard hardware configuration shared by all runner scripts.
+# standard hardware config for all runner scripts
 WEBCAM_NODE_KWARGS = dict(
     calibration_mode=False,
     stream_source="webcam",
@@ -29,22 +19,19 @@ WEBCAM_NODE_KWARGS = dict(
 )
 WEBCAM_DISTANCE_SCALE = 1.0 / 0.702
 
-# Gazebo configuration: camera images come from the simulated RGBD camera
-# bridged by annin_ar4_gazebo (topics /rgbd_camera/image + camera_info, so no
-# webcam calibration file or distance-scale correction applies).
+# Gazebo: images come from the bridged RGBD camera on /rgbd_camera/*, so no
+# webcam calibration file or distance-scale correction here.
 SIM_NODE_KWARGS = dict(
     calibration_mode=False,
     stream_source="ros",
 )
 
-# Standard simulated printer layouts (poses match the Gazebo table setup used
-# by the scanForNMarkers scripts). Marker IDs correspond to the door textures.
+# sim printer layouts matching the Gazebo table setup; marker IDs match the door textures
 SIM_PRINTER_SPECS_3 = [
     {"marker_id": 0, "pos": [0.22, -0.2, 0.21], "orient": [0.0, 0.0, math.pi],
      "door_marker_texture": 'materials/textures/marker6x6_0.png'},
-    # y=-0.3 (matching the hardware layout's lateral offset) keeps the 0.38 m
-    # scrape standoff inside the arm's wrist envelope; at y=-0.2 the standoff
-    # pose has no IK solution and scrapePlate aborts at the scrape waypoints.
+    # y must stay -0.3: at -0.2 the 0.38m scrape standoff has no IK solution
+    # and scrapePlate aborts at the scrape waypoints
     {"marker_id": 1, "pos": [0.44, -0.3, 0.21], "orient": [0.0, 0.0, math.pi],
      "door_marker_texture": 'materials/textures/marker6x6_1.png'},
     {"marker_id": 2, "pos": [0.60, 0.1, 0.21], "orient": [0.0, 0.0, 3/2*math.pi],
@@ -67,7 +54,7 @@ def make_sim_node(**overrides):
     kwargs = dict(SIM_NODE_KWARGS)
     kwargs.update(overrides)
     node = printerAutomation(**kwargs)
-    # Gripper action is unstable in sim (see printerAutomation.gripper_disabled)
+    # gripper action is flaky in sim, see printerAutomation.gripper_disabled
     node.gripper_disabled = True
     return node
 
@@ -81,11 +68,7 @@ def start_node(sim=False, **overrides):
 
 
 def spawn_sim_printers(node, specs):
-    """
-    Spawn Simulated3DPrinter models in Gazebo (one per spec) and register each
-    door marker's geometric pose as the node's estimated marker, so scans know
-    where to look. Returns the list of Simulated3DPrinter objects.
-    """
+    """Spawn a sim printer per spec and register its door marker estimate so scans know where to look."""
     printers = []
     for p in specs:
         printer = Simulated3DPrinter(
@@ -113,10 +96,9 @@ def spin_in_background(node):
         threading.Thread(target=node.stream.run, daemon=True).start()
 
     def _resilient_spin():
-        # spin() (not a spin_once loop): a spin_once loop serves one callback per
-        # iteration, so the always-ready 30 Hz sim-camera callback starves TF,
-        # joint_states, and MoveIt action results — verification then compares
-        # against a frozen pose and every sim move "times out" despite executing.
+        # must be spin(), not a spin_once loop: the always-ready 30 Hz sim camera
+        # callback would starve TF/joint_states/MoveIt results and every sim move
+        # "times out" despite executing
         while rclpy.ok():
             try:
                 executor.spin()
@@ -149,11 +131,7 @@ def start_webcam_node(**overrides):
 
 
 def restore_saved_printers(node):
-    """
-    Reconstruct Simulated3DPrinter objects from the printer configs restored by
-    node.load_state(), and register their geometric door-marker estimates as a
-    fallback for any marker that has no real (non-estimated) saved pose.
-    """
+    """Rebuild sim printers from load_state() configs; their door-marker estimates back-fill markers with no real saved pose."""
     for p in getattr(node, "_saved_printer_configs", []):
         printer = Simulated3DPrinter(
             node=node,
@@ -190,7 +168,7 @@ def _print_menu():
 
 
 def _parse_floats(prompt, count=None):
-    """Prompt for space-separated floats. Returns list of floats or None on error."""
+    """Prompt for space-separated floats, None on bad input."""
     try:
         raw = input(prompt).strip()
         values = [float(v) for v in raw.split()]
@@ -204,10 +182,7 @@ def _parse_floats(prompt, count=None):
 
 
 def run_command_menu(node):
-    """
-    Read user commands from stdin and dispatch them on the node (which must
-    already be spinning in a background thread). Blocks until EOF/shutdown.
-    """
+    """Stdin command loop; node must already be spinning in the background. Blocks until EOF."""
     time.sleep(5.0)
     print("\n[INFO] System ready. Type a command number.")
     node.record_startup_time()
@@ -219,8 +194,8 @@ def run_command_menu(node):
         except EOFError:
             break
 
-        # ROS log messages can interleave with terminal input, causing extra
-        # characters to be buffered before the intended option digit(s).
+        # ROS log output can interleave with terminal input and leave stray
+        # leading chars before the digit the user typed
         _valid_choices = {"1", "2", "3", "4", "5", "6", "7", "8", "9"}
         if choice not in _valid_choices and len(choice) >= 2 and choice[1:] in _valid_choices:
             choice = choice[1:]
@@ -295,8 +270,7 @@ def run_command_menu(node):
             if ids is None:
                 continue
             source_id, scrape_id = int(ids[0]), int(ids[1])
-            # All motion (scans included) comes from the offset-config
-            # waypoint lists.
+            # all motion (scans included) comes from the offset-config waypoint lists
             node.get_logger().info(
                 f"User requested scrapePlate({source_id}, {scrape_id})"
             )

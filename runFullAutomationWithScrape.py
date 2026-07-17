@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
 """
-Print-and-scrape loop.
-
-The prints to run come from a YAML queue file (PRINT_QUEUE_FILE, default
-print_queue.yaml) that lists the print folder, the file names and how many
-times to print each one. For every print in the queue:
-  1. Start the print on the Bambu printer associated with SOURCE_ID.
-  2. Wait for the print to finish.
-  3. Move the printer head out of the way (prepare_for_pickup).
-  4. Scrape the plate (pick up from SOURCE_ID, scrape against SCRAPE_ID, return).
-
-Edit the ---- Configuration ---- section and the queue file before running.
+Print-and-scrape loop. For each print in the YAML queue: print it on the
+Bambu at SOURCE_ID, wait, move the head clear, scrape the plate against
+SCRAPE_ID and return it. Edit the config section and queue file first.
 """
 
 import sys
@@ -28,42 +20,35 @@ from ar4_automation.printerclass import BambuPrinter, load_printer_config, strip
 
 
 # ---- Configuration ----
-SOURCE_ID       = 2           # Marker to pick up the plate from (and return it to)
-SCRAPE_ID       = 1           # Marker whose surface the plate is scraped against
-SCAN_DISTANCE   = 0.15        # Distance (m) used when scanning markers
-# Scrape motion (standoff/depth/retract) comes from the 'scrape' waypoint list
-# of the scrape marker's offset config in printerAutomation.__init__.
+SOURCE_ID       = 2           # marker to pick the plate from (and return it to)
+SCRAPE_ID       = 1           # marker whose surface gets scraped against
+SCAN_DISTANCE   = 0.15        # marker scan distance (m)
+# scrape motion (standoff/depth/retract) comes from the 'scrape' waypoint
+# list of the scrape marker's offset config in printerAutomation.__init__
 
-# Bambu printer to use. Credentials are loaded from printer_config.yaml
-# (copy printer_config.example.yaml and fill it in). The previously hard-coded
-# values here matched the 'a1_mini_2' entry.
+# credentials come from printer_config.yaml (copy the example file)
 PRINTER_NAME = "a1_mini"
 
-# YAML file describing the prints to run: the print folder, the file names
-# and how many times to print each one (see print_queue.yaml).
+# lists print folder, file names and repeat counts (see print_queue.yaml)
 PRINT_QUEUE_FILE = "print_queue.yaml"
 
-# Remove the printer's startup procedures (sound, purge, mech-mode check,
-# nozzle wipe on the plate, bed leveling, re-homing) from the print file
-# before uploading. Keeps only a heat-and-home preamble plus the nozzle-load
-# blob squirt, so the print starts directly. The startup shoves the plate
-# around and breaks the scrape automation.
-STRIP_STARTUP = True
+# strip the printer's startup gcode (purge, bed level, nozzle wipe, re-home)
+# before uploading, keeping only heat-and-home plus the blob squirt. the
+# stock startup shoves the plate around and breaks the scrape.
+STRIP_STARTUP = False
 # ---- End Configuration ----
 
 
 def load_print_queue(queue_file):
     """
-    Reads the YAML print queue and returns the flat, ordered list of local
-    print-file paths to run — each file repeated 'count' times.
+    Read the YAML queue, return the ordered list of local print-file paths
+    with each file repeated 'count' times.
 
-    Expected format:
+    Format:
         print_folder: gcode
         prints:
           - name: bed_scraper_a1mini.gcode.3mf
             count: 20
-          - name: BenchyFast.3mf
-            count: 1
     """
     base_dir = os.path.dirname(os.path.abspath(__file__))
     queue_path = os.path.join(base_dir, queue_file)
@@ -142,12 +127,9 @@ def main():
             raise RuntimeError(f"Upload failed for {local_file_prepped}")
         remote_names[local_file] = os.path.basename(local_file_prepped)
 
-    # Set up markers (mirrors scanFor2Markers.py non-virtual procedure). Both
-    # markers are estimated and scanned once at startup. Marker 1 (scrape) is
-    # then locked so this initial scan is the ONLY time it is ever updated —
-    # keeping the scrape approach identical on every cycle and avoiding the
-    # marker-drift collisions fixed in runScrapePlate.py. Marker 2 (the pickup
-    # source) stays unlocked and is re-detected fresh each cycle.
+    # Marker setup (mirrors scanFor2Markers.py hardware path). Marker 1
+    # (scrape) is scanned once then locked so every cycle uses the same pose;
+    # marker 2 (pickup source) stays unlocked and is re-detected each cycle.
     viewing_distance = SCAN_DISTANCE
     node.marker_offset_config[1] = 'box_offset'
     node.marker_offset_config[2] = 'printer_offset'

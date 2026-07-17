@@ -1,26 +1,13 @@
 #!/usr/bin/env python3
 """
-Visualise scan_raw_measurements.csv.
+Visualise scan_raw_measurements.csv: two 3-D scatters.
 
-Two 3-D scatter plots:
-  1. Position noise: each (marker_id, scan_distance, movement_id) group is
-     mean-centred on Z (removes depth-shift from robot moving closer).  X and Y
-     are left as absolute values so lateral systematic errors stay visible.
-     Different robot movements to the same distance are shown with distinct
-     scatter marker shapes so positioning error between approaches is visible.
-  2. Orientation spread as rotation vectors relative to each group's mean
-     orientation (computed per (marker_id, scan_distance, movement_id) so
-     cross-movement positioning error doesn't inflate the spread).
-     Each point is the 3-D rotation vector of q_mean^-1 * q_i:
-       direction = axis of rotation from the mean
-       magnitude = angle of rotation from the mean (radians)
-     This avoids Euler-angle discontinuities / gimbal lock entirely.
+1. Position noise, per (marker_id, scan_distance, movement_id) group,
+   mean-centred on Z only so lateral systematic errors stay visible.
+2. Orientation spread as rotation vectors q_mean^-1 * q_i (direction = axis,
+   magnitude = angle from the group mean), which sidesteps gimbal lock.
 
-Colour scheme
-  - Each marker_id gets a distinct base hue (from a qualitative palette).
-  - Each unique scan_distance for that marker gets a different shade/lightness
-    of that hue (darker = closer, lighter = farther).
-  - Each unique movement_id gets a distinct scatter marker shape.
+Hue = marker, shade = scan distance (darker = closer), marker shape = movement.
 """
 
 import sys
@@ -143,7 +130,7 @@ df['_color'] = pd.Series(
     index=df.index, dtype=object,
 )
 
-# Movement shapes — each unique movement_id gets a distinct matplotlib marker shape
+# each unique movement_id gets its own matplotlib marker shape
 MOVEMENT_MARKERS = ['o', '^', 's', 'D', 'v', 'P', '*', 'X']
 movement_ids = sorted(df['movement_id'].unique())
 

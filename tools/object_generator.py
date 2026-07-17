@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""
-Object Generator for Gazebo Simulation
-Generates random colored objects with various shapes and positions
-"""
+"""Spawn random colored boxes/spheres/cylinders into Gazebo for testing."""
 
 import random
 import os
@@ -14,7 +11,6 @@ import math
 
 @dataclass
 class ObjectConfig:
-    """Configuration for a spawned object"""
     name: str
     shape: str  # 'box', 'sphere', 'cylinder'
     position: Tuple[float, float, float]  # x, y, z
@@ -24,10 +20,7 @@ class ObjectConfig:
 
 
 class ObjectGenerator:
-    """Generate random objects for Gazebo spawning"""
-    
     def __init__(self, seed=None):
-        """Initialize generator with optional seed for reproducibility"""
         if seed is not None:
             random.seed(seed)
         
@@ -35,7 +28,7 @@ class ObjectGenerator:
         self.generated_objects = []
         
     def generate_color(self, preset=None):
-        """Generate a random color or use preset"""
+        """Named preset color, or random if no preset."""
         if preset:
             colors = {
                 'red': (1.0, 0.0, 0.0, 1.0),
@@ -55,14 +48,13 @@ class ObjectGenerator:
             }
             return colors.get(preset, (1.0, 1.0, 1.0, 1.0))
         else:
-            # Generate random bright color
             r = random.uniform(0.0, 1.0)
             g = random.uniform(0.0, 1.0)
             b = random.uniform(0.0, 1.0)
             return (r, g, b, 1.0)
     
     def generate_position_circular(self, radius_min=0.2, radius_max=1.5, height=0.04):
-        """Generate a position in a circular pattern around origin"""
+        """Random position in an annulus around the origin."""
         angle = random.uniform(0, 2 * math.pi)
         radius = random.uniform(radius_min, radius_max)
         x = radius * math.cos(angle)
@@ -70,13 +62,12 @@ class ObjectGenerator:
         return (x, y, height)
     
     def generate_position_grid(self, x_range=(-0.5, 0.5), y_range=(-0.5, 0.5), height=0.04):
-        """Generate a position in a rectangular grid"""
+        """Random position in a rectangle."""
         x = random.uniform(x_range[0], x_range[1])
         y = random.uniform(y_range[0], y_range[1])
         return (x, y, height)
     
     def generate_box(self, name=None, position=None, size_range=(0.05, 0.12), color=None):
-        """Generate a box object"""
         if name is None:
             name = f"box_{random.randint(1000, 9999)}"
         if position is None:
@@ -96,7 +87,6 @@ class ObjectGenerator:
         return obj
     
     def generate_sphere(self, name=None, position=None, radius_range=(0.03, 0.06), color=None):
-        """Generate a sphere object"""
         if name is None:
             name = f"sphere_{random.randint(1000, 9999)}"
         if position is None:
@@ -117,7 +107,6 @@ class ObjectGenerator:
     
     def generate_cylinder(self, name=None, position=None, radius_range=(0.02, 0.05), 
                          length_range=(0.08, 0.15), color=None):
-        """Generate a cylinder object"""
         if name is None:
             name = f"cylinder_{random.randint(1000, 9999)}"
         if position is None:
@@ -128,9 +117,8 @@ class ObjectGenerator:
         radius = random.uniform(radius_range[0], radius_range[1])
         length = random.uniform(length_range[0], length_range[1])
         
-        # Adjust z position for cylinder height
         x, y, z = position
-        z = length / 2  # Center cylinder vertically
+        z = length / 2  # sit cylinder on the ground
         
         obj = ObjectConfig(
             name=name,
