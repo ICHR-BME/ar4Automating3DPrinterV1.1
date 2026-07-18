@@ -15,11 +15,12 @@ from ar4_automation.runner_common import (
     start_node,
     restore_saved_printers,
     spawn_sim_printers,
-    SIM_PRINTER_SPECS_2,
+    sim_printer_specs,
 )
 
 # ---- Configuration ----
 RUN_SIM         = 0           # 1 = Gazebo (sim camera + spawned printers), 0 = hardware
+ROBOT           = 'ar4'       # 'ar4' or 'lite6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh)
 SOURCE_ID       = 2           # marker to pick the plate from (and return it to)
 SCRAPE_ID       = 1           # marker whose surface gets scraped against
 # all motion and tilt angles come from the waypoint lists in
@@ -28,12 +29,12 @@ SCRAPE_ID       = 1           # marker whose surface gets scraped against
 
 def main():
     rclpy.init()
-    node = start_node(sim=RUN_SIM)
+    node = start_node(sim=RUN_SIM, robot=ROBOT)
 
     if RUN_SIM:
         # spawn printers instead of loading the save file, its real-world
         # poses don't match the sim scene
-        spawn_sim_printers(node, SIM_PRINTER_SPECS_2)
+        spawn_sim_printers(node, sim_printer_specs(ROBOT, 2))
     else:
         # save file restores marker poses, offset config, printer configs
         if not node.load_state():

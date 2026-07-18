@@ -28,13 +28,20 @@ class ArucoDetectionViewer(PoseReader):
                  source="ros",
                  camera_index=None,
                  camera_keyword="GENERAL WEBCAM",
-                 color_topic="/rgbd_camera/image",
-                 depth_topic="/rgbd_camera/depth_image",
-                 camera_info_topic="/rgbd_camera/camera_info",
+                 color_topic=None,
+                 depth_topic=None,
+                 camera_info_topic=None,
                  feed_rotation_deg=0.0,
                  marker_sizes=None,
-                 calibration_file=None):
-        super().__init__('aruco_detection_viewer', enable_pose_print=False)
+                 calibration_file=None,
+                 robot='ar4'):
+        super().__init__('aruco_detection_viewer', enable_pose_print=False, robot=robot)
+
+        # camera frame + topic defaults come from the robot config
+        self.camera_frame_name = self.robot_config['camera_frame']
+        color_topic = color_topic or self.robot_config['color_topic']
+        depth_topic = depth_topic or self.robot_config['depth_topic']
+        camera_info_topic = camera_info_topic or self.robot_config['camera_info_topic']
 
         self.fps = 30.0
         self.markerNamePrefix = "aruco_marker_"
@@ -114,7 +121,9 @@ class ArucoDetectionViewer(PoseReader):
     # ---- Frame transforms ----
 
     def applyFrameChange(self, posInFrame, eulerInFrame,
-                         source_frame="base_link", target_frame="ee_camera_link"):
+                         source_frame=None, target_frame=None):
+        source_frame = source_frame or self.base_link_name
+        target_frame = target_frame or self.camera_frame_name
         pose = Pose()
         pose.position.x, pose.position.y, pose.position.z = float(posInFrame[0]), float(posInFrame[1]), float(posInFrame[2])
         q = R.from_euler("XYZ", eulerInFrame, degrees=False).as_quat()
@@ -137,8 +146,7 @@ class ArucoDetectionViewer(PoseReader):
             self.dt = 1.0 / self.fps
 
         try:
-            badPos, badEuler = self.applyFrameChange(posInFrame, eulerInFrame,
-                                                     source_frame="base_link", target_frame="ee_camera_link")
+            badPos, badEuler = self.applyFrameChange(posInFrame, eulerInFrame)
         except Exception as e:
             # expected while the TF buffer fills at startup; throttled so a
             # persistent TF problem still shows
@@ -193,7 +201,8 @@ class ArucoDetectionViewer(PoseReader):
         pass
 
     def broadcast_marker_transform(self, marker_pos, marker_orient,
-                                   parent_frame="base_link", child_frame="aruco_marker"):
+                                   parent_frame=None, child_frame="aruco_marker"):
+        parent_frame = parent_frame or self.base_link_name
         if not hasattr(self, 'tf2_broadcaster'):
             self.tf2_broadcaster = tf2_ros.TransformBroadcaster(self)
 
@@ -222,7 +231,7 @@ class ArucoDetectionViewer(PoseReader):
         msg = MarkerArray()
         now = self.get_clock().now().to_msg()
         next_id = 0  # global unique id across all marker sub-parts
-        frame_id = 'base_link'  # markers are in base_link frame; RViz resolves to display frame via TF
+        frame_id = self.base_link_name  # RViz resolves to display frame via TF
 
         for entry in self.stream.marker_poses:
             if 'positionInBase' not in entry or 'eulerInBase' not in entry:
@@ -373,7 +382,7 @@ class ArucoDetectionViewer(PoseReader):
 
         # --- Camera pose cube ---
         try:
-            cam_tf = self.tf2_buffer.lookup_transform('base_link', 'ee_camera_link', Time())
+            cam_tf = self.tf2_buffer.lookup_transform(self.base_link_name, self.camera_frame_name, Time())
             cam = Marker()
             cam.header.stamp = now
             cam.header.frame_id = frame_id

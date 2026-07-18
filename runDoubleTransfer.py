@@ -17,22 +17,23 @@ from ar4_automation.runner_common import (
     start_node,
     restore_saved_printers,
     spawn_sim_printers,
-    SIM_PRINTER_SPECS_3,
+    sim_printer_specs,
 )
 
 
 RUN_SIM = 1      # 1 = Gazebo (sim camera + spawned printers), 0 = hardware
+ROBOT = 'ar4'    # 'ar4' or 'lite6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh)
 NUM_REPEATS = 6  # times to repeat the double transfer
 
 
 def main():
     rclpy.init()
-    node = start_node(sim=RUN_SIM)
+    node = start_node(sim=RUN_SIM, robot=ROBOT)
 
     if RUN_SIM:
         # spawn printers instead of loading the save file, its real-world
         # poses don't match the sim scene
-        spawn_sim_printers(node, SIM_PRINTER_SPECS_3)
+        spawn_sim_printers(node, sim_printer_specs(ROBOT, 3))
     else:
         # save file restores marker poses, offset config, printer configs
         if not node.load_state():

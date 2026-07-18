@@ -48,9 +48,10 @@ def _timed(method):
 
 class printerAutomation(ArucoDetectionViewer):
     def __init__(self, calibration_mode=False, stream_source="webcam", camera_index=None, camera_keyword="GENERAL WEBCAM",
-                 color_topic="/rgbd_camera/image", depth_topic="/rgbd_camera/depth_image", camera_info_topic="/rgbd_camera/camera_info",
-                 feed_rotation_deg=0.0, marker_sizes=None):
+                 color_topic=None, depth_topic=None, camera_info_topic=None,
+                 feed_rotation_deg=0.0, marker_sizes=None, robot='ar4'):
         self._startup_start = time.perf_counter()
+        # camera topic defaults resolve from the robot config in ArucoDetectionViewer
         super().__init__(source=stream_source,
                          camera_index=camera_index,
                          camera_keyword=camera_keyword,
@@ -59,8 +60,9 @@ class printerAutomation(ArucoDetectionViewer):
                          camera_info_topic=camera_info_topic,
                          feed_rotation_deg=feed_rotation_deg,
                          marker_sizes=marker_sizes,
-                         calibration_file=os.path.join(_REPO_ROOT, "calibration", "camera_matrix.npz"))
-        self.get_logger().info(f"printerAutomation initialized, calibration_mode={calibration_mode}")
+                         calibration_file=os.path.join(_REPO_ROOT, "calibration", "camera_matrix.npz"),
+                         robot=robot)
+        self.get_logger().info(f"printerAutomation initialized, robot={robot}, calibration_mode={calibration_mode}")
 
         self.estimatedMarkerPrefix = "estimated_marker_"
 
@@ -241,10 +243,10 @@ class printerAutomation(ArucoDetectionViewer):
         ## marker_id -> config name, unlisted ids fall back to 'box_offset'
         self.marker_offset_config = {}
 
-        self.offsetOri = np.array([0.0, np.pi, np.pi / 2])
-
-        # camera sits below the gripper; raise EE this much (m, base Z) when scanning
-        self.camera_z_offset = 0.06
+        # tool orientation used to face a marker, and the camera's vertical
+        # mount offset (m, base Z), both per robot
+        self.offsetOri = self.robot_config['offset_ori']
+        self.camera_z_offset = self.robot_config['camera_z_offset']
 
         # state file, saved every 5s, loaded at startup
         self._state_save_path = os.path.join(_DATA_DIR, "printer_state.json")
@@ -284,16 +286,20 @@ class printerAutomation(ArucoDetectionViewer):
         # replay them instead of using flip-prone pose IK
         self._pickup_replay = None
 
-        # Gripper interface
-        self.gripper = GripperInterface(
-            node=self,
-            gripper_joint_names=["gripper_jaw1_joint"],
-            open_gripper_joint_positions=[0.00],
-            closed_gripper_joint_positions=[0.0145],
-            gripper_group_name="ar_gripper",
-            callback_group=self._cb_group,
-            gripper_command_action_name="gripper_controller/gripper_cmd",
-        )
+        # Gripper interface (robots without one configured run gripper-disabled)
+        gripper_cfg = self.robot_config['gripper']
+        if gripper_cfg is None:
+            self.gripper = None
+            self.gripper_disabled = True
+            self.get_logger().info(
+                f"No gripper configured for robot '{robot}'; gripper commands are skipped."
+            )
+        else:
+            self.gripper = GripperInterface(
+                node=self,
+                callback_group=self._cb_group,
+                **gripper_cfg,
+            )
 
     def _record_timing(self, call_chain: str, duration_s: float):
         """Append one timing row to the session CSV."""
@@ -440,7 +446,7 @@ class printerAutomation(ArucoDetectionViewer):
         """Broadcast a static TF for a marker pose in base_link."""
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
-        t.header.frame_id = "base_link"
+        t.header.frame_id = self.base_link_name
         t.child_frame_id = child_frame
         t.transform.translation.x = float(bad_pos[0])
         t.transform.translation.y = float(bad_pos[1])

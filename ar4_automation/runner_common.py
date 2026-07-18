@@ -26,42 +26,67 @@ SIM_NODE_KWARGS = dict(
     stream_source="ros",
 )
 
-# sim printer layouts matching the Gazebo table setup; marker IDs match the door textures
-SIM_PRINTER_SPECS_3 = [
-    {"marker_id": 0, "pos": [0.22, -0.2, 0.21], "orient": [0.0, 0.0, math.pi],
-     "door_marker_texture": 'materials/textures/marker6x6_0.png'},
-    # y must stay -0.3: at -0.2 the 0.38m scrape standoff has no IK solution
-    # and scrapePlate aborts at the scrape waypoints
-    {"marker_id": 1, "pos": [0.44, -0.3, 0.21], "orient": [0.0, 0.0, math.pi],
-     "door_marker_texture": 'materials/textures/marker6x6_1.png'},
-    {"marker_id": 2, "pos": [0.60, 0.1, 0.21], "orient": [0.0, 0.0, 3/2*math.pi],
-     "door_marker_texture": 'materials/textures/marker6x6_2.png'},
-]
+# sim printer layouts per robot (positions in the robot's good frame);
+# marker IDs match the door textures
+SIM_PRINTER_SPECS = {
+    'ar4': [
+        {"marker_id": 0, "pos": [0.22, -0.2, 0.21], "orient": [0.0, 0.0, math.pi],
+         "door_marker_texture": 'materials/textures/marker6x6_0.png'},
+        # y must stay -0.3: at -0.2 the 0.38m scrape standoff has no IK solution
+        # and scrapePlate aborts at the scrape waypoints
+        {"marker_id": 1, "pos": [0.44, -0.3, 0.21], "orient": [0.0, 0.0, math.pi],
+         "door_marker_texture": 'materials/textures/marker6x6_1.png'},
+        {"marker_id": 2, "pos": [0.60, 0.1, 0.21], "orient": [0.0, 0.0, 3/2*math.pi],
+         "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+    ],
+    # first pass, pulled in for the lite6's 0.44 m reach; tune in sim
+    'lite6': [
+        {"marker_id": 0, "pos": [0.14, -0.16, 0.15], "orient": [0.0, 0.0, math.pi],
+         "door_marker_texture": 'materials/textures/marker6x6_0.png'},
+        {"marker_id": 1, "pos": [0.36, -0.16, 0.15], "orient": [0.0, 0.0, math.pi],
+         "door_marker_texture": 'materials/textures/marker6x6_1.png'},
+        {"marker_id": 2, "pos": [0.55, 0.08, 0.15], "orient": [0.0, 0.0, 3/2*math.pi],
+         "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+    ],
+}
+
+
+def sim_printer_specs(robot='ar4', count=3):
+    """The robot's sim printer layout; count=2 drops marker 0 (ids 1+2)."""
+    return SIM_PRINTER_SPECS[robot][-count:]
+
+
+# legacy names (AR4 layout)
+SIM_PRINTER_SPECS_3 = SIM_PRINTER_SPECS['ar4']
 SIM_PRINTER_SPECS_2 = SIM_PRINTER_SPECS_3[1:]
 
 
-def make_webcam_node(**overrides):
+def make_webcam_node(robot='ar4', **overrides):
     """Build a printerAutomation node with the standard webcam config."""
     kwargs = dict(WEBCAM_NODE_KWARGS)
     kwargs.update(overrides)
-    node = printerAutomation(**kwargs)
+    node = printerAutomation(robot=robot, **kwargs)
     node.stream.distance_scale = WEBCAM_DISTANCE_SCALE
     return node
 
 
-def make_sim_node(**overrides):
+def make_sim_node(robot='ar4', **overrides):
     """Build a printerAutomation node fed by the Gazebo camera."""
     kwargs = dict(SIM_NODE_KWARGS)
     kwargs.update(overrides)
-    node = printerAutomation(**kwargs)
+    node = printerAutomation(robot=robot, **kwargs)
     # gripper action is flaky in sim, see printerAutomation.gripper_disabled
     node.gripper_disabled = True
     return node
 
 
-def start_node(sim=False, **overrides):
-    """(make_webcam_node or make_sim_node) + spin_in_background + wait_for_joint_states."""
-    node = make_sim_node(**overrides) if sim else make_webcam_node(**overrides)
+def start_node(sim=False, robot='ar4', **overrides):
+    """(make_webcam_node or make_sim_node) + spin_in_background + wait_for_joint_states.
+
+    robot: 'ar4' or 'lite6' (see robot_config.py). Sim launch scripts:
+    launchVirtualRobot.sh for the AR4, launchVirtualXArmLite6.sh for the Lite 6.
+    """
+    node = make_sim_node(robot=robot, **overrides) if sim else make_webcam_node(robot=robot, **overrides)
     spin_in_background(node)
     wait_for_joint_states(node)
     return node
@@ -122,9 +147,9 @@ def wait_for_joint_states(node, timeout=10.0):
     return False
 
 
-def start_webcam_node(**overrides):
+def start_webcam_node(robot='ar4', **overrides):
     """make_webcam_node + spin_in_background + wait_for_joint_states."""
-    node = make_webcam_node(**overrides)
+    node = make_webcam_node(robot=robot, **overrides)
     spin_in_background(node)
     wait_for_joint_states(node)
     return node

@@ -20,6 +20,7 @@ from ar4_automation.printerclass import BambuPrinter, load_printer_config, strip
 
 
 # ---- Configuration ----
+ROBOT           = 'ar4'       # 'ar4' or 'lite6' (see ar4_automation/robot_config.py)
 SOURCE_ID       = 2           # marker to pick the plate from (and return it to)
 SCRAPE_ID       = 1           # marker whose surface gets scraped against
 SCAN_DISTANCE   = 0.15        # marker scan distance (m)
@@ -80,7 +81,7 @@ def main():
     print_queue = load_print_queue(PRINT_QUEUE_FILE)
 
     rclpy.init()
-    node = start_webcam_node()
+    node = start_webcam_node(robot=ROBOT)
 
     # Load save file — restores marker poses, offset config, and printer configs
     if not node.load_state():

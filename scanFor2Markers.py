@@ -20,34 +20,37 @@ from ar4_automation.runner_common import (
     spin_in_background,
     wait_for_joint_states,
     run_command_menu,
+    sim_printer_specs,
 )
 from ar4_automation.simulated3DPrinter import Simulated3DPrinter
 
 
 def main():
     rclpy.init()
-    runVirtual = 0    # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
-
+    runVirtual = 1    # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
+    robot = 'lite6'     # 'ar4' or 'lite6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh)
     if runVirtual:
-        node = printerAutomation(calibration_mode=False, stream_source="ros")
+        node = printerAutomation(calibration_mode=False, stream_source="ros", robot=robot)
         node.gripper_disabled = True
         node.randomize_estimated_markers = True
-
-        printer2 = Simulated3DPrinter(
-            node=node, pos=[0.44, -0.2, 0.21], orient=[0.0, 0.1, np.pi],
-            door_marker_texture='materials/textures/marker6x6_1.png',
-        )
-        printer2.spawn_fast()
-
-        printer3 = Simulated3DPrinter(
-            node=node, pos=[0.60, 0.1, 0.21], orient=[0.0, 0.0, 3/2*np.pi],
-            door_marker_texture='materials/textures/marker6x6_2.png',
-        )
-        printer3.spawn_fast()
-
     else:
-        node = make_webcam_node()
+        node = make_webcam_node(robot=robot)
 
+    # spin before spawning printers: their TF lookups need the background
+    # executor (spin_once starves on the 30 Hz camera callbacks otherwise)
+    spin_in_background(node)
+    wait_for_joint_states(node)
+
+    if runVirtual:
+        # per-robot layout from runner_common (positions in the good frame)
+        printer2, printer3 = [
+            Simulated3DPrinter(node=node, pos=s["pos"], orient=s["orient"],
+                               door_marker_texture=s["door_marker_texture"])
+            for s in sim_printer_specs(robot, 2)
+        ]
+        printer2.spawn_fast()
+        printer3.spawn_fast()
+    else:
         printer2 = Simulated3DPrinter(
             node=node, pos=[0.40, -0.3, 0.065], orient=[0.0, 0.0, np.pi],
             door_marker_texture='materials/textures/marker6x6_1.png',
@@ -57,30 +60,22 @@ def main():
             door_marker_texture='materials/textures/marker6x6_2.png',
         )
 
-    spin_in_background(node)
-    wait_for_joint_states(node)
-
     node.get_logger().info("Starting initial scan for markers 1 and 2...")
     node.load_state()
     # scrape marker is not locked here (interactive tool). If menu scrapes
     # drift between repetitions, add node.lock_marker(<scrape_marker_id>).
 
-    if runVirtual:
-        bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
-        node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
-        bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
-        node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
+    node.marker_offset_config[1] = 'box_offset'
+    node.marker_offset_config[2] = 'printer_offset'
 
-    else:
-        viewing_distance = 0.15
-        node.marker_offset_config[1] = 'box_offset'
-        node.marker_offset_config[2] = 'printer_offset'
+    # register the geometric door-marker estimates (after load_state so stale
+    # saved poses can't shadow them), then scan both markers
+    bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
+    node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
+    bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
+    node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
 
-        bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
-        node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
-        bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
-        node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
-
+    if not runVirtual:
         node.register_printers([
             {"marker_id": 1, "pos": [0.48, -0.3, 0.07], "orient": [0.0, 0.0, np.pi],
              "door_marker_texture": 'materials/textures/marker6x6_1.png'},
@@ -88,8 +83,9 @@ def main():
              "door_marker_texture": 'materials/textures/marker6x6_2.png'},
         ])
 
-        node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
-        node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
+    viewing_distance = 0.15
+    node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
+    node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
 
     node.get_logger().info("Initial scan complete.")
     run_command_menu(node)

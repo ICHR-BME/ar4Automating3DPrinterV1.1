@@ -56,21 +56,17 @@ from .moveit2 import MoveIt2
 class PoseReader(Node):
 	"""Node that tracks (and optionally prints) the gripper pose via pymoveit2."""
 
-	def __init__(self, node_name: Optional[str] = None, enable_pose_print: bool = True):
+	def __init__(self, node_name: Optional[str] = None, enable_pose_print: bool = True,
+	             robot: str = 'ar4'):
 		super().__init__(node_name or "gripper_pose_reader")
 
-		# AR4 / MoveIt config defaults
-		joint_names = [
-			"joint_1",
-			"joint_2",
-			"joint_3",
-			"joint_4",
-			"joint_5",
-			"joint_6",
-		]
-		base_link_name = "base_link"
-		end_effector_name = "link_6"  # AR4 end-effector link
-		group_name = "ar_manipulator"  # AR4 MoveIt group
+		from .robot_config import get_robot_config
+		self.robot = robot
+		self.robot_config = get_robot_config(robot)
+		joint_names = self.robot_config['joint_names']
+		base_link_name = self.robot_config['base_link']
+		end_effector_name = self.robot_config['end_effector_link']
+		group_name = self.robot_config['move_group']
 
 		self._cb_group = ReentrantCallbackGroup()
 		self.moveit2 = MoveIt2(
@@ -116,8 +112,9 @@ class PoseReader(Node):
 		self.get_logger().info(
 			f"PoseReader started; base='{base_link_name}', eef='{end_effector_name}'"
 		)
-		self.frameRotationAngles = np.array([0, 0, np.pi/2])  # rotation from Bad Frame to Good Frame
-		self.frameOffsetAngles = np.array([-0.6162, -1.5706, -2.1870])
+		# rotation from Bad Frame to Good Frame + neutral tool euler offset
+		self.frameRotationAngles = self.robot_config['frame_rotation_angles']
+		self.frameOffsetAngles = self.robot_config['frame_offset_angles']
 
 		# publishes 'stop' to kill any in-flight trajectory before sending a new goal
 		self._cancellation_pub = self.create_publisher(String, '/trajectory_execution_event', 1)
@@ -397,7 +394,8 @@ class PoseReader(Node):
 			# Missing joints in this message; skip
 			return
 	
-	def get_frame(self, frame = "ee_link"):
+	def get_frame(self, frame=None):
+		frame = frame or self.end_effector_name
 		try:
 			temp = self.tf_buffer.lookup_transform(
 				"world",  # target (base)
