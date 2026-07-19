@@ -1,4 +1,5 @@
 import os
+import atexit
 import subprocess
 import tempfile
 import time
@@ -130,17 +131,28 @@ class Simulated3DPrinter:
         return rot_matrix @ v
     
     def _setup_pose_service(self):
-        """Initialize the ros_gz_bridge and service client."""
+        """Initialize the ros_gz_bridge and service client.
+
+        Reuse an already-running bridge when possible: every leaked
+        parameter_bridge subprocess registers as the SAME node name
+        (/ros_gz_bridge), and duplicate node names corrupt DDS discovery —
+        symptom: fresh nodes whose camera_info subscription silently never
+        matches, so aruco detection runs uncalibrated and spots nothing."""
+        self._bridge_proc = None
+        self.set_pose_client = self.node.create_client(SetEntityPose, '/world/default/set_pose')
+        if self.set_pose_client.wait_for_service(timeout_sec=2.0):
+            self.node.get_logger().info('SetEntityPose service already available (reusing bridge)')
+            return
+
         self._bridge_proc = subprocess.Popen(
             ['ros2', 'run', 'ros_gz_bridge', 'parameter_bridge',
-             '/world/default/set_pose@ros_gz_interfaces/srv/SetEntityPose'],
+             '/world/default/set_pose@ros_gz_interfaces/srv/SetEntityPose',
+             '--ros-args', '-r', f'__node:=set_pose_bridge_{os.getpid()}'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
+        atexit.register(self._bridge_proc.terminate)
         self.node.get_logger().info('Started ros_gz_bridge for set_pose service')
-        
-        self.set_pose_client = self.node.create_client(SetEntityPose, '/world/default/set_pose')
-        self.node.get_logger().info('Waiting for set_pose service...')
         if self.set_pose_client.wait_for_service(timeout_sec=10.0):
             self.node.get_logger().info('SetEntityPose service available')
         else:

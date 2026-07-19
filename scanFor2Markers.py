@@ -32,7 +32,7 @@ def main():
     if runVirtual:
         node = printerAutomation(calibration_mode=False, stream_source="ros", robot=robot)
         node.gripper_disabled = True
-        node.randomize_estimated_markers = True
+        node.randomize_estimated_markers = False
     else:
         node = make_webcam_node(robot=robot)
 

@@ -49,7 +49,10 @@ ROBOT_CONFIGS = {
         'color_topic': "/camera/color/image_raw",
         'depth_topic': "/camera/depth/image",
         'camera_info_topic': "/camera/color/camera_info",
-        'camera_z_offset': 0.0,   # D435i mount offset, tune on first scans
+        # D435i sits ~4 cm above link_eef on this mount: aim the EEF lower so
+        # the marker lands centered instead of cut off at the bottom of frame
+        # (tuned in sim; -0.07 and below makes low viewing poses unreachable)
+        'camera_z_offset': -0.04,
         # no gripper wired up yet: gripper commands are skipped
         'gripper': None,
         # good frame == base frame for the lite6 (robot spawns at the world

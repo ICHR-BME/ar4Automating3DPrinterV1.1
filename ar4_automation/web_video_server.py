@@ -236,8 +236,13 @@ class WebVideoStream:
                     self.bridge = CvBridge()
                     self.latest_color = None
                     self.latest_depth = None
-                    self.create_subscription(Image, color_topic, self._color_cb, 10)
-                    self.create_subscription(Image, depth_topic, self._depth_cb, 10)
+                    # depth 1: keep only the newest frame. With deeper queues
+                    # the heavy 30 Hz _tick (same mutually-exclusive callback
+                    # group) backs the queue up and the processed image lags
+                    # seconds behind the camera — scans then "see" the previous
+                    # viewing pose and miss the marker they are pointed at.
+                    self.create_subscription(Image, color_topic, self._color_cb, 1)
+                    self.create_subscription(Image, depth_topic, self._depth_cb, 1)
                     self.create_subscription(CameraInfo, camera_info_topic, self._info_cb, 10)
                     self.create_timer(1.0 / outer.fps, self._tick)
 

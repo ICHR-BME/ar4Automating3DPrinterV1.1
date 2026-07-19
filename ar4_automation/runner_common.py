@@ -39,13 +39,16 @@ SIM_PRINTER_SPECS = {
         {"marker_id": 2, "pos": [0.60, 0.1, 0.21], "orient": [0.0, 0.0, 3/2*math.pi],
          "door_marker_texture": 'materials/textures/marker6x6_2.png'},
     ],
-    # first pass, pulled in for the lite6's 0.44 m reach; tune in sim
+    # tuned in sim for the lite6's 0.44 m reach: the far (1.75x) viewing pose
+    # of each marker must stay reachable even with the 0.03 m estimate
+    # randomization. Reach-probed grid: door-facing-+y poses only plan
+    # reliably for marker x <= ~0.30 with y around -0.24 (at 0.263 m standoff).
     'lite6': [
         {"marker_id": 0, "pos": [0.14, -0.16, 0.15], "orient": [0.0, 0.0, math.pi],
          "door_marker_texture": 'materials/textures/marker6x6_0.png'},
-        {"marker_id": 1, "pos": [0.36, -0.16, 0.15], "orient": [0.0, 0.0, math.pi],
+        {"marker_id": 1, "pos": [0.26, -0.24, 0.18], "orient": [0.0, 0.0, math.pi],
          "door_marker_texture": 'materials/textures/marker6x6_1.png'},
-        {"marker_id": 2, "pos": [0.55, 0.08, 0.15], "orient": [0.0, 0.0, 3/2*math.pi],
+        {"marker_id": 2, "pos": [0.58, 0.08, 0.20], "orient": [0.0, 0.0, 3/2*math.pi],
          "door_marker_texture": 'materials/textures/marker6x6_2.png'},
     ],
 }

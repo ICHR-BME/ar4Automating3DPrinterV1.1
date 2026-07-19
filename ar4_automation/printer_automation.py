@@ -681,8 +681,19 @@ class printerAutomation(ArucoDetectionViewer):
             self._scan_log_movement_id += 1
             self._scan_log_marker_id = marker_id
             self._scan_log_distance = viewing_distance
-            observation_pause = 10.0 if self.collect_orientation_noise_data else 1.0
-            time.sleep(observation_pause)
+            # poll instead of a blind sleep: the first camera-pose commit takes
+            # 1-2+ s after arrival (TF + detect latency), and a fixed sleep
+            # intermittently loses that race; polling exits as soon as a real
+            # detection lands, so fast detections cost nothing extra
+            observation_pause = 10.0 if self.collect_orientation_noise_data else 4.0
+            deadline = time.time() + observation_pause
+            while time.time() < deadline:
+                observed_entry = self._find_marker_entry(marker_id)
+                if (not self.collect_orientation_noise_data
+                        and observed_entry is not None
+                        and not observed_entry.get('estimated', False)):
+                    break
+                time.sleep(0.25)
             self._scan_log_marker_id = None
             self._scan_log_distance = None
 
@@ -908,11 +919,22 @@ class printerAutomation(ArucoDetectionViewer):
             move_ok, spotted = self.scanToMarker(marker_id=marker_id, viewing_distance=dist)
             time.sleep(pause)
             if i == 0 and not spotted:
+                # the farthest pose is fragile on short-reach arms (lite6):
+                # estimate noise can make it unreachable or off-frame. Retry
+                # once closer before giving up on the whole approach.
+                fallback = 1.4 * viewing_distance
                 self.get_logger().warn(
                     f"scanMarkerApproach: marker {marker_id} not seen at max distance "
-                    f"({dist:.3f} m) — aborting approach."
+                    f"({dist:.3f} m) — retrying closer at {fallback:.3f} m."
                 )
-                return False
+                move_ok, spotted = self.scanToMarker(marker_id=marker_id, viewing_distance=fallback)
+                time.sleep(pause)
+                if not spotted:
+                    self.get_logger().warn(
+                        f"scanMarkerApproach: marker {marker_id} not seen at fallback distance "
+                        f"({fallback:.3f} m) either — aborting approach."
+                    )
+                    return False
 
         return True
 
