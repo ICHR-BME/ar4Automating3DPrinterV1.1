@@ -14,6 +14,7 @@ import struct
 from scipy.spatial.transform import Rotation as R
 import rclpy
 from rclpy.node import Node
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 
@@ -177,8 +178,11 @@ class WebVideoStream:
         # ---- Web server ----
         self.frame = None
         self.frame_id = 0
-        self.lock = threading.Lock()
-        self.new_frame_event = threading.Event()
+        # Condition (not Event): every MJPEG client waits on the same lock but
+        # notify_all wakes all of them. A shared Event let whichever client
+        # cleared it first swallow the wakeup for the others, dropping them to
+        # the 1 s poll timeout — a ~1 fps feed that looks frozen.
+        self.lock = threading.Condition()
 
         logging.getLogger('werkzeug').setLevel(logging.ERROR)
         self.app = Flask(__name__)
@@ -236,15 +240,29 @@ class WebVideoStream:
                     self.bridge = CvBridge()
                     self.latest_color = None
                     self.latest_depth = None
-                    # depth 1: keep only the newest frame. With deeper queues
-                    # the heavy 30 Hz _tick (same mutually-exclusive callback
-                    # group) backs the queue up and the processed image lags
-                    # seconds behind the camera — scans then "see" the previous
-                    # viewing pose and miss the marker they are pointed at.
-                    self.create_subscription(Image, color_topic, self._color_cb, 1)
-                    self.create_subscription(Image, depth_topic, self._depth_cb, 1)
-                    self.create_subscription(CameraInfo, camera_info_topic, self._info_cb, 10)
-                    self.create_timer(1.0 / outer.fps, self._tick)
+                    # Image intake and the heavy _tick render MUST live in
+                    # separate callback groups. In one (default) mutually
+                    # exclusive group the executor runs a single callback at a
+                    # time, so a _tick doing full ArUco detection on 1280x720
+                    # blocks _color_cb for longer than the frame period —
+                    # latest_color goes stale and the web feed re-renders the
+                    # same image. Separate groups let intake keep running while
+                    # a render is in flight (depth 1 then does its intended job
+                    # of dropping stale frames rather than masking the stall).
+                    self._intake_group = MutuallyExclusiveCallbackGroup()
+                    self._render_group = MutuallyExclusiveCallbackGroup()
+                    self.create_subscription(Image, color_topic, self._color_cb, 1,
+                                             callback_group=self._intake_group)
+                    self.create_subscription(Image, depth_topic, self._depth_cb, 1,
+                                             callback_group=self._intake_group)
+                    self.create_subscription(CameraInfo, camera_info_topic, self._info_cb, 10,
+                                             callback_group=self._intake_group)
+                    # guards against _tick piling up when a render overruns the
+                    # timer period (the render group serialises, but the
+                    # executor would still queue every missed tick)
+                    self._rendering = False
+                    self.create_timer(1.0 / outer.fps, self._tick,
+                                      callback_group=self._render_group)
 
                 def _color_cb(self, msg):
                     self.latest_color = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
@@ -258,9 +276,13 @@ class WebVideoStream:
                         outer.dist_coeffs = np.array(msg.d)
 
                 def _tick(self):
-                    if self.latest_color is None:
+                    if self.latest_color is None or self._rendering:
                         return
-                    outer._build_frame(self.latest_color, self.latest_depth)
+                    self._rendering = True
+                    try:
+                        outer._build_frame(self.latest_color, self.latest_depth)
+                    finally:
+                        self._rendering = False
 
             self._ros_node = _Node()
 
@@ -294,18 +316,23 @@ class WebVideoStream:
         with self.lock:
             self.frame = frame.copy()
             self.frame_id += 1
-        self.new_frame_event.set()
+            self.lock.notify_all()
 
     def _generate(self):
         last_id = -1
         while True:
-            self.new_frame_event.wait(timeout=1.0)
-            self.new_frame_event.clear()
             with self.lock:
-                if self.frame is None or self.frame_id == last_id:
+                # wait_for re-checks under the lock, so a frame published
+                # between the predicate check and the wait cannot be missed
+                got = self.lock.wait_for(
+                    lambda: self.frame is not None and self.frame_id != last_id,
+                    timeout=1.0)
+                if not got:
                     continue
                 frame = self.frame.copy()
                 last_id = self.frame_id
+            # encode outside the lock: JPEG on the full composite is slow and
+            # would otherwise stall _update_frame (and thus the render tick)
             _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')

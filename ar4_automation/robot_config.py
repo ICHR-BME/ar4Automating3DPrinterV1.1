@@ -49,19 +49,21 @@ ROBOT_CONFIGS = {
         'color_topic': "/camera/color/image_raw",
         'depth_topic': "/camera/depth/image",
         'camera_info_topic': "/camera/color/camera_info",
-        # D435i sits ~4 cm above link_eef on this mount: aim the EEF lower so
-        # the marker lands centered instead of cut off at the bottom of frame
-        # (tuned in sim; -0.07 and below makes low viewing poses unreachable)
-        'camera_z_offset': -0.04,
+        # with the flipped offset_ori below the D435i hangs ~4 cm below
+        # link_eef, so raise the EEF to keep the marker centered (mirror of the
+        # -0.04 that the camera-above roll needed; re-check on the first scans)
+        'camera_z_offset': 0.04,
         # no gripper wired up yet: gripper commands are skipped
         'gripper': None,
         # good frame == base frame for the lite6 (robot spawns at the world
         # origin with zero yaw, so no AR4-style 90 deg convention)
         'frame_rotation_angles': np.array([0.0, 0.0, 0.0]),
         'frame_offset_angles': np.array([0.0, 0.0, 0.0]),
-        # UNTUNED: tool-vs-marker orientation copied from the AR4 (depends on
-        # the camera/tool mounting, not the base frame); verify on first scans
-        'offset_ori': np.array([0.0, np.pi, np.pi / 2]),
+        # AR4 value rolled 180 deg about the tool approach axis: the D435i is
+        # mounted on the opposite side of the eef here, so the unrolled AR4
+        # orientation put the camera above the gripper instead of below it.
+        # Same tool Z (still faces the marker), only the roll differs.
+        'offset_ori': np.array([np.pi, 0.0, np.pi / 2]),
     },
 }
 

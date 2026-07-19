@@ -2,7 +2,8 @@
 """
 Scan for markers 1 and 2 only, then start the interactive command menu.
 
-Set runVirtual = 1 in main() to run against Gazebo (start it first with
+Set runVirtual = 1 in main() to run against Gazebo 
+(start it first with
 scripts/launchVirtualRobot.sh) instead of the physical robot + webcam.
 """
 
@@ -77,7 +78,7 @@ def main():
 
     if not runVirtual:
         node.register_printers([
-            {"marker_id": 1, "pos": [0.48, -0.3, 0.07], "orient": [0.0, 0.0, np.pi],
+            {"marker_id": 1, "pos": [0.48, -0.35, 0.07], "orient": [0.0, 0.0, np.pi],
              "door_marker_texture": 'materials/textures/marker6x6_1.png'},
             {"marker_id": 2, "pos": [0.65, 0.1, 0.07], "orient": [0.0, 0.0, 3/2*np.pi],
              "door_marker_texture": 'materials/textures/marker6x6_2.png'},
