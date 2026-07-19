@@ -205,11 +205,11 @@ class printerAutomation(ArucoDetectionViewer):
                 ],
                 'scrape': [
                     {'description': 'scrape standoff along marker Z',
-                     'pos': np.array([0.0, 0.092, 0.38]), 'angle_deg': 5.0},
+                     'pos': np.array([0.0, 0.092, 0.29]), 'angle_deg': 5.0},
                     {'description': 'full scrape depth',
                      'pos': np.array([0.0, 0.092, 0.13]), 'angle_deg': 5.0},
                     {'description': 'retract to standoff',
-                     'pos': np.array([0.0, 0.092, 0.38]), 'angle_deg': 5.0},
+                     'pos': np.array([0.0, 0.092, 0.29]), 'angle_deg': 5.0},
                 ],
             },
             'box_offset_old': {

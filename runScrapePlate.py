@@ -19,8 +19,8 @@ from ar4_automation.runner_common import (
 )
 
 # ---- Configuration ----
-RUN_SIM         = 0           # 1 = Gazebo (sim camera + spawned printers), 0 = hardware
-ROBOT           = 'ar4'       # 'ar4' or 'lite6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh)
+RUN_SIM         = 1           # 1 = Gazebo (sim camera + spawned printers), 0 = hardware
+ROBOT           = 'lite6'       # 'ar4' or 'lite6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh)
 SOURCE_ID       = 2           # marker to pick the plate from (and return it to)
 SCRAPE_ID       = 1           # marker whose surface gets scraped against
 # all motion and tilt angles come from the waypoint lists in
