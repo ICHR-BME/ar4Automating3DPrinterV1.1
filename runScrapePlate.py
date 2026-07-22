@@ -48,7 +48,7 @@ def main():
         restore_saved_printers(node)
 
     ok = node.scrapePlate(
-        source_id=SOURCE_ID,
+        source_id=SOURCE_ID,8
         scrape_id=SCRAPE_ID,
         wait_after_pickup=False,
         wait_duration=10.0,
