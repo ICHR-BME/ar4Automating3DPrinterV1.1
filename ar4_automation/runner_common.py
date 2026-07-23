@@ -54,10 +54,10 @@ SIM_PRINTER_SPECS = {
     'lite6': [ #Monterrey
             {"marker_id": 0, "pos": [0.14, -0.16, 0.15], "orient": [0.0, 0.0, math.pi],
              "door_marker_texture": 'materials/textures/marker6x6_0.png'},
-            {"marker_id": 1, "pos": [0.2, 0.3, 0.1], "orient": [0.0, 0.0, 0*math.pi],
-             "door_marker_texture": 'materials/textures/marker6x6_1.png'},
-            {"marker_id": 2, "pos": [0.58, 0.08, 0.20], "orient": [1/2* math.pi, 0.0, 3/2*math.pi],
+            {"marker_id": 2, "pos": [0.45, -0.2, 0.12], "orient": [0.0, 0.0, -1/2*math.pi],
              "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+            {"marker_id": 1, "pos": [0.40, 0.0, -0.1], "orient": [-1/2*math.pi, 0.0, 2/2*math.pi],
+             "door_marker_texture": 'materials/textures/marker6x6_1.png'},
         ],
     # xArm 6: same door-facing conventions as the lite6, pushed out for the
     # longer (~0.7 m) reach. Starting point — re-probe reachability of each

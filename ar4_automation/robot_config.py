@@ -52,7 +52,9 @@ ROBOT_CONFIGS = {
         # with the flipped offset_ori below the D435i hangs ~4 cm below
         # link_eef, so raise the EEF to keep the marker centered (mirror of the
         # -0.04 that the camera-above roll needed; re-check on the first scans)
-        'camera_z_offset': 0.04,
+        #'camera_z_offset': 0.04,
+        #It is 0.06 for the x arm lite 6 custom gripper
+        'camera_z_offset': 0.06,
         # no gripper wired up yet: gripper commands are skipped
         'gripper': None,
         # good frame == base frame for the lite6 (robot spawns at the world

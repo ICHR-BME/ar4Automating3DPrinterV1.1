@@ -480,13 +480,21 @@ class Simulated3DPrinter:
             door_front_face_local[2] + door_relative_pos[2]
         ]
         marker_x, marker_y, marker_z = self._transform_point_to_world(*marker_local)
-        marker_yaw = yaw + math.pi/2
-        
+
+        # Marker normal is its local +X; it must point out of the door's -Y
+        # face, i.e. rotated +90 deg about the printer's LOCAL z-axis. That is
+        # R_printer * Rz(90) (== self.q_marker), NOT yaw+90: the two agree only
+        # when roll==pitch==0, otherwise adding to yaw rotates about world z and
+        # the marker ends up facing the wrong way (position stays right because
+        # it goes through the full-orientation TF frame). Convert q_marker to
+        # Gazebo's RPY (Rz*Ry*Rx == tf 'sxyz') for the create tool.
+        marker_roll, marker_pitch, marker_yaw = tf_transformations.euler_from_quaternion(self.q_marker)
+
         cmd = [
             'ros2', 'run', 'ros_gz_sim', 'create',
             '-file', marker_sdf_path, '-name', marker_name,
             '-x', str(marker_x), '-y', str(marker_y), '-z', str(marker_z),
-            '-R', str(roll), '-P', str(pitch), '-Y', str(marker_yaw)
+            '-R', str(marker_roll), '-P', str(marker_pitch), '-Y', str(marker_yaw)
         ]
         
         try:
@@ -521,8 +529,13 @@ class Simulated3DPrinter:
         ])
         marker_local_pos = door_front_face_local + np.array(door_relative_pos)
 
-        # Printer orientation in world (bad frame)
-        R_printer = R_scipy.from_euler("XYZ", self.orient, degrees=False)
+        # Printer orientation in world (bad frame). Use the SAME quaternion the
+        # printer is spawned with (self.q, tf 'sxyz'/extrinsic) rather than
+        # re-deriving from self.orient via scipy's intrinsic "XYZ": the two
+        # conventions agree only when a single Euler angle is nonzero, so a
+        # marker with compound roll+yaw (e.g. lite6 marker 1) would otherwise
+        # register an estimate that doesn't match where Gazebo actually spawns it.
+        R_printer = R_scipy.from_quat(self.q)
 
         # Marker world position
         marker_world_pos = np.array(self.pos) + R_printer.apply(marker_local_pos)

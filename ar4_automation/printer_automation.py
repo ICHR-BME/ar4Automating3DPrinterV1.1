@@ -5,6 +5,8 @@ warnings.filterwarnings("ignore", message="Gimbal lock detected", category=UserW
 
 from .aruco_detector import ArucoDetectionViewer
 import rclpy
+from rclpy.time import Time
+from rclpy.duration import Duration
 import numpy as np
 import os
 import json
@@ -144,7 +146,7 @@ class printerAutomation(ArucoDetectionViewer):
                 ],
                 'scrape': None,
             },
-            'printer_offset': {
+            'printer_offset_davis': {
                 'pickup': [
                     {'description': 'scan the marker before approaching',
                      'scan': 0.15},
@@ -177,8 +179,42 @@ class printerAutomation(ArucoDetectionViewer):
                 ],
                 'scrape': None,
             },
+
+            'printer_offset': {
+                'pickup': [
+                    {'description': 'scan the marker before approaching',
+                        'scan': 0.15},
+                    {'description': 'scan the marker before approaching',
+                        'scan': 0.15},
+                    {'description': 'open gripper for the approach',
+                        'gripper': 'open'},
+                    {'description': 'approach standoff in front of the handle',
+                        'pos': np.array([0.0, 0.06, 0.15]), 'angle_deg': 0.0},
+                    {'description': 'grasp pose at the handle',
+                        'pos': np.array([0.0, 0.06, 0.1]), 'angle_deg': 0.0},
+                    {'description': 'grab the handle',
+                        'gripper': 'close'},
+                    {'description': 'lift / carry pose',
+                        'pos': np.array([0.0, 0.14, 0.11]), 'angle_deg': 0.0},
+                ],
+                'place': [
+                    {'description': 'lift / carry pose',
+                        'pos': np.array([0.0, 0.14, 0.11]), 'angle_deg': -10.0},
+                    {'description': 'partial descent, tucked toward the marker',
+                        'pos': np.array([0.0, 0.105, 0.11]), 'angle_deg': -10.0},
+                    {'description': 'shift out along marker Z',
+                        'pos': np.array([0.0, 0.105, 0.09]), 'angle_deg': -10.0},
+                    {'description': 'set down',
+                        'pos': np.array([0.0, 0.06, 0.09]), 'angle_deg': -10.0},
+                    {'description': 'release the handle',
+                        'gripper': 'open'},
+                    {'description': 'withdraw to the approach standoff',
+                        'pos': np.array([0.0, 0.06, 0.15]), 'angle_deg': 0.0},
+                ],
+                'scrape': None,
+            },
             # Printer with the marker to the side; also the scrape fixture
-            'box_offset': {
+            'box_offset_davis': {
                 'pickup': [
                     {'description': 'scan the marker before approaching',
                      'scan': 0.15},
@@ -212,32 +248,39 @@ class printerAutomation(ArucoDetectionViewer):
                      'pos': np.array([0.0, 0.092, 0.29]), 'angle_deg': 5.0},
                 ],
             },
-            'box_offset_old': {
+            'box_offset': {
                 'pickup': [
                     {'description': 'scan the marker before approaching',
-                     'scan': 0.15},
+                        'scan': 0.15},
                     {'description': 'open gripper for the approach',
-                     'gripper': 'open'},
+                        'gripper': 'open'},
                     {'description': 'approach standoff in front of the handle',
-                     'pos': np.array([0.0, 0.05, 0.15]), 'angle_deg': None},
+                        'pos': np.array([0.0, 0.03, 0.15]), 'angle_deg': None},
                     {'description': 'grasp pose at the handle',
-                     'pos': np.array([0.0, 0.05, 0.102]), 'angle_deg': None},
+                        'pos': np.array([0.0, 0.03, 0.102]), 'angle_deg': None},
                     {'description': 'grab the handle',
-                     'gripper': 'close'},
+                        'gripper': 'close'},
                     {'description': 'lift / carry pose',
-                     'pos': np.array([0.0, 0.15, 0.102]), 'angle_deg': None},
+                        'pos': np.array([0.0, 0.13, 0.102]), 'angle_deg': None},
                 ],
                 'place': [
                     {'description': 'lift / carry pose',
-                     'pos': np.array([0.0, 0.15, 0.102]), 'angle_deg': None},
+                        'pos': np.array([0.0, 0.13, 0.102]), 'angle_deg': None},
                     {'description': 'descend back to the grasp pose',
-                     'pos': np.array([0.0, 0.05, 0.102]), 'angle_deg': None},
+                        'pos': np.array([0.0, 0.03, 0.102]), 'angle_deg': None},
                     {'description': 'release the handle',
-                     'gripper': 'open'},
+                        'gripper': 'open'},
                     {'description': 'withdraw to the approach standoff',
-                     'pos': np.array([0.0, 0.05, 0.15]), 'angle_deg': None},
+                        'pos': np.array([0.0, 0.03, 0.15]), 'angle_deg': None},
                 ],
-                'scrape': None,
+                'scrape': [
+                    {'description': 'scrape standoff along marker Z',
+                        'pos': np.array([0.0, 0.00, 0.26]), 'angle_deg': 5.0},
+                    {'description': 'full scrape depth',
+                        'pos': np.array([0.0, 0.00, 0.10]), 'angle_deg': 5.0},
+                    {'description': 'retract to standoff',
+                        'pos': np.array([0.0, 0.00, 0.26]), 'angle_deg': 5.0},
+                ],
             },
         }
         ## marker_id -> config name, unlisted ids fall back to 'box_offset'
@@ -465,6 +508,54 @@ class printerAutomation(ArucoDetectionViewer):
         target_euler = (R_marker * R.from_euler("XYZ", offset_ori, degrees=False)).as_euler("XYZ", degrees=False)
         return target_pos, target_euler
 
+    def _eef_to_camera_translation(self):
+        """Translation of the camera frame origin expressed in the
+        end-effector frame, from TF (the same camera link shown in RViz).
+        Cached — the camera is rigidly bolted to the wrist, so it's constant.
+        Returns None if TF isn't up yet (caller falls back to camera_z_offset)."""
+        if getattr(self, '_t_eef_cam', None) is not None:
+            return self._t_eef_cam
+        camera_frame = self.camera_frame_name
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.end_effector_name, camera_frame,
+                Time(), timeout=Duration(seconds=2.0))
+        except Exception as e:
+            self.get_logger().warn(
+                f"_eef_to_camera_translation: TF {self.end_effector_name} -> "
+                f"{camera_frame} unavailable ({e}); falling back to camera_z_offset."
+            )
+            return None
+        t = tf.transform.translation
+        self._t_eef_cam = np.array([t.x, t.y, t.z])
+        self.get_logger().info(
+            f"Camera offset from {self.end_effector_name}: "
+            f"{np.round(self._t_eef_cam, 4)} m (frame {camera_frame})"
+        )
+        return self._t_eef_cam
+
+    def _camera_view_pose(self, marker_pos, marker_euler, offset_pos, offset_ori):
+        """EEF pose (pos, euler in base_link) that lands the CAMERA frame at
+        offset_pos/offset_ori in the marker frame — so the camera link (not the
+        wrist) ends up facing the marker at the requested distance.
+
+        offset_pos is the desired camera position in the marker frame (e.g.
+        [0,0,viewing_distance] along the marker normal); offset_ori still sets
+        the EEF orientation (the tuned per-robot self.offsetOri). The wrist is
+        backed off the camera target by the fixed EEF->camera translation from
+        TF, replacing the hand-tuned base-Z camera_z_offset shim. Falls back to
+        that shim only if TF isn't available yet."""
+        cam_pos, eef_euler = self._apply_offset_in_marker_frame(
+            marker_pos, marker_euler, offset_pos, offset_ori)
+        t_eef_cam = self._eef_to_camera_translation()
+        if t_eef_cam is None:
+            return cam_pos + np.array([0.0, 0.0, self.camera_z_offset]), eef_euler
+        # forward: cam_pos = eef_pos + R_eef @ t_eef_cam
+        #  =>      eef_pos = cam_pos - R_eef @ t_eef_cam
+        R_eef = R.from_euler("XYZ", eef_euler, degrees=False)
+        eef_pos = cam_pos - R_eef.apply(t_eef_cam)
+        return eef_pos, eef_euler
+
     def _tilted_offset_ori(self, angle_deg):
         """offsetOri tilted angle_deg about marker X (premultiplied, so the
         approach still runs along marker Z). None for zero angle."""
@@ -660,11 +751,12 @@ class printerAutomation(ArucoDetectionViewer):
                 return False
 
             offsetPos = np.array([0.0, 0.0, viewing_distance])
-            badPos, badEuler = self._apply_offset_in_marker_frame(
+            # place the camera frame (from TF, not the wrist) viewing_distance
+            # out along the marker normal — the EEF is backed off by the fixed
+            # camera mount offset automatically
+            badPos, badEuler = self._camera_view_pose(
                 entry['positionInBase'], entry['eulerInBase'], offsetPos, self.offsetOri,
             )
-            # raise in base Z so the camera (below the gripper) faces the marker
-            badPos = badPos + np.array([0.0, 0.0, self.camera_z_offset])
 
             goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
             self.get_logger().info(
@@ -725,11 +817,11 @@ class printerAutomation(ArucoDetectionViewer):
 
         markerBadPos, markerBadEuler = self.to_bad_frame(estimated_pos, estimated_orient)
 
-        badPos, badEuler = self._apply_offset_in_marker_frame(
+        # place the camera frame (from TF) at the viewing distance; the EEF is
+        # backed off by the fixed camera mount offset automatically
+        badPos, badEuler = self._camera_view_pose(
             markerBadPos, markerBadEuler, offsetPos, offsetOri,
         )
-        # raise in base Z so the camera (below the gripper) faces the marker
-        badPos = badPos + np.array([0.0, 0.0, self.camera_z_offset])
 
         goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
         self.get_logger().info(f'Scanning for markers at estimated position: {estimated_pos}')
