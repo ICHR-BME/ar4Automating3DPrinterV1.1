@@ -22,7 +22,7 @@ from ar4_automation.runner_common import (
 
 
 RUN_SIM = 1      # 1 = Gazebo (sim camera + spawned printers), 0 = hardware
-ROBOT = 'ar4'    # 'ar4' or 'lite6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh)
+ROBOT = 'xarm6'  # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
 NUM_REPEATS = 6  # times to repeat the double transfer
 
 

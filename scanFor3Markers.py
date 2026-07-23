@@ -28,7 +28,7 @@ from ar4_automation.simulated3DPrinter import Simulated3DPrinter
 def main():
     rclpy.init()
     runVirtual = 0    # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
-    robot = 'ar4'     # 'ar4' or 'lite6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh)
+    robot = 'xarm6'   # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
 
     if runVirtual:
         node = printerAutomation(calibration_mode=False, stream_source="ros", robot=robot)

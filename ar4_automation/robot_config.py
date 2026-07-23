@@ -63,7 +63,34 @@ ROBOT_CONFIGS = {
         # mounted on the opposite side of the eef here, so the unrolled AR4
         # orientation put the camera above the gripper instead of below it.
         # Same tool Z (still faces the marker), only the roll differs.
-        'offset_ori': np.array([np.pi, 0.0, np.pi / 2]),
+        'offset_ori': np.array([np.pi, 0.0, np.pi]),
+    },
+    # UFACTORY xArm 6 via xarm_ros2 (launch Gazebo with
+    # scripts/launchVirtualXArm6.sh). Shares the Lite 6's kinematic naming
+    # (joint1..joint6, link_base, link_eef) and the same simulated D435i wrist
+    # camera (add_realsense_d435i:=true bridges the identical /camera/* topics
+    # and camera_color_optical_frame), so this is the lite6 block with the
+    # move_group swapped. The camera_z_offset/offset_ori are copied from the
+    # lite6 and MAY need re-tuning on the first scans: the xArm 6 has a longer
+    # reach (~0.7 m) and a different wrist, so the D435i's offset from link_eef
+    # is not guaranteed to match the Lite 6's.
+    'xarm6': {
+        'joint_names': ["joint1", "joint2", "joint3",
+                        "joint4", "joint5", "joint6"],
+        'base_link': "link_base",
+        'end_effector_link': "link_eef",
+        'move_group': "xarm6",
+        'camera_frame': "camera_color_optical_frame",
+        'color_topic': "/camera/color/image_raw",
+        'depth_topic': "/camera/depth/image",
+        'camera_info_topic': "/camera/color/camera_info",
+        'camera_z_offset': 0.04,
+        # no gripper wired up yet: gripper commands are skipped
+        'gripper': None,
+        # good frame == base frame (robot spawns at the world origin, zero yaw)
+        'frame_rotation_angles': np.array([0.0, 0.0, 0.0]),
+        'frame_offset_angles': np.array([0.0, 0.0, 0.0]),
+        'offset_ori': np.array([np.pi, 0.0, np.pi]),
     },
 }
 

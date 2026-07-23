@@ -309,7 +309,7 @@ if __name__ == "__main__":
     generate_board_pdf("charuco_board.pdf", dpi=300, paper="A4")
 
     # Step 1 (optional): capture fresh calibration images from a live camera.
-    #collect_calibration_images(num_images=30)
+    collect_calibration_images(num_images=30)
 
     # Step 2: compute the camera matrix from the saved images.
     camera_matrix, dist_coeffs, rms = calibrate_from_images(IMAGE_GLOB)

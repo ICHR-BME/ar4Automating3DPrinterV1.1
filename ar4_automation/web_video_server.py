@@ -621,7 +621,6 @@ if __name__ == "__main__":
         source="webcam",
         port=5000,
         fps=30.0,
-        display_scale=1.0/0.702,
         depth_colormap="turbo",
         marker_sizes=[0.03, 0.025],
         dict_names=['DICT_4X4_50', 'DICT_6X6_50'],

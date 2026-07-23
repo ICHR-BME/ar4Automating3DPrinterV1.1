@@ -20,7 +20,10 @@ from ar4_automation.printerclass import BambuPrinter, load_printer_config, strip
 
 
 # ---- Configuration ----
-ROBOT           = 'ar4'       # 'ar4' or 'lite6' (see ar4_automation/robot_config.py)
+ROBOT           = 'ar4'       # 'ar4' | 'lite6' | 'xarm6' (see ar4_automation/robot_config.py).
+                              # NOTE: the estimated-marker / register_printers
+                              # positions below are hardcoded AR4-frame values;
+                              # re-tune them for the target robot's good frame.
 SOURCE_ID       = 2           # marker to pick the plate from (and return it to)
 SCRAPE_ID       = 1           # marker whose surface gets scraped against
 SCAN_DISTANCE   = 0.15        # marker scan distance (m)

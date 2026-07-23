@@ -29,13 +29,22 @@ from ar4_automation.simulated3DPrinter import Simulated3DPrinter
 def main():
     rclpy.init()
     runVirtual = 1    # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
-    robot = 'lite6'     # 'ar4' or 'lite6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh)
+    robot = 'xarm6'     # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
     if runVirtual:
         node = printerAutomation(calibration_mode=False, stream_source="ros", robot=robot)
         node.gripper_disabled = True
         node.randomize_estimated_markers = False
     else:
         node = make_webcam_node(robot=robot)
+
+    # Temporarily slow the arm for this session. These are MoveIt scaling
+    # factors (0-1) on the robot's configured joint vel/accel limits; the
+    # stack default is 0.9 (pose_reader.py). Applies to every planned move
+    # here (go_home still overrides with its own velocity_scaling arg, then
+    # restores to this value).
+    speed_scale = 0.5
+    node.moveit2.max_velocity = speed_scale
+    node.moveit2.max_acceleration = speed_scale
 
     # spin before spawning printers: their TF lookups need the background
     # executor (spin_once starves on the 30 Hz camera callbacks otherwise)
@@ -52,8 +61,18 @@ def main():
         printer2.spawn_fast()
         printer3.spawn_fast()
     else:
+        '''
         printer2 = Simulated3DPrinter(
             node=node, pos=[0.40, -0.3, 0.065], orient=[0.0, 0.0, np.pi],
+            door_marker_texture='materials/textures/marker6x6_1.png',
+        )
+        printer3 = Simulated3DPrinter(
+            node=node, pos=[0.65, 0.1, 0.075], orient=[0.0, 0.0, 3/2*np.pi],
+            door_marker_texture='materials/textures/marker6x6_2.png',
+        )
+        '''
+        printer2 = Simulated3DPrinter(
+            node=node, pos=[0.2, 0.3, 0.1], orient=[0.0, 0.0, 0*np.pi],
             door_marker_texture='materials/textures/marker6x6_1.png',
         )
         printer3 = Simulated3DPrinter(
@@ -86,7 +105,7 @@ def main():
 
     viewing_distance = 0.15
     node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
-    node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
+    #node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
 
     node.get_logger().info("Initial scan complete.")
     run_command_menu(node)

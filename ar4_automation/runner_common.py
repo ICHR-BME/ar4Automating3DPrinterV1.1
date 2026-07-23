@@ -17,7 +17,6 @@ WEBCAM_NODE_KWARGS = dict(
     feed_rotation_deg=90.0,
     marker_sizes=[0.03, 0.025],
 )
-WEBCAM_DISTANCE_SCALE = 1.0 / 0.702
 
 # Gazebo: images come from the bridged RGBD camera on /rgbd_camera/*, so no
 # webcam calibration file or distance-scale correction here.
@@ -43,14 +42,34 @@ SIM_PRINTER_SPECS = {
     # of each marker must stay reachable even with the 0.03 m estimate
     # randomization. Reach-probed grid: door-facing-+y poses only plan
     # reliably for marker x <= ~0.30 with y around -0.24 (at 0.263 m standoff).
-    'lite6': [
-        {"marker_id": 0, "pos": [0.14, -0.16, 0.15], "orient": [0.0, 0.0, math.pi],
-         "door_marker_texture": 'materials/textures/marker6x6_0.png'},
-        {"marker_id": 1, "pos": [0.3, -0.3, 0.18], "orient": [0.0, 0.0, math.pi],
-         "door_marker_texture": 'materials/textures/marker6x6_1.png'},
-        {"marker_id": 2, "pos": [0.58, 0.08, 0.20], "orient": [0.0, 0.0, 3/2*math.pi],
-         "door_marker_texture": 'materials/textures/marker6x6_2.png'},
-    ],
+    # Davis layout (inactive — swap with the Monterrey block below to use):
+    # 'lite6': [
+    #     {"marker_id": 0, "pos": [0.14, -0.16, 0.15], "orient": [0.0, 0.0, math.pi],
+    #      "door_marker_texture": 'materials/textures/marker6x6_0.png'},
+    #     {"marker_id": 1, "pos": [0.3, -0.3, 0.18], "orient": [0.0, 0.0, math.pi],
+    #      "door_marker_texture": 'materials/textures/marker6x6_1.png'},
+    #     {"marker_id": 2, "pos": [0.58, 0.08, 0.20], "orient": [0.0, 0.0, 3/2*math.pi],
+    #      "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+    # ],
+    'lite6': [ #Monterrey
+            {"marker_id": 0, "pos": [0.14, -0.16, 0.15], "orient": [0.0, 0.0, math.pi],
+             "door_marker_texture": 'materials/textures/marker6x6_0.png'},
+            {"marker_id": 1, "pos": [0.2, 0.3, 0.1], "orient": [0.0, 0.0, 0*math.pi],
+             "door_marker_texture": 'materials/textures/marker6x6_1.png'},
+            {"marker_id": 2, "pos": [0.58, 0.08, 0.20], "orient": [1/2* math.pi, 0.0, 3/2*math.pi],
+             "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+        ],
+    # xArm 6: same door-facing conventions as the lite6, pushed out for the
+    # longer (~0.7 m) reach. Starting point — re-probe reachability of each
+    # marker's far viewing pose on the first sim runs and nudge as needed.
+    'xarm6': [
+            {"marker_id": 0, "pos": [0.20, -0.22, 0.15], "orient": [0.0, 0.0, math.pi],
+             "door_marker_texture": 'materials/textures/marker6x6_0.png'},
+            {"marker_id": 1, "pos": [0.30, 0.35, 0.10], "orient": [0.0, 0.0, 0*math.pi],
+             "door_marker_texture": 'materials/textures/marker6x6_1.png'},
+            {"marker_id": 2, "pos": [0.70, 0.10, 0.20], "orient": [0.0, 0.0, 3/2*math.pi],
+             "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+        ],
 }
 
 
@@ -69,7 +88,6 @@ def make_webcam_node(robot='ar4', **overrides):
     kwargs = dict(WEBCAM_NODE_KWARGS)
     kwargs.update(overrides)
     node = printerAutomation(robot=robot, **kwargs)
-    node.stream.distance_scale = WEBCAM_DISTANCE_SCALE
     return node
 
 
@@ -86,8 +104,9 @@ def make_sim_node(robot='ar4', **overrides):
 def start_node(sim=False, robot='ar4', **overrides):
     """(make_webcam_node or make_sim_node) + spin_in_background + wait_for_joint_states.
 
-    robot: 'ar4' or 'lite6' (see robot_config.py). Sim launch scripts:
-    launchVirtualRobot.sh for the AR4, launchVirtualXArmLite6.sh for the Lite 6.
+    robot: 'ar4', 'lite6', or 'xarm6' (see robot_config.py). Sim launch scripts:
+    launchVirtualRobot.sh for the AR4, launchVirtualXArmLite6.sh for the Lite 6,
+    launchVirtualXArm6.sh for the xArm 6.
     """
     node = make_sim_node(robot=robot, **overrides) if sim else make_webcam_node(robot=robot, **overrides)
     spin_in_background(node)
