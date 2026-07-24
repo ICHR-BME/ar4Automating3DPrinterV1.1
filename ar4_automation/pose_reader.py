@@ -119,18 +119,37 @@ class PoseReader(Node):
 		# publishes 'stop' to kill any in-flight trajectory before sending a new goal
 		self._cancellation_pub = self.create_publisher(String, '/trajectory_execution_event', 1)
 
-	def _cancel_and_wait(self, wait_timeout=3.0):
-		"""Cancel any in-flight MoveIt trajectory and wait for it to go idle."""
-		_stop = String()
-		_stop.data = 'stop'
-		self._cancellation_pub.publish(_stop)
-		# let the result callback clear __is_executing before the next goal arrives
-		_deadline = time.time() + wait_timeout
-		while (getattr(self.moveit2, '_MoveIt2__is_executing', False) or
-		       getattr(self.moveit2, '_MoveIt2__is_motion_requested', False)):
-			if time.time() > _deadline:
-				break
+	def _cancel_and_wait(self, wait_timeout=3.0, grace=0.75):
+		"""Cancel any in-flight MoveIt trajectory and wait for it to go idle.
+
+		The 'stop' is only published if a motion still looks in-flight after a
+		short grace period. An unconditional stop races the natural end of the
+		previous move (ground truth trips ~settle_delay before the controller
+		finishes), and a cancel landing at the exact moment of completion
+		wedges move_group's TrajectoryExecutionManager: the stop handler
+		blocks joining the execution thread while holding
+		execution_thread_mutex_, after which every new goal plans but never
+		executes until move_group is restarted."""
+		def _busy():
+			return (getattr(self.moveit2, '_MoveIt2__is_executing', False) or
+			        getattr(self.moveit2, '_MoveIt2__is_motion_requested', False))
+
+		# grace: let a just-finished move deliver its result instead of
+		# cancelling it mid-completion
+		_deadline = time.time() + grace
+		while _busy() and time.time() < _deadline:
 			time.sleep(0.05)
+
+		if _busy():
+			_stop = String()
+			_stop.data = 'stop'
+			self._cancellation_pub.publish(_stop)
+			# let the result callback clear __is_executing before the next goal arrives
+			_deadline = time.time() + wait_timeout
+			while _busy():
+				if time.time() > _deadline:
+					break
+				time.sleep(0.05)
 		# force-clear in case the server never sent a result (hard timeout, restart)
 		self.moveit2._MoveIt2__is_motion_requested = False
 		self.moveit2._MoveIt2__is_executing = False
@@ -253,9 +272,78 @@ class PoseReader(Node):
 
 		return False
 
-	def move_to_pose(self, pos, euler, max_retries=2):
+	def execute_joint_trajectory(self, joint_trajectory, timeout_margin=10.0):
+		"""Run a prebuilt JointTrajectory as ONE continuous motion via
+		move_group's ExecuteTrajectory action (no per-point replanning or
+		stops). Completion is judged like move_to_configuration: pymoveit2's
+		flags polled with a deadline, plus the ground-truth joint check
+		against the trajectory's final point. No retries — a partially run
+		trajectory leaves the arm mid-path, so the caller decides recovery."""
+		if not joint_trajectory.points:
+			return False
+		final_config = list(joint_trajectory.points[-1].positions)
+		last_t = joint_trajectory.points[-1].time_from_start
+		timeout = last_t.sec + last_t.nanosec * 1e-9 + timeout_margin
+
+		self._cancel_and_wait()
+		self.moveit2.motion_suceeded = False
+		self.moveit2.execute(joint_trajectory)
+
+		_deadline = time.time() + timeout
+		while (getattr(self.moveit2, '_MoveIt2__is_motion_requested', False) or
+		       getattr(self.moveit2, '_MoveIt2__is_executing', False)):
+			if time.time() > _deadline:
+				self.get_logger().error(
+					f"[execute_joint_trajectory] timed out after {timeout:.1f}s."
+				)
+				self._cancel_and_wait()
+				break
+			time.sleep(0.05)
+
+		# only ground truth counts (see move_to_configuration)
+		if self._reached_configuration(final_config):
+			time.sleep(self.move_settle_delay)
+			return True
+		err = _moveit_err_str(self.moveit2)
+		self.get_logger().error(
+			f"[execute_joint_trajectory] did not reach the final config (MoveIt err={err})."
+		)
+		return False
+
+	def _plan_linear_trajectory(self, bad_pos, q_msg, plan_timeout=5.0, max_step=0.0025):
+		"""Cartesian straight-line plan to the target (base_link frame).
+		Returns the planned JointTrajectory, or None unless the FULL line is
+		feasible — a partial scrape stroke is worse than no move. Uses
+		plan_async and polls the future (the background executor completes
+		it); the vendored blocking plan() would spin_once a node it doesn't
+		own."""
+		future = self.moveit2.plan_async(
+			position=Point(x=float(bad_pos[0]), y=float(bad_pos[1]), z=float(bad_pos[2])),
+			quat_xyzw=q_msg,
+			cartesian=True,
+			max_step=max_step,
+		)
+		if future is None:
+			return None
+		_deadline = time.time() + plan_timeout
+		while not future.done():
+			if time.time() > _deadline:
+				self.get_logger().warn(
+					"[move_to_pose] Cartesian path service did not answer in "
+					f"{plan_timeout:.1f}s."
+				)
+				return None
+			time.sleep(0.02)
+		# 0.999 = the whole line, without an exact float compare against 1.0
+		return self.moveit2.get_trajectory(
+			future, cartesian=True, cartesian_fraction_threshold=0.999
+		)
+
+	def move_to_pose(self, pos, euler, max_retries=2, linear=False):
 		"""Pose move with retries; cancels any in-flight trajectory before
-		each attempt so MoveIt starts from a clean idle state."""
+		each attempt so MoveIt starts from a clean idle state. linear=True
+		plans a straight Cartesian line to the target and refuses to move
+		unless the entire line is feasible."""
 		bad_pos, bad_euler = self.to_bad_frame(pos, euler)
 		q = R.from_euler("XYZ", bad_euler, degrees=False).as_quat()  # [x, y, z, w]
 		q_msg = Quaternion(x=float(q[0]), y=float(q[1]), z=float(q[2]), w=float(q[3]))
@@ -283,14 +371,33 @@ class PoseReader(Node):
 			# reset so a stale result can't count for this attempt
 			self.moveit2.motion_suceeded = False
 
-			self.moveit2.move_to_pose(
-				position=Point(x=bad_pos[0], y=bad_pos[1], z=bad_pos[2]),
-				quat_xyzw=q_msg,
-			)
+			attempt_timeout = _timeout
+			if linear:
+				jt = self._plan_linear_trajectory(bad_pos, q_msg)
+				if jt is None or not jt.points:
+					if attempt < max_retries:
+						self.get_logger().warn(
+							f"[move_to_pose] linear (Cartesian) planning failed on "
+							f"attempt {attempt + 1} — retrying…"
+						)
+						continue
+					self.get_logger().error(
+						"[move_to_pose] linear (Cartesian) planning failed — "
+						"all attempts exhausted."
+					)
+					return False
+				last_t = jt.points[-1].time_from_start
+				attempt_timeout = max(_timeout, last_t.sec + last_t.nanosec * 1e-9 + 5.0)
+				self.moveit2.execute(jt)
+			else:
+				self.moveit2.move_to_pose(
+					position=Point(x=bad_pos[0], y=bad_pos[1], z=bad_pos[2]),
+					quat_xyzw=q_msg,
+				)
 
 			# poll both flags; wait_until_executed can return early under the
 			# multithreaded executor
-			_deadline = time.time() + _timeout
+			_deadline = time.time() + attempt_timeout
 			timed_out = False
 			while (getattr(self.moveit2, '_MoveIt2__is_motion_requested', False) or
 			       getattr(self.moveit2, '_MoveIt2__is_executing', False)):
@@ -300,7 +407,7 @@ class PoseReader(Node):
 					return True
 				if time.time() > _deadline:
 					self.get_logger().error(
-						f"[move_to_pose] timed out after {_timeout}s waiting for trajectory to finish."
+						f"[move_to_pose] timed out after {attempt_timeout}s waiting for trajectory to finish."
 					)
 					timed_out = True
 					break
@@ -311,7 +418,7 @@ class PoseReader(Node):
 				time.sleep(self.move_settle_delay)
 				return True
 
-			reason = f"timed out after {_timeout}s" if timed_out else "motion aborted/failed"
+			reason = f"timed out after {attempt_timeout}s" if timed_out else "motion aborted/failed"
 			err = _moveit_err_str(self.moveit2)
 			if attempt < max_retries:
 				self.get_logger().warn(

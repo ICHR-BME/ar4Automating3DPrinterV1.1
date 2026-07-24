@@ -17,6 +17,7 @@ from pymoveit2 import GripperInterface
 from .printerclass import BambuPrinter
 from scipy.spatial.transform import Rotation as R
 from geometry_msgs.msg import TransformStamped
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 import tf2_ros
 from .simulated3DPrinter import Simulated3DPrinter
 import time
@@ -85,17 +86,27 @@ class printerAutomation(ArucoDetectionViewer):
         # follow any CORRECTION of that pose in steps of at most this (m),
         # re-observing between steps — so a poor initial estimate is walked in
         # gradually instead of chased across the workspace in one big move
-        self.scan_approach_max_step = 0.10
+        self.scan_approach_max_step = 0.50
         # recorded {'traj': file} guide paths are downsampled to joint configs
-        # at most this far apart (rad, max over any joint) before replaying
+        # at most this far apart (rad, max over any joint) before replaying —
+        # only used by the per-config fallback walk
         self.traj_guide_step = 0.35
+        # preferred replay: the whole recording as ONE continuous trajectory.
+        # speed multiplies the demonstrated pace; point_dt is the spacing (s,
+        # in demonstrated time) of the points sent to the controller
+        self.traj_guide_speed = 1.0
+        self.traj_guide_point_dt = 0.10
         self._traj_guide_cache = {}
+        self._traj_samples_cache = {}
 
         # Offset configs: per printer type, one waypoint list per procedure
         # (pickup/place/scrape) in the marker's local frame. Each procedure
         # runs exactly its own list, so every action is visible here.
         # Entry kinds:
         #   {'pos': [x,y,z], 'angle_deg': tilt about marker X (None = untilted)}
+        #       add 'linear': True to force a straight Cartesian line to that
+        #       waypoint (scrape strokes); the move fails rather than run a
+        #       partial or non-straight path
         #   {'scan': viewing_distance_m}   step-limited approach + must see the
         #                                  marker; retried closer if the move fails
         #   {'move': viewing_distance_m}   direct move to the viewing pose at that
@@ -175,29 +186,35 @@ class printerAutomation(ArucoDetectionViewer):
                     {'description': 'scan the marker before approaching',
                         'scan': 0.125},
                     {'description': 'approach standoff in front of the handle',
-                        'pos': np.array([0.0, 0.065, 0.125]), 'angle_deg': 0.0},
+                        'pos': np.array([0.0, 0.075, 0.125]), 'angle_deg': 0.0},
                     {'description': 'grasp pose at the handle',
-                        'pos': np.array([0.0, 0.065, 0.085]), 'angle_deg': 0.0},
+                        'pos': np.array([0.0, 0.075, 0.08]), 'angle_deg': 0.0},
                     {'description': 'grab the handle',
                         'gripper': 'close'},
                     {'description': 'grasp pose at the handle',
-                        'pos': np.array([0.0, 0.065, 0.085]), 'angle_deg': 0.0},
+                        'pos': np.array([0.0, 0.075, 0.08]), 'angle_deg': 0.0},
                     {'description': 'lift / carry pose',
-                        'pos': np.array([0.0, 0.30, 0.085]), 'angle_deg': 0.0},
+                       'pos': np.array([0.0, 0.35, 0.12]), 'angle_deg': -15.0},
+                    {'description': 'lift / carry pose',
+                        'pos': np.array([0.0, 0.39, 0.20]), 'angle_deg': -90.0},
                 ],
                 'place': [
                     {'description': 'lift / carry pose',
-                        'pos': np.array([0.0, 0.14, 0.11]), 'angle_deg': -10.0},
+                        'pos': np.array([0.0, 0.40, 0.20]), 'angle_deg': -30.0},
+                    {'description': 'lift / carry pose',
+                        'pos': np.array([0.0, 0.35, 0.10]), 'angle_deg': 0.0},
+                    {'description': 'lift / carry pose',
+                        'pos': np.array([0.0, 0.18, 0.10]), 'angle_deg': 0.0},
                     {'description': 'partial descent, tucked toward the marker',
-                        'pos': np.array([0.0, 0.105, 0.11]), 'angle_deg': -10.0},
+                        'pos': np.array([0.0, 0.145, 0.10]), 'angle_deg': 0.0},
                     {'description': 'shift out along marker Z',
-                        'pos': np.array([0.0, 0.105, 0.09]), 'angle_deg': -10.0},
+                        'pos': np.array([0.0, 0.145, 0.07]), 'angle_deg': 0.0},
                     {'description': 'set down',
-                        'pos': np.array([0.0, 0.06, 0.09]), 'angle_deg': -10.0},
+                        'pos': np.array([0.0, 0.085, 0.07]), 'angle_deg': 0.0},
                     {'description': 'release the handle',
                         'gripper': 'open'},
                     {'description': 'withdraw to the approach standoff',
-                        'pos': np.array([0.0, 0.06, 0.15]), 'angle_deg': 0.0},
+                        'pos': np.array([0.0, 0.085, 0.15]), 'angle_deg': 0.0},
                 ],
                 'scrape': None,
             },
@@ -231,9 +248,11 @@ class printerAutomation(ArucoDetectionViewer):
                     {'description': 'scrape standoff along marker Z',
                      'pos': np.array([0.0, 0.092, 0.29]), 'angle_deg': 0.0},
                     {'description': 'full scrape depth',
-                     'pos': np.array([0.0, 0.092, 0.13]), 'angle_deg': 0.0},
+                     'pos': np.array([0.0, 0.092, 0.13]), 'angle_deg': 0.0,
+                     'linear': True},
                     {'description': 'retract to standoff',
-                     'pos': np.array([0.0, 0.092, 0.29]), 'angle_deg': 0.0},
+                     'pos': np.array([0.0, 0.092, 0.29]), 'angle_deg': 0.0,
+                     'linear': True},
                     #{'description': 'roll the wrist to dislodge debris',
                     # 'rotate': 60.0},
                 ],
@@ -276,14 +295,16 @@ class printerAutomation(ArucoDetectionViewer):
                 'scrape': [
                     # lite6 recording: transit from the pickup end pose to the
                     # scrape approach along a demonstrated collision-free route
-                    {'description': 'recorded guide path from pickup to scrape approach',
-                        'traj': 'traj/scrapeWaypoints2.traj'},
+                    #{'description': 'recorded guide path from pickup to scrape approach',
+                    #    'traj': 'traj/scrapeWaypoints3.traj'},
                     {'description': 'scrape standoff along marker Z',
                         'pos': np.array([0.0, -0.04, 0.40]), 'angle_deg': 5.0},
                     {'description': 'full scrape depth',
-                        'pos': np.array([0.0, -0.04, 0.08]), 'angle_deg': 5.0},
+                        'pos': np.array([0.0, -0.04, 0.08]), 'angle_deg': 5.0,
+                        'linear': True},
                     {'description': 'retract to standoff',
-                        'pos': np.array([0.0, -0.04, 0.40]), 'angle_deg': 5.0},
+                        'pos': np.array([0.0, -0.04, 0.40]), 'angle_deg': 5.0,
+                        'linear': True},
                     #{'description': 'roll the wrist to dislodge debris',
                      #   'rotate': 60.0},
                 ],
@@ -655,8 +676,9 @@ class printerAutomation(ArucoDetectionViewer):
         tilt = R.from_euler("x", np.radians(angle_deg))
         return (tilt * R.from_euler("XYZ", self.offsetOri, degrees=False)).as_euler("XYZ", degrees=False)
 
-    def _move_to_marker_offset(self, marker_id, offset_pos, offset_ori=None):
-        """Find the marker, apply the offset, move there."""
+    def _move_to_marker_offset(self, marker_id, offset_pos, offset_ori=None, linear=False):
+        """Find the marker, apply the offset, move there. linear=True demands
+        a straight Cartesian line to the target."""
         if offset_ori is None:
             offset_ori = self.offsetOri
 
@@ -675,7 +697,7 @@ class printerAutomation(ArucoDetectionViewer):
         goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
         self.get_logger().info(f'Moving to marker ID {marker_id} — marker centre: {bad_pos}, target: {badPos}')
         # markers are pinned by default, so the move can't drift any pose
-        return self.move_to_pose(goodPos, goodEuler)
+        return self.move_to_pose(goodPos, goodEuler, linear=linear)
 
     def _get_waypoints_for_marker(self, marker_id, procedure):
         """Waypoint list for 'pickup'/'place'/'scrape', or None."""
@@ -735,7 +757,8 @@ class printerAutomation(ArucoDetectionViewer):
                 continue
             tilt_ori = self._tilted_offset_ori(wp.get('angle_deg'))
             pos = np.asarray(wp['pos'], dtype=float)
-            if not self._move_to_marker_offset(markerID, pos, tilt_ori):
+            if not self._move_to_marker_offset(markerID, pos, tilt_ori,
+                                               linear=bool(wp.get('linear'))):
                 if tolerant_last and i == last_pos_i:
                     self.get_logger().error(
                         f"{caller}: last position waypoint {i+1}/{n} failed for marker {markerID}. Continuing."
@@ -1328,15 +1351,14 @@ class printerAutomation(ArucoDetectionViewer):
         except ValueError:
             return None
 
-    def _load_traj_guide(self, rel_path):
+    def _load_traj_samples(self, rel_path):
         """Parse a recorded joint trajectory (xArm-Studio .traj: '# frequency='
         header, then comma-separated joint radians at that fixed rate) into
-        sparse guide configs. Recording convention: travel to the segment's
-        start pose, HOLD >=1 s, then demonstrate the path — only the part
-        after the last >=1 s pause is used. It is downsampled so consecutive
-        configs differ by at most traj_guide_step rad on any joint (final
-        config always kept). Cached per path; None on failure."""
-        cached = self._traj_guide_cache.get(rel_path)
+        its demonstrated segment. Recording convention: travel to the
+        segment's start pose, HOLD >=1 s, then demonstrate the path — only
+        the part after the last >=1 s pause is used. Cached per path;
+        (samples ndarray, frequency) or (None, None) on failure."""
+        cached = self._traj_samples_cache.get(rel_path)
         if cached is not None:
             return cached
         path = rel_path if os.path.isabs(rel_path) else os.path.join(_DATA_DIR, rel_path)
@@ -1356,11 +1378,11 @@ class printerAutomation(ArucoDetectionViewer):
                     if len(vals) >= 6:
                         rows.append(vals[:6])
         except (OSError, ValueError) as ex:
-            self.get_logger().error(f"_load_traj_guide: cannot read {path}: {ex}")
-            return None
+            self.get_logger().error(f"_load_traj_samples: cannot read {path}: {ex}")
+            return (None, None)
         if len(rows) < 2:
-            self.get_logger().error(f"_load_traj_guide: no joint samples in {path}")
-            return None
+            self.get_logger().error(f"_load_traj_samples: no joint samples in {path}")
+            return (None, None)
         joints = np.asarray(rows, dtype=float)
 
         # stillness = max joint speed under ~1.4 deg/s; the guide segment
@@ -1376,7 +1398,23 @@ class printerAutomation(ArucoDetectionViewer):
                     seg_start = i
                 run_start = None
         segment = joints[seg_start:]
+        self.get_logger().info(
+            f"_load_traj_samples: {os.path.basename(path)} — {len(segment)} samples "
+            f"({len(segment) / freq:.1f} s) from the segment after {seg_start / freq:.1f} s."
+        )
+        self._traj_samples_cache[rel_path] = (segment, freq)
+        return (segment, freq)
 
+    def _load_traj_guide(self, rel_path):
+        """Sparse guide configs for the per-config fallback walk: the recorded
+        segment downsampled so consecutive configs differ by at most
+        traj_guide_step rad on any joint (final config always kept)."""
+        cached = self._traj_guide_cache.get(rel_path)
+        if cached is not None:
+            return cached
+        segment, _ = self._load_traj_samples(rel_path)
+        if segment is None:
+            return None
         configs = [segment[0]]
         for q in segment:
             if np.abs(q - configs[-1]).max() > self.traj_guide_step:
@@ -1384,19 +1422,78 @@ class printerAutomation(ArucoDetectionViewer):
         if np.abs(segment[-1] - configs[-1]).max() > 1e-3:
             configs.append(segment[-1])
         configs = [c.tolist() for c in configs]
-        self.get_logger().info(
-            f"_load_traj_guide: {os.path.basename(path)} — {len(configs)} guide config(s) "
-            f"from the segment after {seg_start / freq:.1f} s."
-        )
         self._traj_guide_cache[rel_path] = configs
         return configs
 
+    def _traj_guide_trajectory(self, rel_path):
+        """The recorded segment as ONE JointTrajectory: demonstrated timing
+        scaled by traj_guide_speed, points every traj_guide_point_dt of
+        demonstrated time, velocities by finite differences (zero at the
+        ends) so the controller splines through the points without stopping.
+        The first point is pinned to the CURRENT joint state — move_group
+        rejects trajectories that don't start at the robot's state, and the
+        arm is only within move_to_configuration's loose tolerance of the
+        recorded start. None on failure."""
+        segment, freq = self._load_traj_samples(rel_path)
+        if segment is None:
+            return None
+        current = self._current_arm_joints()
+        if current is None:
+            self.get_logger().warn("_traj_guide_trajectory: joint state unavailable.")
+            return None
+
+        stride = max(1, int(round(freq * self.traj_guide_point_dt)))
+        idx = list(range(0, len(segment), stride))
+        if idx[-1] != len(segment) - 1:
+            idx.append(len(segment) - 1)
+        if len(idx) < 2:
+            return None
+        pts = segment[idx]
+        pts[0] = np.asarray(current[:pts.shape[1]], dtype=float)
+        times = np.asarray(idx, dtype=float) / freq / max(self.traj_guide_speed, 1e-3)
+
+        vels = np.zeros_like(pts)
+        vels[1:-1] = (pts[2:] - pts[:-2]) / (times[2:] - times[:-2])[:, None]
+
+        jt = JointTrajectory()
+        jt.joint_names = list(self.moveit2.joint_names)[:pts.shape[1]]
+        for q, v, t in zip(pts, vels, times):
+            p = JointTrajectoryPoint()
+            p.positions = q.tolist()
+            p.velocities = v.tolist()
+            p.time_from_start = Duration(seconds=float(t)).to_msg()
+            jt.points.append(p)
+        return jt
+
     def _replay_traj_guide(self, rel_path):
-        """Walk a recorded trajectory's guide configs as joint-space moves,
-        keeping the arm near the demonstrated (collision-free) route between
-        procedure phases. Waypoint form: {'traj': path relative to data/}.
-        False on any failed move — a half-followed guide leaves the arm off
-        the known path, so the caller must abort rather than continue."""
+        """Replay a recorded joint path between procedure phases along its
+        demonstrated (collision-free) route. Waypoint form: {'traj': path
+        relative to data/}. The arm first travels to the recorded start via
+        a planned move, then runs the whole recording as one continuous
+        trajectory. Falls back to the per-config walk (jerky but planned) if
+        the continuous execution can't be built or is rejected. False on
+        failure — a half-followed guide leaves the arm off the known path,
+        so the caller must abort rather than continue."""
+        segment, _ = self._load_traj_samples(rel_path)
+        if segment is None:
+            return False
+        if not self.move_to_configuration(segment[0].tolist()):
+            self.get_logger().error(
+                f"_replay_traj_guide: could not reach the recorded start of {rel_path}."
+            )
+            return False
+        jt = self._traj_guide_trajectory(rel_path)
+        if jt is not None:
+            self.get_logger().info(
+                f"_replay_traj_guide: executing {rel_path} as one continuous "
+                f"trajectory ({len(jt.points)} points)."
+            )
+            if self.execute_joint_trajectory(jt):
+                return True
+            self.get_logger().warn(
+                "_replay_traj_guide: continuous execution failed — falling back "
+                "to the per-config walk."
+            )
         configs = self._load_traj_guide(rel_path)
         if not configs:
             return False

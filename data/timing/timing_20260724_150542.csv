@@ -1,0 +1,10 @@
+timestamp,call_chain,duration_s
+2026-07-24T15:05:44.098735,scrapePlate > pickupPlate > moveToMarker > moveToViewingDistance,1.5516
+2026-07-24T15:05:47.963679,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries > scanToMarker,3.8649
+2026-07-24T15:05:47.963755,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries,3.865
+2026-07-24T15:05:51.779452,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries > scanToMarker,3.8157
+2026-07-24T15:05:51.779503,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries,3.8157
+2026-07-24T15:06:01.490612,scrapePlate > pickupPlate > moveToMarker,18.9642
+2026-07-24T15:06:01.490714,scrapePlate > pickupPlate,18.9643
+2026-07-24T15:06:23.386459,scrapePlate > placePlate,12.1181
+2026-07-24T15:06:23.387211,scrapePlate,40.8615

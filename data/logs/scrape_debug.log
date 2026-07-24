@@ -936,3 +936,25 @@
 [13:37:15] ROTATE move_to(restore) ok=False joints_after=[12.5, 43.0, 131.5, 177.9, -82.1, -178.2]
 [13:48:51] SCRAPE marker 1 pos=[0.4081 0.0677 0.0094] euler_deg=[  4.14  -6.85 178.85] estimated=False
 [13:49:04] SCRAPE walk done joints_deg=[12.7, 40.8, 127.9, 177.7, -80.5, -165.4]
+[14:30:12] SCRAPE marker 1 pos=[0.4046 0.0627 0.0118] euler_deg=[  2.48  -5.02 179.66] estimated=False
+[14:59:07] SCRAPE marker 1 pos=[0.4041 0.0651 0.0127] euler_deg=[  2.2   -6.87 179.43] estimated=False
+[14:59:17] SCRAPE walk done joints_deg=[15.0, 40.5, 128.1, -4.5, 81.7, 16.4]
+[15:00:58] SCRAPE marker 1 pos=[0.4041 0.0651 0.0127] euler_deg=[  2.2   -6.87 179.43] estimated=False
+[15:02:19] SCRAPE marker 1 pos=[0.4041 0.0651 0.0127] euler_deg=[  2.2   -6.87 179.43] estimated=False
+[15:02:28] SCRAPE walk done joints_deg=[15.0, 40.3, 127.7, -4.5, 81.5, 16.4]
+[15:04:42] SCRAPE marker 1 pos=[0.4041 0.0651 0.0127] euler_deg=[  2.2   -6.87 179.43] estimated=False
+[15:04:52] SCRAPE walk done joints_deg=[14.8, 40.4, 127.8, -4.5, 81.5, 16.2]
+[15:06:01] SCRAPE marker 1 pos=[0.4041 0.0651 0.0127] euler_deg=[  2.2   -6.87 179.43] estimated=False
+[15:06:11] SCRAPE walk done joints_deg=[15.0, 40.6, 128.2, -4.4, 81.6, 16.3]
+[16:05:05] SCRAPE marker 1 pos=[0.4044 0.0619 0.0115] euler_deg=[  3.01  -4.65 179.69] estimated=False
+[16:06:02] SCRAPE marker 1 pos=[0.4044 0.0619 0.0115] euler_deg=[  3.01  -4.65 179.69] estimated=False
+[16:14:57] SCRAPE marker 1 pos=[0.4044 0.0619 0.0115] euler_deg=[  3.01  -4.65 179.69] estimated=False
+[16:16:25] SCRAPE marker 1 pos=[0.4044 0.0619 0.0115] euler_deg=[  3.01  -4.65 179.69] estimated=False
+[16:16:36] SCRAPE walk done joints_deg=[12.8, 50.5, 143.9, -3.3, 89.3, 13.7]
+[16:17:19] SCRAPE marker 1 pos=[0.4044 0.0619 0.0115] euler_deg=[  3.01  -4.65 179.69] estimated=False
+[16:17:29] SCRAPE walk done joints_deg=[12.8, 50.5, 143.9, -3.4, 89.3, 13.7]
+[16:18:55] SCRAPE marker 1 pos=[0.4044 0.0619 0.0115] euler_deg=[  3.01  -4.65 179.69] estimated=False
+[16:19:05] SCRAPE walk done joints_deg=[12.8, 50.5, 144.0, -3.4, 89.2, 13.7]
+[16:23:59] SCRAPE marker 1 pos=[0.4044 0.0619 0.0115] euler_deg=[  3.01  -4.65 179.69] estimated=False
+[16:26:05] SCRAPE marker 1 pos=[0.4046 0.0648 0.0125] euler_deg=[  1.98  -6.31 179.49] estimated=False
+[16:26:15] SCRAPE walk done joints_deg=[14.9, 43.6, 133.1, -5.0, 84.1, 16.1]
