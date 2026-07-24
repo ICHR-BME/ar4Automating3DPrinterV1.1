@@ -1,0 +1,3 @@
+timestamp,call_chain,duration_s
+2026-07-24T12:11:48.559789,pickupPlate > moveToMarker,0.0
+2026-07-24T12:11:48.559839,pickupPlate,0.0001

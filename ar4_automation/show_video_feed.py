@@ -91,6 +91,10 @@ class CameraViewer(Node):
         ]
         self.marker_sizes = [0.024, 0.05]  # Sizes in meters, indexed by dictionary (0.024 caliper-measured 2026-07-24)
         self.aruco_params = cv2.aruco.DetectorParameters_create()
+        # sub-pixel corner refinement (default is CORNER_REFINE_NONE)
+        self.aruco_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+        self.aruco_params.cornerRefinementWinSize = 5
+        self.aruco_params.cornerRefinementMinAccuracy = 0.01
         self.last_marker_count = 0
         self._last_log_time = 0.0
         self.log_interval_s = 1.0

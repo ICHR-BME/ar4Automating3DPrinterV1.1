@@ -30,6 +30,11 @@ _LOG_DIR = os.path.join(_DATA_DIR, "logs")
 os.makedirs(_LOG_DIR, exist_ok=True)
 
 
+class MarkerNotVisibleError(RuntimeError):
+    """Raised when a scan reaches its viewing pose but the target marker is
+    not detected. Left uncaught it terminates the calling procedure/script."""
+
+
 def _timed(method):
     """Log wall-clock duration + call chain for a public method."""
     @functools.wraps(method)
@@ -76,76 +81,54 @@ class printerAutomation(ArucoDetectionViewer):
         self.collect_orientation_noise_data = False
         # extra scan passes re-aim at the fresh detection for a head-on measurement
         self.scan_passes = 1
+        # scans travel straight to the estimated viewing pose, observe, then
+        # follow any CORRECTION of that pose in steps of at most this (m),
+        # re-observing between steps — so a poor initial estimate is walked in
+        # gradually instead of chased across the workspace in one big move
+        self.scan_approach_max_step = 0.10
+        # recorded {'traj': file} guide paths are downsampled to joint configs
+        # at most this far apart (rad, max over any joint) before replaying
+        self.traj_guide_step = 0.35
+        self._traj_guide_cache = {}
 
         # Offset configs: per printer type, one waypoint list per procedure
         # (pickup/place/scrape) in the marker's local frame. Each procedure
         # runs exactly its own list, so every action is visible here.
         # Entry kinds:
         #   {'pos': [x,y,z], 'angle_deg': tilt about marker X (None = untilted)}
-        #   {'scan': viewing_distance_m}   retried closer if the move fails
+        #   {'scan': viewing_distance_m}   step-limited approach + must see the
+        #                                  marker; retried closer if the move fails
+        #   {'move': viewing_distance_m}   direct move to the viewing pose at that
+        #                                  distance — no step limit, no detection
         #   {'gripper': 'open'|'close'}    close records joints for the replay
+        #   {'rotate': degrees}            roll the wrist by -degrees and back
+        #                                  (dislodge debris); failure only warns
+        #   {'traj': 'traj/<file>.traj'}   replay a recorded joint path (rough
+        #                                  collision-free guide between phases,
+        #                                  e.g. pickup end -> scrape approach);
+        #                                  robot-specific joint space!
         # descriptions are for humans only. Keep pre-grasp and grasp aligned in
         # marker X/Y so the grasp move is pure marker Z.
+        ''''pickup': [
+                                        
+                                        {'description': 'open gripper for the approach',
+                                            'gripper': 'open'},
+                                        {'description': 'scan the marker before approaching',
+                                            'scan': 0.15},
+                                        {'description': 'scan the marker before approaching',
+                                            'scan': 0.125},
+                                        {'description': 'approach standoff in front of the handle',
+                                            'pos': np.array([0.0, 0.065, 0.125]), 'angle_deg': 0.0},
+                                        {'description': 'grasp pose at the handle',
+                                            'pos': np.array([0.0, 0.065, 0.082]), 'angle_deg': 0.0},
+                                        {'description': 'grab the handle',
+                                            'gripper': 'close'},
+                                        {'description': 'grasp pose at the handle',
+                                            'pos': np.array([0.0, 0.065, 0.082]), 'angle_deg': -5.0},
+                                        {'description': 'lift / carry pose',
+                                            'pos': np.array([0.0, 0.20, 0.082]), 'angle_deg': 10.0},
+                                    ],'''
         self.offset_configs = {
-            # Printer with the handle above the marker
-            'printer_offset_old_old': {
-                'pickup': [
-                    {'description': 'scan the marker before approaching',
-                     'scan': 0.15},
-                    {'description': 'open gripper for the approach',
-                     'gripper': 'open'},
-                    {'description': 'approach standoff in front of the handle',
-                     'pos': np.array([0.0, 0.07, 0.15]), 'angle_deg': None},
-                    {'description': 'grasp pose at the handle',
-                     'pos': np.array([0.0, 0.07, 0.077]), 'angle_deg': None},
-                    {'description': 'grab the handle',
-                     'gripper': 'close'},
-                    {'description': 'lift / carry pose',
-                     'pos': np.array([0.0, 0.17, 0.077]), 'angle_deg': None},
-                ],
-                'place': [
-                    {'description': 'lift / carry pose',
-                     'pos': np.array([0.0, 0.17, 0.077]), 'angle_deg': None},
-                    {'description': 'descend back to the grasp pose',
-                     'pos': np.array([0.0, 0.07, 0.077]), 'angle_deg': None},
-                    {'description': 'release the handle',
-                     'gripper': 'open'},
-                    {'description': 'withdraw to the approach standoff',
-                     'pos': np.array([0.0, 0.07, 0.15]), 'angle_deg': None},
-                ],
-                'scrape': None,
-            },
-            'printer_offset_old': {
-                'pickup': [
-                    {'description': 'scan the marker before approaching',
-                     'scan': 0.15},
-                    {'description': 'open gripper for the approach',
-                     'gripper': 'open'},
-                    {'description': 'approach standoff in front of the handle',
-                     'pos': np.array([0.0, 0.082, 0.15]), 'angle_deg': -10.0},
-                    {'description': 'grasp pose at the handle',
-                     'pos': np.array([0.0, 0.082, 0.047]), 'angle_deg': -10.0},
-                    {'description': 'grab the handle',
-                     'gripper': 'close'},
-                    {'description': 'lift / carry pose',
-                     'pos': np.array([0.0, 0.19, 0.057]), 'angle_deg': -10.0},
-                ],
-                'place': [
-                    {'description': 'lift / carry pose',
-                     'pos': np.array([0.0, 0.19, 0.057]), 'angle_deg': -10.0},
-                    {'description': 'partial descent, tucked toward the marker',
-                     'pos': np.array([0.0, 0.12, 0.057]), 'angle_deg': -10.0},
-                    {'description': 'shift out along marker Z',
-                     'pos': np.array([0.0, 0.12, 0.032]), 'angle_deg': -10.0},
-                    {'description': 'set down',
-                     'pos': np.array([0.0, 0.09, 0.032]), 'angle_deg': -10.0},
-                    {'description': 'release the handle',
-                     'gripper': 'open'},
-                    {'description': 'withdraw to the approach standoff',
-                     'pos': np.array([0.0, 0.082, 0.15]), 'angle_deg': -10.0},
-                ],
-                'scrape': None,
-            },
             'printer_offset_davis': {
                 'pickup': [
                     {'description': 'scan the marker before approaching',
@@ -179,26 +162,28 @@ class printerAutomation(ArucoDetectionViewer):
                 ],
                 'scrape': None,
             },
-
+            
             'printer_offset': {
                 'pickup': [
                     
                     {'description': 'open gripper for the approach',
                         'gripper': 'open'},
                     {'description': 'scan the marker before approaching',
-                        'scan': 0.15},
+                        'move': 0.20},
+                    {'description': 'scan the marker before approaching',
+                        'scan': 0.20},
                     {'description': 'scan the marker before approaching',
                         'scan': 0.125},
                     {'description': 'approach standoff in front of the handle',
-                        'pos': np.array([0.0, 0.05, 0.125]), 'angle_deg': 0.0},
+                        'pos': np.array([0.0, 0.065, 0.125]), 'angle_deg': 0.0},
                     {'description': 'grasp pose at the handle',
-                        'pos': np.array([0.0, 0.05, 0.1]), 'angle_deg': 0.0},
+                        'pos': np.array([0.0, 0.065, 0.085]), 'angle_deg': 0.0},
                     {'description': 'grab the handle',
                         'gripper': 'close'},
-                    '''{'description': 'grasp pose at the handle',
-                        'pos': np.array([0.0, 0.05, 0.1]), 'angle_deg': -5.0},
+                    {'description': 'grasp pose at the handle',
+                        'pos': np.array([0.0, 0.065, 0.085]), 'angle_deg': 0.0},
                     {'description': 'lift / carry pose',
-                        'pos': np.array([0.0, 0.14, 0.1]), 'angle_deg': 0.0},'''
+                        'pos': np.array([0.0, 0.30, 0.085]), 'angle_deg': 0.0},
                 ],
                 'place': [
                     {'description': 'lift / carry pose',
@@ -244,11 +229,13 @@ class printerAutomation(ArucoDetectionViewer):
                 ],
                 'scrape': [
                     {'description': 'scrape standoff along marker Z',
-                     'pos': np.array([0.0, 0.092, 0.29]), 'angle_deg': 5.0},
+                     'pos': np.array([0.0, 0.092, 0.29]), 'angle_deg': 0.0},
                     {'description': 'full scrape depth',
-                     'pos': np.array([0.0, 0.092, 0.13]), 'angle_deg': 5.0},
+                     'pos': np.array([0.0, 0.092, 0.13]), 'angle_deg': 0.0},
                     {'description': 'retract to standoff',
-                     'pos': np.array([0.0, 0.092, 0.29]), 'angle_deg': 5.0},
+                     'pos': np.array([0.0, 0.092, 0.29]), 'angle_deg': 0.0},
+                    #{'description': 'roll the wrist to dislodge debris',
+                    # 'rotate': 60.0},
                 ],
             },
             'box_offset': {
@@ -264,9 +251,11 @@ class printerAutomation(ArucoDetectionViewer):
                     {'description': 'scan the marker before approaching',
                         'scan': 0.125},
                     {'description': 'approach standoff in front of the handle',
-                        'pos': np.array([0.0, 0.05, 0.125]), 'angle_deg': 0.0},
+                        'pos': np.array([0.0, 0.06, 0.125]), 'angle_deg': 0.0},
                     {'description': 'grasp pose at the handle',
-                        'pos': np.array([0.0, 0.05, 0.1]), 'angle_deg': 0.0},
+                        'pos': np.array([0.0, 0.06, 0.1]), 'angle_deg': 0.0},
+                        {'description': 'grasp pose at the handle',
+                        'pos': np.array([0.0, 0.06, 0.067]), 'angle_deg': 0.0},
                     {'description': 'grab the handle',
                         'gripper': 'close'},
                     '''{'description': 'grasp pose at the handle',
@@ -285,12 +274,18 @@ class printerAutomation(ArucoDetectionViewer):
                         'pos': np.array([0.0, 0.03, 0.15]), 'angle_deg': None},
                 ],
                 'scrape': [
+                    # lite6 recording: transit from the pickup end pose to the
+                    # scrape approach along a demonstrated collision-free route
+                    {'description': 'recorded guide path from pickup to scrape approach',
+                        'traj': 'traj/scrapeWaypoints2.traj'},
                     {'description': 'scrape standoff along marker Z',
-                        'pos': np.array([0.0, -0.04, 0.37]), 'angle_deg': 5.0},
+                        'pos': np.array([0.0, -0.04, 0.40]), 'angle_deg': 5.0},
                     {'description': 'full scrape depth',
                         'pos': np.array([0.0, -0.04, 0.08]), 'angle_deg': 5.0},
                     {'description': 'retract to standoff',
-                        'pos': np.array([0.0, -0.04, 0.37]), 'angle_deg': 5.0},
+                        'pos': np.array([0.0, -0.04, 0.40]), 'angle_deg': 5.0},
+                    #{'description': 'roll the wrist to dislodge debris',
+                     #   'rotate': 60.0},
                 ],
             },
         }
@@ -679,10 +674,8 @@ class printerAutomation(ArucoDetectionViewer):
 
         goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
         self.get_logger().info(f'Moving to marker ID {marker_id} — marker centre: {bad_pos}, target: {badPos}')
-        self.freeze_markers()
-        move_ok = self.move_to_pose(goodPos, goodEuler)
-        self.unfreeze_markers()
-        return move_ok
+        # markers are pinned by default, so the move can't drift any pose
+        return self.move_to_pose(goodPos, goodEuler)
 
     def _get_waypoints_for_marker(self, marker_id, procedure):
         """Waypoint list for 'pickup'/'place'/'scrape', or None."""
@@ -692,24 +685,30 @@ class printerAutomation(ArucoDetectionViewer):
 
     def _follow_waypoints(self, markerID, waypoints, caller, tolerant_last=False):
         """Run the entries in order: moves, scans, gripper actions (a 'close'
-        records joints for the pickup replay). False on first failure, except
-        tolerant_last lets a failed final move (scrape retract) just warn."""
+        records joints for the pickup replay), wrist rotations. False on first
+        failure, except tolerant_last lets a failed last position move (scrape
+        retract) just warn."""
         self._walk_grasp_joints = None
         n = len(waypoints)
+        # the last 'pos' move, not the last list entry — a rotate may follow it
+        last_pos_i = max((i for i, wp in enumerate(waypoints) if 'pos' in wp),
+                         default=None)
         for i, wp in enumerate(waypoints):
             if 'scan' in wp:
-                # a locked marker stays pinned everywhere except its own scan:
-                # unlock just for the observation so the camera can refresh it,
-                # then re-lock so subsequent moves can't drift it
-                was_locked = markerID in self.stream.locked_marker_ids
-                if was_locked:
-                    self.unlock_marker(markerID)
-                try:
-                    if not self._scan_with_retries(markerID, float(wp['scan']), caller):
-                        return False
-                finally:
-                    if was_locked:
-                        self.lock_marker(markerID)
+                # scanToMarker opens its own update window for markerID during
+                # the observation; the marker stays pinned everywhere else
+                if not self._scan_with_retries(markerID, float(wp['scan']), caller):
+                    return False
+                continue
+            if 'move' in wp:
+                # plain positioning at a viewing distance — no step limit, no
+                # observation window, no detection requirement
+                if not self.moveToViewingDistance(markerID, float(wp['move'])):
+                    self.get_logger().error(
+                        f"{caller}: move waypoint {i+1}/{n} "
+                        f"(viewing distance {float(wp['move']):.3f} m) failed for marker {markerID}."
+                    )
+                    return False
                 continue
             if 'gripper' in wp:
                 if wp['gripper'] == 'close':
@@ -719,12 +718,27 @@ class printerAutomation(ArucoDetectionViewer):
                 else:
                     self.open_gripper()
                 continue
+            if 'rotate' in wp:
+                # wrist roll-and-return (e.g. dislodge debris after the scrape
+                # retract); a failed rotation only warns — the walk continues
+                self._rotate_wrist(float(wp['rotate']))
+                continue
+            if 'traj' in wp:
+                # recorded rough path (joint space) guiding between phases
+                # along a demonstrated collision-free route
+                if not self._replay_traj_guide(wp['traj']):
+                    self.get_logger().error(
+                        f"{caller}: recorded guide path waypoint {i+1}/{n} failed "
+                        f"for marker {markerID}."
+                    )
+                    return False
+                continue
             tilt_ori = self._tilted_offset_ori(wp.get('angle_deg'))
             pos = np.asarray(wp['pos'], dtype=float)
             if not self._move_to_marker_offset(markerID, pos, tilt_ori):
-                if tolerant_last and i == n - 1:
+                if tolerant_last and i == last_pos_i:
                     self.get_logger().error(
-                        f"{caller}: final waypoint {n}/{n} failed for marker {markerID}. Continuing."
+                        f"{caller}: last position waypoint {i+1}/{n} failed for marker {markerID}. Continuing."
                     )
                     return True
                 self.get_logger().error(
@@ -793,48 +807,36 @@ class printerAutomation(ArucoDetectionViewer):
             self.gripper.close()
 
     # ---- Marker updates ----
+    # Default-deny: every marker is pinned at all times, except inside an
+    # explicit update window opened around a scan observation. This replaces
+    # the old freeze/unfreeze (global pause during moves) and lock/unlock
+    # (persistent per-marker pin) pair — both are the default now.
 
-    def freeze_markers(self):
-        """Disable marker pose updates. Call before moving the robot."""
-        self.stream.marker_updates_enabled = False
-        self.get_logger().info("Marker pose updates frozen.")
-
-    def unfreeze_markers(self):
-        """Re-enable marker pose updates. Call after the robot has stopped."""
-        # let frames captured mid-move drain first (camera pipeline lag)
+    def allow_marker_updates(self, marker_id=None):
+        """Open a marker-update window: camera detections may update/add only
+        marker_id — or ANY marker if None (location discovery). Sleeps first
+        so frames captured while the robot was still moving drain before the
+        window opens (camera pipeline lag)."""
         time.sleep(0.5)
-        self.stream.marker_updates_enabled = True
-        self.get_logger().info("Marker pose updates resumed.")
-
-    def lock_marker(self, marker_id):
-        """Pin the marker to its current pose; camera detections can't move it.
-        Used for fixed references like the scrape marker."""
-        self.stream.locked_marker_ids.add(marker_id)
-        entry = self._find_marker_entry(marker_id)
-        if entry is not None:
-            self.get_logger().info(
-                f"Marker {marker_id} locked at pos={np.round(entry['positionInBase'], 4)} "
-                f"euler_deg={np.round(np.degrees(entry['eulerInBase']), 2)} — camera updates ignored."
-            )
+        if marker_id is None:
+            self.stream.allow_all_updates = True
+            self.get_logger().info("Marker update window open for ALL markers.")
         else:
-            self.get_logger().warn(f"Marker {marker_id} locked, but no pose entry exists yet.")
+            self.stream.allowed_update_ids.add(marker_id)
+            self.get_logger().info(f"Marker update window open for marker {marker_id}.")
 
-    def unlock_marker(self, marker_id):
-        """Allow camera detections to update marker_id again."""
-        self.stream.locked_marker_ids.discard(marker_id)
-        self.get_logger().info(f"Marker {marker_id} unlocked — camera updates allowed.")
+    def block_marker_updates(self):
+        """Close the update window — every marker is pinned again (the default)."""
+        self.stream.allow_all_updates = False
+        self.stream.allowed_update_ids.clear()
+        self.get_logger().info("Marker update window closed — all markers pinned.")
 
     # ---- Marker registration & scanning ----
 
     def register_estimated_marker(self, marker_id, bad_pos, bad_euler):
         """Seed an estimated marker pose in TF and found_markers; the first
-        real detection overwrites it."""
-        # locked markers are fixed references, don't move them here either
-        if marker_id in self.stream.locked_marker_ids:
-            self.get_logger().info(
-                f"register_estimated_marker: marker {marker_id} is locked — keeping file pose, skipping."
-            )
-            return
+        real detection overwrites it. Writes directly (bypassing the camera
+        update gate) — callers guard against clobbering real saved poses."""
         bad_pos = np.array(bad_pos, dtype=float)
         bad_euler = np.array(bad_euler, dtype=float)
         if self.randomize_estimated_markers:
@@ -876,10 +878,101 @@ class printerAutomation(ArucoDetectionViewer):
             f"Registered estimated marker {marker_id} at base_link pos={bad_pos}, euler={bad_euler}"
         )
 
+    def _viewing_pose_for(self, marker_id, viewing_distance):
+        """EEF pose (bad frame) that puts the camera viewing_distance out
+        along marker_id's normal, from its current (possibly estimated) pose.
+        None, None if the marker has no entry."""
+        entry = self._find_marker_entry(marker_id)
+        if entry is None:
+            return None, None
+        offset_pos = np.array([0.0, 0.0, viewing_distance])
+        # the camera frame (from TF, not the wrist) lands at the offset — the
+        # EEF is backed off by the fixed camera mount offset automatically
+        return self._camera_view_pose(
+            entry['positionInBase'], entry['eulerInBase'], offset_pos, self.offsetOri,
+        )
+
+    def _approach_viewing_pose(self, marker_id, viewing_distance):
+        """Move to marker_id's viewing pose. The initial travel to the
+        estimated pose is one direct, unclamped move; a short observation
+        there lets the camera correct the estimate, and any resulting CHANGE
+        of the viewing pose is then approached in steps of at most
+        scan_approach_max_step (re-observing between steps) until the target
+        stops moving. Returns the last move's success."""
+        max_step = self.scan_approach_max_step
+        # cap on correction steps; generous — reached only if the target keeps
+        # receding, e.g. the estimate is refined away from the arm every step
+        for step_i in range(15):
+            target_pos, target_euler = self._viewing_pose_for(marker_id, viewing_distance)
+            if target_pos is None:
+                self.get_logger().error(
+                    f"_approach_viewing_pose: marker {marker_id} has no pose entry."
+                )
+                return False
+            eef_pos, _rot = self._base_from_eef_transform()
+            remaining = None if eef_pos is None else float(np.linalg.norm(target_pos - eef_pos))
+            if step_i > 0 and remaining is not None and remaining <= 0.01:
+                # the observation left the viewing pose where we already are
+                return True
+            clamp = (step_i > 0 and remaining is not None and remaining > max_step)
+            if clamp:
+                move_pos = eef_pos + (target_pos - eef_pos) * (max_step / remaining)
+                self.get_logger().info(
+                    f"scan approach: marker {marker_id} viewing pose moved {remaining:.3f} m — "
+                    f"stepping {max_step:.2f} m toward it."
+                )
+            else:
+                # initial travel (unclamped, straight to the estimate's viewing
+                # pose), or a correction already within one step
+                move_pos = target_pos
+            # take the final orientation so the marker's estimated spot is in frame
+            goodPos, goodEuler = self.to_good_frame(move_pos, target_euler)
+            if not self.move_to_pose(goodPos, goodEuler):
+                return False
+            if step_i > 0 and not clamp:
+                # arrived at the corrected viewing pose
+                return True
+            # after the initial travel and each clamped step: brief window so a
+            # sighting can correct the estimate before the next iteration. Not
+            # seeing it here is fine — only scanToMarker's final observation is
+            # required.
+            self.allow_marker_updates(marker_id)
+            try:
+                time.sleep(1.0)
+            finally:
+                self.block_marker_updates()
+        self.get_logger().error(
+            f"scan approach: viewing pose for marker {marker_id} not reached within "
+            f"15 correction steps of {max_step:.2f} m — estimate may be diverging. Aborting."
+        )
+        return False
+
+    @_timed
+    def moveToViewingDistance(self, marker_id, viewing_distance):
+        """Go straight to marker_id's viewing pose at viewing_distance — one
+        unclamped move, no update window, no detection requirement. Waypoint
+        form: {'move': distance_m}. Use it to close distance quickly when the
+        marker pose is already trusted; use {'scan': ...} when the pose needs
+        to be (re)measured."""
+        target_pos, target_euler = self._viewing_pose_for(marker_id, viewing_distance)
+        if target_pos is None:
+            self.get_logger().error(
+                f"moveToViewingDistance: marker {marker_id} has no pose entry."
+            )
+            return False
+        goodPos, goodEuler = self.to_good_frame(target_pos, target_euler)
+        self.get_logger().info(
+            f"moveToViewingDistance: marker {marker_id} — direct move to the "
+            f"viewing pose at {viewing_distance:.3f} m."
+        )
+        return self.move_to_pose(goodPos, goodEuler)
+
     @_timed
     def scanToMarker(self, marker_id=0, viewing_distance=0.20):
         """Move the camera to face a known/estimated marker; extra passes
-        re-aim at the refreshed pose so the measurement is head-on."""
+        re-aim at the refreshed pose so the measurement is head-on. The
+        approach is step-limited (scan_approach_max_step) and re-observes the
+        marker between steps, adapting to poor initial estimates."""
         move_ok = False
         marker_spotted = False
         for scan_pass in range(max(1, 1)):
@@ -888,22 +981,11 @@ class printerAutomation(ArucoDetectionViewer):
                 self.get_logger().error(f"Marker {marker_id} not found in found_markers. Register it first.")
                 return False, False
 
-            offsetPos = np.array([0.0, 0.0, viewing_distance])
-            # place the camera frame (from TF, not the wrist) viewing_distance
-            # out along the marker normal — the EEF is backed off by the fixed
-            # camera mount offset automatically
-            badPos, badEuler = self._camera_view_pose(
-                entry['positionInBase'], entry['eulerInBase'], offsetPos, self.offsetOri,
-            )
-
-            goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
             self.get_logger().info(
                 f"Scanning marker {marker_id} (pass {scan_pass + 1}/{max(1, self.scan_passes)}): "
-                f"moving to viewing pos={goodPos}"
+                f"approaching viewing pose at {viewing_distance:.3f} m"
             )
-            self.freeze_markers()
-            move_ok = self.move_to_pose(goodPos, goodEuler)
-            self.unfreeze_markers()
+            move_ok = self._approach_viewing_pose(marker_id, viewing_distance)
             if not move_ok:
                 break
 
@@ -911,24 +993,37 @@ class printerAutomation(ArucoDetectionViewer):
             self._scan_log_movement_id += 1
             self._scan_log_marker_id = marker_id
             self._scan_log_distance = viewing_distance
-            # poll instead of a blind sleep: the first camera-pose commit takes
-            # 1-2+ s after arrival (TF + detect latency), and a fixed sleep
-            # intermittently loses that race; polling exits as soon as a real
-            # detection lands, so fast detections cost nothing extra
-            observation_pause = 10.0 if self.collect_orientation_noise_data else 4.0
-            deadline = time.time() + observation_pause
-            while time.time() < deadline:
-                observed_entry = self._find_marker_entry(marker_id)
-                if (not self.collect_orientation_noise_data
-                        and observed_entry is not None
-                        and not observed_entry.get('estimated', False)):
-                    break
-                time.sleep(0.25)
-            self._scan_log_marker_id = None
-            self._scan_log_distance = None
+            # a fresh detection commits a NEW entry dict, so an identity change
+            # against this snapshot means the marker was seen THIS window (a
+            # stale pose from an earlier scan doesn't count)
+            prev_entry_id = id(self.stream.found_markers.get(marker_id))
+            # allow_marker_updates sleeps 0.5 s first so frames captured while
+            # still moving drain before the window opens
+            self.allow_marker_updates(marker_id)
+            try:
+                # poll instead of a blind sleep: the first camera-pose commit
+                # takes 1-2+ s after arrival (TF + detect latency), and a fixed
+                # sleep intermittently loses that race; polling exits as soon
+                # as a real detection lands, so fast detections cost nothing
+                observation_pause = 10.0 if self.collect_orientation_noise_data else 4.0
+                deadline = time.time() + observation_pause
+                while time.time() < deadline:
+                    observed_entry = self.stream.found_markers.get(marker_id)
+                    if (not self.collect_orientation_noise_data
+                            and observed_entry is not None
+                            and id(observed_entry) != prev_entry_id
+                            and not observed_entry.get('estimated', False)):
+                        break
+                    time.sleep(0.25)
+            finally:
+                self.block_marker_updates()
+                self._scan_log_marker_id = None
+                self._scan_log_distance = None
 
-            observed_entry = self._find_marker_entry(marker_id)
-            marker_spotted = observed_entry is not None and not observed_entry.get('estimated', False)
+            observed_entry = self.stream.found_markers.get(marker_id)
+            marker_spotted = (observed_entry is not None
+                              and id(observed_entry) != prev_entry_id
+                              and not observed_entry.get('estimated', False))
             if not marker_spotted:
                 # nothing fresh to re-aim at
                 break
@@ -937,7 +1032,13 @@ class printerAutomation(ArucoDetectionViewer):
         if not move_ok:
             print(f"[SCAN] Marker {marker_id}: movement FAILED (pose unreachable).")
         elif not marker_spotted:
-            print(f"[SCAN] Marker {marker_id}: NOT detected after moving to view position.")
+            self.get_logger().error(
+                f"[SCAN] Marker {marker_id}: NOT detected after moving to view position."
+            )
+            raise MarkerNotVisibleError(
+                f"marker {marker_id} not detected at the scan pose "
+                f"(viewing distance {viewing_distance:.3f} m)"
+            )
         else:
             pos = observed_entry.get('positionInWorld', 'N/A')
             print(f"[SCAN] Marker {marker_id}: detected at {pos}")
@@ -963,13 +1064,41 @@ class printerAutomation(ArucoDetectionViewer):
 
         goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
         self.get_logger().info(f'Scanning for markers at estimated position: {estimated_pos}')
-        self.freeze_markers()
-        self.move_to_pose(goodPos, goodEuler)
-        self.unfreeze_markers()
-        return True
+        move_ok = self.move_to_pose(goodPos, goodEuler)
+        if not move_ok:
+            self.get_logger().error(
+                f"scanLocationForMarkers: could not reach the viewing pose for {estimated_pos}."
+            )
+            return False
+        # snapshot entry identities: every fresh detection commits a NEW dict
+        # into found_markers, so a changed/new object during the window means a
+        # marker was actually seen at this location
+        before = {mid: id(e) for mid, e in self.stream.found_markers.items()}
+        # unknown IDs may be here, so open the window for ANY marker
+        self.allow_marker_updates()
+        try:
+            deadline = time.time() + 4.0
+            while time.time() < deadline:
+                for mid, e in list(self.stream.found_markers.items()):
+                    if not e.get('estimated', False) and before.get(mid) != id(e):
+                        self.get_logger().info(
+                            f"scanLocationForMarkers: marker {mid} detected at location {estimated_pos}."
+                        )
+                        return True
+                time.sleep(0.25)
+        finally:
+            self.block_marker_updates()
+        self.get_logger().error(
+            f"scanLocationForMarkers: NO marker detected at estimated position {estimated_pos}."
+        )
+        raise MarkerNotVisibleError(
+            f"no marker detected at estimated position {list(np.round(estimated_pos, 3))}"
+        )
 
     def scanMultipleLocations(self, locations, viewing_distance=0.15, pause_duration=2.0):
-        """Scan multiple estimated marker locations sequentially."""
+        """Scan multiple estimated marker locations sequentially. A location
+        with no visible marker raises MarkerNotVisibleError (from
+        scanLocationForMarkers); an unreachable viewing pose aborts (False)."""
         for i, location in enumerate(locations):
             if isinstance(location, tuple) and len(location) == 2:
                 pos, orient = location
@@ -987,13 +1116,13 @@ class printerAutomation(ArucoDetectionViewer):
                 frame_name=frame_name
             )
 
-            if success:
-                time.sleep(pause_duration)
-                markers = self.marker_poses
-                if markers:
-                    self.get_logger().info(f"Detected {len(markers)} markers at location {i+1}")
-                else:
-                    self.get_logger().info(f"No markers detected at location {i+1}")
+            if not success:
+                self.get_logger().error(
+                    f"scanMultipleLocations: could not reach location {i+1}/{len(locations)}. Aborting."
+                )
+                return False
+            time.sleep(pause_duration)
+        return True
 
     # ---- Plate operations ----
 
@@ -1066,7 +1195,9 @@ class printerAutomation(ArucoDetectionViewer):
 
     @_timed
     def _scan_with_retries(self, marker_id, scan_distance, caller):
-        """scanToMarker, retried at 0.85x and 0.70x distance if the move fails."""
+        """scanToMarker, retried at 0.85x and 0.70x distance if the move fails.
+        A reached pose with no detection raises MarkerNotVisibleError (from
+        scanToMarker), terminating the whole procedure."""
         for factor in (1.0, 0.85, 0.70):
             move_ok, _ = self.scanToMarker(
                 marker_id=marker_id, viewing_distance=factor * scan_distance
@@ -1136,7 +1267,8 @@ class printerAutomation(ArucoDetectionViewer):
     @_timed
     def scanMarkerApproach(self, marker_id, viewing_distance=0.15):
         """Scan at progressively closer distances (1.75x down to 1.0x).
-        Bails out if the marker isn't seen at the first, longest distance."""
+        A marker that isn't seen raises MarkerNotVisibleError; the first,
+        longest distance gets one closer retry before that propagates."""
         distances = [
             (1.75 * viewing_distance, 2.0),
             (1.50 * viewing_distance, 1.0),
@@ -1147,25 +1279,31 @@ class printerAutomation(ArucoDetectionViewer):
         ]
 
         for i, (dist, pause) in enumerate(distances):
-            move_ok, spotted = self.scanToMarker(marker_id=marker_id, viewing_distance=dist)
-            time.sleep(pause)
-            if i == 0 and not spotted:
+            if i == 0:
                 # the farthest pose is fragile on short-reach arms (lite6):
                 # estimate noise can make it unreachable or off-frame. Retry
                 # once closer before giving up on the whole approach.
-                fallback = 1.4 * viewing_distance
-                self.get_logger().warn(
-                    f"scanMarkerApproach: marker {marker_id} not seen at max distance "
-                    f"({dist:.3f} m) — retrying closer at {fallback:.3f} m."
-                )
-                move_ok, spotted = self.scanToMarker(marker_id=marker_id, viewing_distance=fallback)
-                time.sleep(pause)
+                try:
+                    _, spotted = self.scanToMarker(marker_id=marker_id, viewing_distance=dist)
+                except MarkerNotVisibleError:
+                    spotted = False
                 if not spotted:
+                    fallback = 1.4 * viewing_distance
                     self.get_logger().warn(
-                        f"scanMarkerApproach: marker {marker_id} not seen at fallback distance "
-                        f"({fallback:.3f} m) either — aborting approach."
+                        f"scanMarkerApproach: marker {marker_id} not seen at max distance "
+                        f"({dist:.3f} m) — retrying closer at {fallback:.3f} m."
                     )
-                    return False
+                    try:
+                        self.scanToMarker(marker_id=marker_id, viewing_distance=fallback)
+                    except MarkerNotVisibleError:
+                        self.get_logger().error(
+                            f"scanMarkerApproach: marker {marker_id} not seen at fallback distance "
+                            f"({fallback:.3f} m) either — aborting approach."
+                        )
+                        raise
+            else:
+                self.scanToMarker(marker_id=marker_id, viewing_distance=dist)
+            time.sleep(pause)
 
         return True
 
@@ -1190,11 +1328,136 @@ class printerAutomation(ArucoDetectionViewer):
         except ValueError:
             return None
 
+    def _load_traj_guide(self, rel_path):
+        """Parse a recorded joint trajectory (xArm-Studio .traj: '# frequency='
+        header, then comma-separated joint radians at that fixed rate) into
+        sparse guide configs. Recording convention: travel to the segment's
+        start pose, HOLD >=1 s, then demonstrate the path — only the part
+        after the last >=1 s pause is used. It is downsampled so consecutive
+        configs differ by at most traj_guide_step rad on any joint (final
+        config always kept). Cached per path; None on failure."""
+        cached = self._traj_guide_cache.get(rel_path)
+        if cached is not None:
+            return cached
+        path = rel_path if os.path.isabs(rel_path) else os.path.join(_DATA_DIR, rel_path)
+        freq = 250.0
+        rows = []
+        try:
+            with open(path) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if line.startswith('#'):
+                        if 'frequency=' in line:
+                            freq = float(line.split('frequency=')[1])
+                        continue
+                    vals = [float(v) for v in line.split(',') if v != '']
+                    if len(vals) >= 6:
+                        rows.append(vals[:6])
+        except (OSError, ValueError) as ex:
+            self.get_logger().error(f"_load_traj_guide: cannot read {path}: {ex}")
+            return None
+        if len(rows) < 2:
+            self.get_logger().error(f"_load_traj_guide: no joint samples in {path}")
+            return None
+        joints = np.asarray(rows, dtype=float)
+
+        # stillness = max joint speed under ~1.4 deg/s; the guide segment
+        # starts after the last pause of at least 1 s
+        still = np.abs(np.diff(joints, axis=0)).max(axis=1) < 1e-4
+        min_run = int(freq)
+        run_start, seg_start = None, 0
+        for i, is_still in enumerate(still):
+            if is_still and run_start is None:
+                run_start = i
+            elif not is_still and run_start is not None:
+                if i - run_start >= min_run:
+                    seg_start = i
+                run_start = None
+        segment = joints[seg_start:]
+
+        configs = [segment[0]]
+        for q in segment:
+            if np.abs(q - configs[-1]).max() > self.traj_guide_step:
+                configs.append(q)
+        if np.abs(segment[-1] - configs[-1]).max() > 1e-3:
+            configs.append(segment[-1])
+        configs = [c.tolist() for c in configs]
+        self.get_logger().info(
+            f"_load_traj_guide: {os.path.basename(path)} — {len(configs)} guide config(s) "
+            f"from the segment after {seg_start / freq:.1f} s."
+        )
+        self._traj_guide_cache[rel_path] = configs
+        return configs
+
+    def _replay_traj_guide(self, rel_path):
+        """Walk a recorded trajectory's guide configs as joint-space moves,
+        keeping the arm near the demonstrated (collision-free) route between
+        procedure phases. Waypoint form: {'traj': path relative to data/}.
+        False on any failed move — a half-followed guide leaves the arm off
+        the known path, so the caller must abort rather than continue."""
+        configs = self._load_traj_guide(rel_path)
+        if not configs:
+            return False
+        self.get_logger().info(
+            f"_replay_traj_guide: walking {len(configs)} guide config(s) from {rel_path}."
+        )
+        for k, q in enumerate(configs):
+            if not self.move_to_configuration(q):
+                self.get_logger().error(
+                    f"_replay_traj_guide: guide config {k+1}/{len(configs)} failed."
+                )
+                return False
+        return True
+
+    def _rotate_wrist(self, rotate_degrees):
+        """Roll the wrist (last joint) by -rotate_degrees and back — dislodges
+        debris / shifts the plate after a scrape. Waypoint form:
+        {'rotate': degrees}. A failed rotation only warns and returns False;
+        callers continue (placePlate's joint replay restores the wrist)."""
+        self.get_logger().info(
+            f"_rotate_wrist: rotating end-effector joint by {rotate_degrees:.1f}° and back."
+        )
+        current_joints = self._current_arm_joints()
+        if current_joints is None:
+            self.get_logger().warn("_rotate_wrist: joint state unavailable — skipping rotation.")
+            return False
+        rotated_joints = list(current_joints)
+        rotated_joints[-1] -= np.radians(rotate_degrees)
+
+        # J6 angle vs its limit (+/-180 mk3, +/-155 mk2)
+        j6_now = np.degrees(current_joints[-1])
+        j6_tgt = np.degrees(rotated_joints[-1])
+        self._scrape_dbg(
+            "ROTATE current_joints_deg=" + str(np.round(np.degrees(current_joints), 1).tolist())
+        )
+        self._scrape_dbg(
+            f"ROTATE j6 {j6_now:.1f} deg --({-rotate_degrees:.0f})--> target {j6_tgt:.1f} deg; "
+            f"exceeds_155={abs(j6_tgt) > 155.0} exceeds_180={abs(j6_tgt) > 180.0}"
+        )
+
+        rot_ok = self.move_to_configuration(rotated_joints)
+        self._scrape_dbg(f"ROTATE move_to(rotated) ok={rot_ok}")
+        time.sleep(0.5)
+        # restore the wrist angle before any subsequent placing
+        res_ok = self.move_to_configuration(current_joints)
+        self._scrape_dbg(f"ROTATE move_to(restore) ok={res_ok} "
+                         f"joints_after={np.round(np.degrees(self._current_arm_joints() or []),1).tolist()}")
+        time.sleep(0.5)
+        if not rot_ok:
+            self.get_logger().warn(
+                "_rotate_wrist: rotation failed. Continuing "
+                "(placePlate replay will return the wrist to the grasp config)."
+            )
+        return rot_ok
+
     @_timed
-    def scrapePlate(self, source_id, scrape_id, wait_after_pickup=False, wait_duration=60.0, rotate_after_scrape=False, rotate_degrees=60.0):
+    def scrapePlate(self, source_id, scrape_id, wait_after_pickup=False, wait_duration=60.0):
         """Pick up from source_id, scrape against the scrape_id surface, put
-        it back. wait_after_pickup delays before scraping (cooldown);
-        rotate_after_scrape rolls the wrist after the retract."""
+        it back. wait_after_pickup delays before scraping (cooldown). All
+        motion — including any post-scrape wrist rotation ({'rotate': deg}
+        entries) — comes from the marker's 'scrape' waypoint list."""
         scrape_waypoints = self._get_waypoints_for_marker(scrape_id, 'scrape')
         if not scrape_waypoints:
             self.get_logger().error(
@@ -1220,9 +1483,8 @@ class printerAutomation(ArucoDetectionViewer):
             )
             time.sleep(wait_duration)
 
-        # freeze so a close-range sighting can't corrupt the scrape marker pose
-        # (it's normally also locked to its file pose, see runScrapePlate.py)
-        self.freeze_markers()
+        # markers are pinned by default — a close-range sighting can't corrupt
+        # the scrape marker pose outside its own scan waypoint's window
 
         # log the marker pose the waypoints get applied to
         _e4 = self._find_marker_entry(scrape_id)
@@ -1246,53 +1508,8 @@ class printerAutomation(ArucoDetectionViewer):
             str(np.round(np.degrees(self._current_arm_joints() or []), 1).tolist())
         )
 
-        # Step 2b – optional end-effector rotation to dislodge debris / change plate orientation
-        if rotate_after_scrape:
-            self.get_logger().info(
-                f"scrapePlate: rotating end-effector joint by {rotate_degrees:.1f}° after scrape."
-            )
-            js = self.moveit2.joint_state
-            if js is not None:
-                joint_names_list = list(js.name)
-                current_joints = [
-                    float(js.position[joint_names_list.index(j)])
-                    for j in self.moveit2.joint_names
-                ]
-                rotated_joints = list(current_joints)
-                rotated_joints[-1] -= np.radians(rotate_degrees)
-
-                # J6 angle vs its limit (+/-180 mk3, +/-155 mk2)
-                j6_now = np.degrees(current_joints[-1])
-                j6_tgt = np.degrees(rotated_joints[-1])
-                self._scrape_dbg(
-                    "ROTATE current_joints_deg=" + str(np.round(np.degrees(current_joints), 1).tolist())
-                )
-                self._scrape_dbg(
-                    f"ROTATE j6 {j6_now:.1f} deg --({-rotate_degrees:.0f})--> target {j6_tgt:.1f} deg; "
-                    f"exceeds_155={abs(j6_tgt) > 155.0} exceeds_180={abs(j6_tgt) > 180.0}"
-                )
-
-                rot_ok = self.move_to_configuration(rotated_joints)
-                self._scrape_dbg(f"ROTATE move_to(rotated) ok={rot_ok}")
-                time.sleep(0.5)
-                # restore the wrist angle before placing
-                res_ok = self.move_to_configuration(current_joints)
-                self._scrape_dbg(f"ROTATE move_to(restore) ok={res_ok} "
-                                 f"joints_after={np.round(np.degrees(self._current_arm_joints() or []),1).tolist()}")
-                time.sleep(0.5)
-                if not rot_ok:
-                    self.get_logger().warn(
-                        "scrapePlate: post-scrape rotation failed. Continuing to place "
-                        "(placePlate replay will return the wrist to the grasp config)."
-                    )
-            else:
-                self.get_logger().warn(
-                    "scrapePlate: joint state unavailable — skipping rotation."
-                )
-
-        # Step 3 – place back at source; unfreeze first so the camera can
-        # refresh the source marker pose
-        self.unfreeze_markers()
+        # Step 3 – place back at source; its place list's scan waypoint opens
+        # the update window that refreshes the source marker pose
         self.get_logger().info(f"Step 3: placing plate back at marker {source_id}")
         if not self.placePlate(markerID=source_id):
             self.get_logger().error(
@@ -1328,14 +1545,17 @@ class printerAutomation(ArucoDetectionViewer):
     def _collect_marker_in_base(self, marker_id, window=1.5):
         """Average the raw (unfiltered) marker detections over `window` seconds.
         Returns (mean_pos_in_base, mean_pos_in_camera, n_samples); n=0 if the
-        marker wasn't seen. Requires markers unfrozen and marker_id unlocked so
-        detection runs."""
+        marker wasn't seen. Opens its own update window so detection runs."""
         self._calib_buf = []
         self._calib_collect_id = marker_id
-        deadline = time.time() + window
-        while time.time() < deadline:
-            time.sleep(0.05)
-        self._calib_collect_id = None
+        self.allow_marker_updates(marker_id)
+        try:
+            deadline = time.time() + window
+            while time.time() < deadline:
+                time.sleep(0.05)
+        finally:
+            self.block_marker_updates()
+            self._calib_collect_id = None
         buf = self._calib_buf
         self._calib_buf = []
         if not buf:
@@ -1430,12 +1650,6 @@ class printerAutomation(ArucoDetectionViewer):
             self.get_logger().error(
                 f"calibrate_camera_offset: marker {marker_id} not found. Scan it first.")
             return None
-        if marker_id in self.stream.locked_marker_ids:
-            self.get_logger().error(
-                f"calibrate_camera_offset: marker {marker_id} is locked — unlock it so "
-                "the camera can re-measure it across poses.")
-            return None
-
         marker_pos = np.asarray(entry['positionInBase'], dtype=float)
         marker_euler = np.asarray(entry['eulerInBase'], dtype=float)
         offsetOri = np.asarray(self.offsetOri, dtype=float)
@@ -1480,9 +1694,7 @@ class printerAutomation(ArucoDetectionViewer):
                 self.get_logger().info(
                     f"calibrate: pose {i+1}/{len(poses)} (tilt={theta_deg:.0f} deg "
                     f"az={azim_deg:.0f} deg dist={dist:.3f})")
-                self.freeze_markers()
                 move_ok = self.move_to_pose(goodPos, goodEuler)
-                self.unfreeze_markers()   # sleeps 0.5s for the pipeline to drain
                 if not move_ok:
                     self.get_logger().warn("calibrate: pose unreachable, skipping.")
                     continue
@@ -1646,13 +1858,11 @@ class printerAutomation(ArucoDetectionViewer):
         try:
             self.moveit2.max_velocity = velocity_scaling
             self.moveit2.max_acceleration = velocity_scaling
-            self.freeze_markers()
             self.move_to_configuration(home_joints)
             time.sleep(self.move_settle_delay)
         finally:
             self.moveit2.max_velocity = prev_velocity
             self.moveit2.max_acceleration = prev_acceleration
-            self.unfreeze_markers()
 
         self.get_logger().info("go_home: reached home position.")
 

@@ -1,0 +1,7 @@
+timestamp,call_chain,duration_s
+2026-07-24T11:23:41.220200,pickupPlate > moveToMarker > _scan_with_retries > scanToMarker,1.3051
+2026-07-24T11:23:41.220249,pickupPlate > moveToMarker > _scan_with_retries,1.3051
+2026-07-24T11:23:42.638855,pickupPlate > moveToMarker > _scan_with_retries > scanToMarker,1.418
+2026-07-24T11:23:42.638896,pickupPlate > moveToMarker > _scan_with_retries,1.4181
+2026-07-24T11:23:49.057736,pickupPlate > moveToMarker,9.164
+2026-07-24T11:23:49.057796,pickupPlate,9.164

@@ -7,7 +7,7 @@ import threading
 
 import rclpy
 
-from .printer_automation import printerAutomation
+from .printer_automation import printerAutomation, MarkerNotVisibleError
 from .simulated3DPrinter import Simulated3DPrinter
 
 # standard hardware config for all runner scripts
@@ -253,81 +253,84 @@ def run_command_menu(node):
         if choice not in _valid_choices and len(choice) >= 2 and choice[1:] in _valid_choices:
             choice = choice[1:]
 
-        if choice == "1":
-            pos = _parse_floats("  Enter estimated pos (x y z): ", 3)
-            if pos is None:
-                continue
-            orient = _parse_floats("  Enter estimated orient (roll pitch yaw) [0 0 0]: ", 3)
-            if orient is None:
-                orient = [0.0, 0.0, 0.0]
-            dist = _parse_floats("  Viewing distance [0.15]: ", 1)
-            dist = dist[0] if dist else 0.15
-            node.get_logger().info(f"User requested scanLocationForMarkers at {pos}")
-            node.scanLocationForMarkers(estimated_pos=pos, estimated_orient=orient, viewing_distance=dist)
+        try:
+            if choice == "1":
+                pos = _parse_floats("  Enter estimated pos (x y z): ", 3)
+                if pos is None:
+                    continue
+                orient = _parse_floats("  Enter estimated orient (roll pitch yaw) [0 0 0]: ", 3)
+                if orient is None:
+                    orient = [0.0, 0.0, 0.0]
+                dist = _parse_floats("  Viewing distance [0.15]: ", 1)
+                dist = dist[0] if dist else 0.15
+                node.get_logger().info(f"User requested scanLocationForMarkers at {pos}")
+                node.scanLocationForMarkers(estimated_pos=pos, estimated_orient=orient, viewing_distance=dist)
 
-        elif choice == "2":
-            mid = _parse_floats("  Marker ID [0]: ", 1)
-            mid = int(mid[0]) if mid else 0
-            node.get_logger().info(f"User requested moveToMarker({mid})")
-            node.moveToMarker(markerID=mid)
+            elif choice == "2":
+                mid = _parse_floats("  Marker ID [0]: ", 1)
+                mid = int(mid[0]) if mid else 0
+                node.get_logger().info(f"User requested moveToMarker({mid})")
+                node.moveToMarker(markerID=mid)
 
-        elif choice == "3":
-            mid = _parse_floats("  Marker ID [0]: ", 1)
-            mid = int(mid[0]) if mid else 0
-            node.get_logger().info(f"User requested pickupPlate({mid})")
-            node.pickupPlate(markerID=mid)
+            elif choice == "3":
+                mid = _parse_floats("  Marker ID [0]: ", 1)
+                mid = int(mid[0]) if mid else 0
+                node.get_logger().info(f"User requested pickupPlate({mid})")
+                node.pickupPlate(markerID=mid)
 
-        elif choice == "4":
-            mid = _parse_floats("  Marker ID [0]: ", 1)
-            mid = int(mid[0]) if mid else 0
-            node.get_logger().info(f"User requested placePlate({mid})")
-            node.placePlate(markerID=mid)
+            elif choice == "4":
+                mid = _parse_floats("  Marker ID [0]: ", 1)
+                mid = int(mid[0]) if mid else 0
+                node.get_logger().info(f"User requested placePlate({mid})")
+                node.placePlate(markerID=mid)
 
-        elif choice == "5":
-            markers = node.marker_poses
-            if markers:
-                print(f"\n  Found {len(markers)} marker(s):")
-                for entry in markers:
-                    pos = entry.get('positionInWorld', 'N/A')
-                    ori = entry.get('orientInWorld', 'N/A')
-                    print(f"    ID {entry['id']}: pos={pos}, orient={ori}")
+            elif choice == "5":
+                markers = node.marker_poses
+                if markers:
+                    print(f"\n  Found {len(markers)} marker(s):")
+                    for entry in markers:
+                        pos = entry.get('positionInWorld', 'N/A')
+                        ori = entry.get('orientInWorld', 'N/A')
+                        print(f"    ID {entry['id']}: pos={pos}, orient={ori}")
+                else:
+                    print("  No markers found yet.")
+
+            elif choice == "6":
+                mid = _parse_floats("  Marker ID [0]: ", 1)
+                mid = int(mid[0]) if mid else 0
+                dist = _parse_floats("  Viewing distance [0.15]: ", 1)
+                dist = dist[0] if dist else 0.15
+                node.get_logger().info(f"User requested scanToMarker({mid}, dist={dist})")
+                node.scanToMarker(marker_id=mid, viewing_distance=dist)
+
+            elif choice == "7":
+                scale = _parse_floats("  Velocity scaling [0.2]: ", 1)
+                scale = scale[0] if scale else 0.2
+                node.get_logger().info(f"User requested go_home(velocity_scaling={scale})")
+                node.go_home(velocity_scaling=scale)
+
+            elif choice == "8":
+                ids = _parse_floats("  Source, dest, rescan marker IDs (e.g. 1 2 1): ", 3)
+                if ids is None:
+                    continue
+                source_id, dest_id, rescan_id = int(ids[0]), int(ids[1]), int(ids[2])
+                node.get_logger().info(
+                    f"User requested transferPlate({source_id}, {dest_id}, {rescan_id})"
+                )
+                node.transferPlate(source_id=source_id, dest_id=dest_id, rescan_id=rescan_id)
+
+            elif choice == "9":
+                ids = _parse_floats("  Source, scrape marker IDs (e.g. 1 2): ", 2)
+                if ids is None:
+                    continue
+                source_id, scrape_id = int(ids[0]), int(ids[1])
+                # all motion (scans included) comes from the offset-config waypoint lists
+                node.get_logger().info(
+                    f"User requested scrapePlate({source_id}, {scrape_id})"
+                )
+                node.scrapePlate(source_id=source_id, scrape_id=scrape_id)
+
             else:
-                print("  No markers found yet.")
-
-        elif choice == "6":
-            mid = _parse_floats("  Marker ID [0]: ", 1)
-            mid = int(mid[0]) if mid else 0
-            dist = _parse_floats("  Viewing distance [0.15]: ", 1)
-            dist = dist[0] if dist else 0.15
-            node.get_logger().info(f"User requested scanToMarker({mid}, dist={dist})")
-            node.scanToMarker(marker_id=mid, viewing_distance=dist)
-
-        elif choice == "7":
-            scale = _parse_floats("  Velocity scaling [0.2]: ", 1)
-            scale = scale[0] if scale else 0.2
-            node.get_logger().info(f"User requested go_home(velocity_scaling={scale})")
-            node.go_home(velocity_scaling=scale)
-
-        elif choice == "8":
-            ids = _parse_floats("  Source, dest, rescan marker IDs (e.g. 1 2 1): ", 3)
-            if ids is None:
-                continue
-            source_id, dest_id, rescan_id = int(ids[0]), int(ids[1]), int(ids[2])
-            node.get_logger().info(
-                f"User requested transferPlate({source_id}, {dest_id}, {rescan_id})"
-            )
-            node.transferPlate(source_id=source_id, dest_id=dest_id, rescan_id=rescan_id)
-
-        elif choice == "9":
-            ids = _parse_floats("  Source, scrape marker IDs (e.g. 1 2): ", 2)
-            if ids is None:
-                continue
-            source_id, scrape_id = int(ids[0]), int(ids[1])
-            # all motion (scans included) comes from the offset-config waypoint lists
-            node.get_logger().info(
-                f"User requested scrapePlate({source_id}, {scrape_id})"
-            )
-            node.scrapePlate(source_id=source_id, scrape_id=scrape_id)
-
-        else:
-            print("  Unknown option. Try again.")
+                print("  Unknown option. Try again.")
+        except MarkerNotVisibleError as ex:
+            node.get_logger().error(f"Command aborted — marker not visible: {ex}")

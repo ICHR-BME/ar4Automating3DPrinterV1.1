@@ -68,8 +68,8 @@ def main():
 
     node.get_logger().info("Starting initial scan for markers...")
     node.load_state()
-    # scrape marker is not locked here (interactive tool). If menu scrapes
-    # drift between repetitions, add node.lock_marker(<scrape_marker_id>).
+    # markers are pinned by default — each only updates during its own scan
+    # windows, so menu scrapes can't drift the scrape marker between runs
 
     node.marker_offset_config[0] = 'box_offset'
     node.marker_offset_config[1] = 'box_offset'

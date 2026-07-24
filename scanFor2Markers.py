@@ -42,7 +42,7 @@ def main():
     # stack default is 0.9 (pose_reader.py). Applies to every planned move
     # here (go_home still overrides with its own velocity_scaling arg, then
     # restores to this value).
-    speed_scale = 0.15
+    speed_scale = 0.2
     node.moveit2.max_velocity = speed_scale
     node.moveit2.max_acceleration = speed_scale
 
@@ -72,23 +72,23 @@ def main():
         )
         '''
         
-        '''printer2 = Simulated3DPrinter(
-            node=node, pos=[0.40, 0.00, -0.1], orient=[-1/2*np.pi, 0.0, 2/2*np.pi],
+        printer2 = Simulated3DPrinter(
+            node=node, pos=[0.40, 0.10, -0.1], orient=[-1/2*np.pi, 0.0, 2/2*np.pi],
             door_marker_texture='materials/textures/marker6x6_1.png',
-        )'''
+        )
         printer3 = Simulated3DPrinter(
             node=node, pos=[0.45, -0.2, 0.1], orient=[0.0, 0.0, -1/2*np.pi],
             door_marker_texture='materials/textures/marker6x6_2.png',
         )
-        printer2 = Simulated3DPrinter(
-                    node=node, pos=[0.1, -0.5, 0.24], orient=[0.0, 0.0, 1*np.pi],
+        '''printer2 = Simulated3DPrinter(
+                    node=node, pos=[0.1, -0.6, 0.25], orient=[0.0, 0.0, 1*np.pi],
                     door_marker_texture='materials/textures/marker6x6_1.png',
-                )
+                )'''
 
     node.get_logger().info("Starting initial scan for markers 1 and 2...")
     node.load_state()
-    # scrape marker is not locked here (interactive tool). If menu scrapes
-    # drift between repetitions, add node.lock_marker(<scrape_marker_id>).
+    # markers are pinned by default — each only updates during its own scan
+    # windows, so menu scrapes can't drift the scrape marker between runs
 
     node.marker_offset_config[1] = 'box_offset'
     node.marker_offset_config[2] = 'printer_offset'
@@ -116,7 +116,7 @@ def main():
     
     viewing_distance = 0.15
     node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
-    #node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
+    node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
 
     node.get_logger().info("Initial scan complete.")
 

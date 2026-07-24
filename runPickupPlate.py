@@ -21,7 +21,7 @@ from ar4_automation.runner_common import (
 # ---- Configuration ----
 RUN_SIM         = 0           # 1 = Gazebo (sim camera + spawned printers), 0 = hardware
 ROBOT           = 'lite6'     # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
-SOURCE_ID       = 1           # marker to pick the plate from
+SOURCE_ID       = 2          # marker to pick the plate from
 # all motion and tilt angles come from the waypoint lists in
 # printerAutomation.__init__'s offset_configs
 
@@ -37,14 +37,12 @@ def main():
         # poses don't match the sim scene
         spawn_sim_printers(node, sim_printer_specs(ROBOT, 2))
     else:
-        # save file restores marker poses, offset config, printer configs
+        # save file restores marker poses, offset config, printer configs.
+        # Markers are pinned by default — the source marker only updates
+        # during its own pickup-scan windows, so moves can't drift it.
         if not node.load_state():
             node.get_logger().error("No save file found — run printer_automation.py first to create one.")
             return
-
-        # pin the source marker to its file pose. _follow_waypoints unlocks it
-        # only for the pickup scan (then re-locks), so moves can't drift it.
-        node.lock_marker(SOURCE_ID)
 
         restore_saved_printers(node)
 

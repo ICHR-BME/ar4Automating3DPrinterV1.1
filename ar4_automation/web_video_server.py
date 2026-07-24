@@ -154,11 +154,13 @@ class WebVideoStream:
         # Permanent dict of all markers ever found: {marker_id: entry_dict}
         # This is NEVER cleared. Once a marker is seen, it stays here forever.
         self.found_markers = {}
-        # When False, found_markers will not be updated with new detections.
-        self.marker_updates_enabled = True
-        # marker IDs camera detections may never overwrite (fixed references
-        # from the save file); takes precedence over marker_updates_enabled
-        self.locked_marker_ids = set()
+        # Default-deny update gate: detections are committed to found_markers
+        # only for IDs in allowed_update_ids, or for ANY id while
+        # allow_all_updates is True (location-discovery scans). The automation
+        # node opens these windows only while deliberately observing a marker,
+        # so poses can't drift from mid-move frames or idle sightings.
+        self.allowed_update_ids = set()
+        self.allow_all_updates = False
         # Per-marker EMA state used exclusively for the web panel display.
         # Does NOT affect found_markers or anything returned by detect().
         self._display_filter_states = {}
@@ -171,6 +173,12 @@ class WebVideoStream:
             self.aruco_dicts = [cv2.aruco.getPredefinedDictionary(ARUCO_DICT_MAP[n])
                                 for n in self.dict_names]
             self.aruco_params = cv2.aruco.DetectorParameters_create()
+            # sub-pixel corner refinement: the default CORNER_REFINE_NONE
+            # leaves ~0.5 px corner bias, which scales directly into aruco
+            # range error (~1% at a 60-90 px marker span)
+            self.aruco_params.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+            self.aruco_params.cornerRefinementWinSize = 5
+            self.aruco_params.cornerRefinementMinAccuracy = 0.01
             self.camera_matrix = None
             self.dist_coeffs = None
             self.last_marker_count = 0
@@ -412,7 +420,7 @@ class WebVideoStream:
                     },
                 }
 
-                if self.marker_updates_enabled and marker_id not in self.locked_marker_ids:
+                if self.allow_all_updates or marker_id in self.allowed_update_ids:
                     if self.enrich_fn is not None:
                         enriched = self.enrich_fn(entry)
                         if enriched is not None:

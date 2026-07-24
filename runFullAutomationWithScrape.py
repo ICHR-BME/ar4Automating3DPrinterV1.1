@@ -132,9 +132,10 @@ def main():
     # Marker setup. Marker poses, offset config, and printer configs all come
     # from the per-robot save file (load_state + restore_saved_printers above),
     # created by running scanFor2Markers.py for this ROBOT first — so this runs
-    # on any arm without hardcoded, AR4-frame seed poses. Marker 1 (scrape) is
-    # scanned once then locked so every cycle uses the same pose; marker 2
-    # (pickup source) stays unlocked and is re-detected each cycle.
+    # on any arm without hardcoded, AR4-frame seed poses. Markers are pinned by
+    # default: marker 1 (scrape) is scanned once here and keeps that pose for
+    # every cycle (the scrape waypoints have no scan entries); marker 2 (pickup
+    # source) is re-detected each cycle by its pickup-scan windows.
     viewing_distance = SCAN_DISTANCE
     # re-assert the scrape/source offset configs in case the save file predates
     # them (load_state restores whatever was saved).
@@ -143,11 +144,8 @@ def main():
 
     node.get_logger().info("Scanning for scrape marker 1...")
     node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
-
-    # Lock the freshly scanned scrape pose. lock_marker is honoured by both the
-    # camera update path and register_estimated_marker, so nothing after this
-    # point can move marker 1.
-    node.lock_marker(SCRAPE_ID)
+    # marker 1 is now pinned at this freshly scanned pose: updates only happen
+    # inside a scan window for its own ID, and nothing below scans marker 1
 
     node.get_logger().info("Scanning for source marker 2...")
     node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
@@ -168,12 +166,13 @@ def main():
         bambu.prepare_for_pickup()
 
         node.get_logger().info(f"=== Cycle {cycle}/{total}: scraping plate ===")
+        # the post-scrape wrist roll is a {'rotate': deg} entry in the scrape
+        # waypoint list (offset_configs), not an argument here
         ok = node.scrapePlate(
             source_id=SOURCE_ID,
             scrape_id=SCRAPE_ID,
             wait_after_pickup=True,
             wait_duration=90.0,
-            rotate_after_scrape=True,
         )
         node.get_logger().info(
             f"=== Cycle {cycle}/{total}: scrapePlate {'succeeded' if ok else 'FAILED'} ==="

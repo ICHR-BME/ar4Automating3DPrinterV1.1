@@ -30,7 +30,7 @@ SCRAPE_ID       = 1           # marker whose surface gets scraped against
 def main():
     rclpy.init()
     node = start_node(sim=RUN_SIM, robot=ROBOT)
-    speed_scale = 0.15
+    speed_scale = 0.2
     node.moveit2.max_velocity = speed_scale
     node.moveit2.max_acceleration = speed_scale
     if RUN_SIM:
@@ -38,23 +38,22 @@ def main():
         # poses don't match the sim scene
         spawn_sim_printers(node, sim_printer_specs(ROBOT, 2))
     else:
-        # save file restores marker poses, offset config, printer configs
+        # save file restores marker poses, offset config, printer configs.
+        # Markers are pinned by default (updates only during their own scan
+        # waypoints), so the scrape marker keeps its file pose automatically.
         if not node.load_state():
             node.get_logger().error("No save file found — run printer_automation.py first to create one.")
             return
 
-        # pin the scrape marker to its file pose so live detections can't
-        # drift it between repetitions
-        node.lock_marker(SCRAPE_ID)
-
         restore_saved_printers(node)
 
+    # the post-scrape wrist roll is a {'rotate': deg} entry in the scrape
+    # waypoint list (offset_configs), not an argument here
     ok = node.scrapePlate(
         source_id=SOURCE_ID,
         scrape_id=SCRAPE_ID,
         wait_after_pickup=False,
         wait_duration=10.0,
-        rotate_after_scrape=True,
     )
     node.get_logger().info("scrapePlate succeeded." if ok else "scrapePlate failed.")
 
