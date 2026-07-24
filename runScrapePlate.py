@@ -19,7 +19,7 @@ from ar4_automation.runner_common import (
 )
 
 # ---- Configuration ----
-RUN_SIM         = 1           # 1 = Gazebo (sim camera + spawned printers), 0 = hardware
+RUN_SIM         = 0           # 1 = Gazebo (sim camera + spawned printers), 0 = hardware
 ROBOT           = 'lite6'     # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
 SOURCE_ID       = 2           # marker to pick the plate from (and return it to)
 SCRAPE_ID       = 1           # marker whose surface gets scraped against
@@ -30,7 +30,9 @@ SCRAPE_ID       = 1           # marker whose surface gets scraped against
 def main():
     rclpy.init()
     node = start_node(sim=RUN_SIM, robot=ROBOT)
-
+    speed_scale = 0.15
+    node.moveit2.max_velocity = speed_scale
+    node.moveit2.max_acceleration = speed_scale
     if RUN_SIM:
         # spawn printers instead of loading the save file, its real-world
         # poses don't match the sim scene

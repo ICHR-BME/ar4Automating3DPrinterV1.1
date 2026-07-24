@@ -837,20 +837,20 @@ def load_printer_config(name=None, config_path=None):
 
 
 if __name__ == "__main__":
-    cfg = load_printer_config()
+    cfg = load_printer_config(name="a1")
 
-    my_a1_mini = BambuPrinter(cfg["ip"], cfg["access_code"], cfg["serial"])
+    myPrinter = BambuPrinter(cfg["ip"], cfg["access_code"], cfg["serial"])
 
-    my_a1_mini.connect()
+    myPrinter.connect()
     time.sleep(1)  # Allow MQTT connection to stabilize
 
     # Home all axes first to establish a reference position
-    #my_a1_mini.send_gcode("G28")
+    #myPrinter.send_gcode("G28")
     #time.sleep(10)  # Wait for homing to complete
 
     # Move print head to maximum X, Y and Z (180mm on the A1 Mini)
-    my_a1_mini.send_gcode("G0 X180 Y180 Z180 F1200")
-    print("Moving to max X, Y and Z position (180mm, 180mm, 180mm)")
+    myPrinter.send_gcode("G0 X180 Y180 Z180 F1200")
+    #print("Moving to max X, Y and Z position (180mm, 180mm, 180mm)")
 
     #filepath = "gcode/cylinderFast.3mf"
     #filepath = "gcode/bed_scraper_a1mini.gcode.3mf"
@@ -859,11 +859,11 @@ if __name__ == "__main__":
 
 
 
-    remote_filename = os.path.basename(filepath)  # file lands at SD card root on upload
-    my_a1_mini.enable_debug_listener()
-    my_a1_mini.upload_file_timeout(filepath) # Use the timeout version or the file might stall, default is 10s use bigger numbers for bigger files
-    my_a1_mini.start_print(remote_filename)
-    my_a1_mini.waitUntilPrintFinished()
+    '''remote_filename = os.path.basename(filepath)  # file lands at SD card root on upload
+    myPrinter.enable_debug_listener()
+    myPrinter.upload_file_timeout(filepath) # Use the timeout version or the file might stall, default is 10s use bigger numbers for bigger files
+    myPrinter.start_print(remote_filename)'''
+    myPrinter.waitUntilPrintFinished()
     print("done")
 
-    my_a1_mini.disconnect()
+    myPrinter.disconnect()

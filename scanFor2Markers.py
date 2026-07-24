@@ -72,14 +72,18 @@ def main():
         )
         '''
         
-        printer2 = Simulated3DPrinter(
+        '''printer2 = Simulated3DPrinter(
             node=node, pos=[0.40, 0.00, -0.1], orient=[-1/2*np.pi, 0.0, 2/2*np.pi],
             door_marker_texture='materials/textures/marker6x6_1.png',
-        )
+        )'''
         printer3 = Simulated3DPrinter(
             node=node, pos=[0.45, -0.2, 0.1], orient=[0.0, 0.0, -1/2*np.pi],
             door_marker_texture='materials/textures/marker6x6_2.png',
         )
+        printer2 = Simulated3DPrinter(
+                    node=node, pos=[0.1, -0.5, 0.24], orient=[0.0, 0.0, 1*np.pi],
+                    door_marker_texture='materials/textures/marker6x6_1.png',
+                )
 
     node.get_logger().info("Starting initial scan for markers 1 and 2...")
     node.load_state()
@@ -96,19 +100,33 @@ def main():
     bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
     node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
 
-    if not runVirtual:
+    '''if not runVirtual:
         node.register_printers([
-            {"marker_id": 1, "pos": [0.48, -0.35, 0.07], "orient": [0.0, 0.0, np.pi],
-             "door_marker_texture": 'materials/textures/marker6x6_1.png'},
-            {"marker_id": 2, "pos": [0.65, 0.1, 0.07], "orient": [0.0, 0.0, 3/2*np.pi],
-             "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+            {"marker_id": 2, "pos": [0.3, -0.45, 0.24], "orient": [0.0, 0.0, 0*np.pi],
+                "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+            {"marker_id": 1, "pos": [0.75, 0.1, 0.07], "orient": [0.0, 0.0, 3/2*np.pi],
+                "door_marker_texture": 'materials/textures/marker6x6_1.png'},
         ])
-
+        '''''''node.register_printers([
+            {"marker_id": 1, "pos": [0.56, -0.35, 0.07], "orient": [0.0, 0.0, np.pi],
+             "door_marker_texture": 'materials/textures/marker6x6_1.png'},
+            {"marker_id": 2, "pos": [0.75, 0.1, 0.07], "orient": [0.0, 0.0, 3/2*np.pi],
+             "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+        ])'''
+    
     viewing_distance = 0.15
     node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
-    node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
+    #node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
 
     node.get_logger().info("Initial scan complete.")
+
+    # persist markers, offset config, and printer configs immediately (same as
+    # runDoubleTransfer.py) so the run* scripts can load them instead of
+    # re-scanning. Don't rely on the 5s auto-save timer alone — if the session
+    # ends before it fires, printer_state.json is left empty.
+    node.save_state()
+    node.get_logger().info("Saved marker/printer state to printer_state.json")
+
     run_command_menu(node)
 
 

@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""
+Approach the plate on a printer and pick it up, then stop.
+Set RUN_SIM = 1 for Gazebo (start scripts/launchVirtualRobot.sh first).
+"""
+
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import rclpy
+
+from ar4_automation.runner_common import (
+    start_node,
+    restore_saved_printers,
+    spawn_sim_printers,
+    sim_printer_specs,
+)
+
+# ---- Configuration ----
+RUN_SIM         = 0           # 1 = Gazebo (sim camera + spawned printers), 0 = hardware
+ROBOT           = 'lite6'     # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
+SOURCE_ID       = 1           # marker to pick the plate from
+# all motion and tilt angles come from the waypoint lists in
+# printerAutomation.__init__'s offset_configs
+
+
+def main():
+    rclpy.init()
+    node = start_node(sim=RUN_SIM, robot=ROBOT)
+    speed_scale = 0.15
+    node.moveit2.max_velocity = speed_scale
+    node.moveit2.max_acceleration = speed_scale
+    if RUN_SIM:
+        # spawn printers instead of loading the save file, its real-world
+        # poses don't match the sim scene
+        spawn_sim_printers(node, sim_printer_specs(ROBOT, 2))
+    else:
+        # save file restores marker poses, offset config, printer configs
+        if not node.load_state():
+            node.get_logger().error("No save file found — run printer_automation.py first to create one.")
+            return
+
+        # pin the source marker to its file pose. _follow_waypoints unlocks it
+        # only for the pickup scan (then re-locks), so moves can't drift it.
+        node.lock_marker(SOURCE_ID)
+
+        restore_saved_printers(node)
+
+    ok = node.pickupOnly(
+        source_id=SOURCE_ID,
+        wait_after_pickup=False,
+        wait_duration=10.0,
+    )
+    node.get_logger().info("pickupOnly succeeded." if ok else "pickupOnly failed.")
+
+
+if __name__ == '__main__':
+    main()

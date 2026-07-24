@@ -182,20 +182,23 @@ class printerAutomation(ArucoDetectionViewer):
 
             'printer_offset': {
                 'pickup': [
-                    {'description': 'scan the marker before approaching',
-                        'scan': 0.15},
-                    {'description': 'scan the marker before approaching',
-                        'scan': 0.15},
+                    
                     {'description': 'open gripper for the approach',
                         'gripper': 'open'},
+                    {'description': 'scan the marker before approaching',
+                        'scan': 0.15},
+                    {'description': 'scan the marker before approaching',
+                        'scan': 0.125},
                     {'description': 'approach standoff in front of the handle',
-                        'pos': np.array([0.0, 0.06, 0.15]), 'angle_deg': 0.0},
+                        'pos': np.array([0.0, 0.05, 0.125]), 'angle_deg': 0.0},
                     {'description': 'grasp pose at the handle',
-                        'pos': np.array([0.0, 0.06, 0.1]), 'angle_deg': 0.0},
+                        'pos': np.array([0.0, 0.05, 0.1]), 'angle_deg': 0.0},
                     {'description': 'grab the handle',
                         'gripper': 'close'},
+                    '''{'description': 'grasp pose at the handle',
+                        'pos': np.array([0.0, 0.05, 0.1]), 'angle_deg': -5.0},
                     {'description': 'lift / carry pose',
-                        'pos': np.array([0.0, 0.14, 0.11]), 'angle_deg': 0.0},
+                        'pos': np.array([0.0, 0.14, 0.1]), 'angle_deg': 0.0},'''
                 ],
                 'place': [
                     {'description': 'lift / carry pose',
@@ -250,18 +253,26 @@ class printerAutomation(ArucoDetectionViewer):
             },
             'box_offset': {
                 'pickup': [
-                    {'description': 'scan the marker before approaching',
-                        'scan': 0.15},
                     {'description': 'open gripper for the approach',
                         'gripper': 'open'},
+                    {'description': 'scan the marker before approaching',
+                        'scan': 0.15},
+                    {'description': 'scan the marker before approaching',
+                        'scan': 0.15},
+                    {'description': 'scan the marker before approaching',
+                        'scan': 0.125},
+                    {'description': 'scan the marker before approaching',
+                        'scan': 0.125},
                     {'description': 'approach standoff in front of the handle',
-                        'pos': np.array([0.0, 0.03, 0.15]), 'angle_deg': None},
+                        'pos': np.array([0.0, 0.05, 0.125]), 'angle_deg': 0.0},
                     {'description': 'grasp pose at the handle',
-                        'pos': np.array([0.0, 0.03, 0.102]), 'angle_deg': None},
+                        'pos': np.array([0.0, 0.05, 0.1]), 'angle_deg': 0.0},
                     {'description': 'grab the handle',
                         'gripper': 'close'},
+                    '''{'description': 'grasp pose at the handle',
+                        'pos': np.array([0.0, 0.05, 0.1]), 'angle_deg': -5.0},
                     {'description': 'lift / carry pose',
-                        'pos': np.array([0.0, 0.13, 0.102]), 'angle_deg': None},
+                        'pos': np.array([0.0, 0.14, 0.1]), 'angle_deg': 0.0},'''
                 ],
                 'place': [
                     {'description': 'lift / carry pose',
@@ -275,11 +286,11 @@ class printerAutomation(ArucoDetectionViewer):
                 ],
                 'scrape': [
                     {'description': 'scrape standoff along marker Z',
-                        'pos': np.array([0.0, 0.00, 0.26]), 'angle_deg': 5.0},
+                        'pos': np.array([0.0, -0.04, 0.37]), 'angle_deg': 5.0},
                     {'description': 'full scrape depth',
-                        'pos': np.array([0.0, 0.00, 0.10]), 'angle_deg': 5.0},
+                        'pos': np.array([0.0, -0.04, 0.08]), 'angle_deg': 5.0},
                     {'description': 'retract to standoff',
-                        'pos': np.array([0.0, 0.00, 0.26]), 'angle_deg': 5.0},
+                        'pos': np.array([0.0, -0.04, 0.37]), 'angle_deg': 5.0},
                 ],
             },
         }
@@ -290,6 +301,15 @@ class printerAutomation(ArucoDetectionViewer):
         # mount offset (m, base Z), both per robot
         self.offsetOri = self.robot_config['offset_ori']
         self.camera_z_offset = self.robot_config['camera_z_offset']
+
+        # optional in-session correction (EEF frame, metres) to the eef->camera
+        # translation, produced by calibrate_camera_offset(apply=True). None =
+        # trust the URDF/TF mount as-is. Applied to BOTH the scan-targeting
+        # backoff and the measured marker-in-base pose so a pickup uses it.
+        self._camera_offset_correction = None
+        # per-detection sample buffer for calibrate_camera_offset
+        self._calib_collect_id = None
+        self._calib_buf = []
 
         # state file, saved every 5s, loaded at startup
         self._state_save_path = os.path.join(_DATA_DIR, "printer_state.json")
@@ -329,20 +349,37 @@ class printerAutomation(ArucoDetectionViewer):
         # replay them instead of using flip-prone pose IK
         self._pickup_replay = None
 
-        # Gripper interface (robots without one configured run gripper-disabled)
+        # Gripper interface (robots without one configured run gripper-disabled).
+        # Two kinds: 'moveit_action' drives pymoveit2's GripperInterface (AR4);
+        # 'lite6_service' calls the xarm driver's open/close services (Lite 6).
         gripper_cfg = self.robot_config['gripper']
+        self.gripper = None
+        self._gripper_kind = None
+        self._gripper_open_client = None
+        self._gripper_close_client = None
         if gripper_cfg is None:
-            self.gripper = None
             self.gripper_disabled = True
             self.get_logger().info(
                 f"No gripper configured for robot '{robot}'; gripper commands are skipped."
             )
         else:
-            self.gripper = GripperInterface(
-                node=self,
-                callback_group=self._cb_group,
-                **gripper_cfg,
-            )
+            self._gripper_kind = gripper_cfg.get('kind', 'moveit_action')
+            if self._gripper_kind == 'lite6_service':
+                from xarm_msgs.srv import Call
+                self._gripper_open_client = self.create_client(
+                    Call, gripper_cfg['open_service'], callback_group=self._cb_group)
+                self._gripper_close_client = self.create_client(
+                    Call, gripper_cfg['close_service'], callback_group=self._cb_group)
+                self.get_logger().info(
+                    f"Lite 6 gripper via services {gripper_cfg['open_service']} / "
+                    f"{gripper_cfg['close_service']}."
+                )
+            else:
+                self.gripper = GripperInterface(
+                    node=self,
+                    callback_group=self._cb_group,
+                    **{k: v for k, v in gripper_cfg.items() if k != 'kind'},
+                )
 
     def _record_timing(self, call_chain: str, duration_s: float):
         """Append one timing row to the session CSV."""
@@ -384,7 +421,7 @@ class printerAutomation(ArucoDetectionViewer):
                 "positionInBase": entry['positionInBase'].tolist(),
                 "eulerInBase": entry['eulerInBase'].tolist(),
                 "dict_name": entry.get('dict_name', 'unknown'),
-                "marker_size": float(entry.get('marker_size', 0.03)),
+                "marker_size": float(entry.get('marker_size', 0.024)),
                 "estimated": bool(entry.get('estimated', False)),
             })
         try:
@@ -450,6 +487,11 @@ class printerAutomation(ArucoDetectionViewer):
                                     pos_in_camera, quat_in_camera):
         """Per-frame raw detection hook; writes a CSV row immediately, but
         only while a scanToMarker observation window is active."""
+        # feed the camera-offset calibration collector (raw, unfiltered base +
+        # camera-frame positions; the latter shows WHICH camera axis mismatches)
+        if self._calib_collect_id is not None and marker_id == self._calib_collect_id:
+            self._calib_buf.append((np.array(pos_in_base, dtype=float),
+                                    np.array(pos_in_camera, dtype=float)))
         if self._scan_log_marker_id is None:
             return
         if marker_id != self._scan_log_marker_id:
@@ -534,6 +576,57 @@ class printerAutomation(ArucoDetectionViewer):
         )
         return self._t_eef_cam
 
+    def _eef_to_camera_rotation(self):
+        """Rotation R_(eef<-camera) from TF, cached (rigid mount). None if TF
+        isn't up."""
+        if getattr(self, '_R_eef_cam', None) is not None:
+            return self._R_eef_cam
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.end_effector_name, self.camera_frame_name,
+                Time(), timeout=Duration(seconds=2.0))
+        except Exception:
+            return None
+        q = tf.transform.rotation
+        self._R_eef_cam = R.from_quat([q.x, q.y, q.z, q.w])
+        return self._R_eef_cam
+
+    def _base_from_eef_transform(self):
+        """(position, rotation) of the EEF in base_link from TF (latest), or
+        (None, None) if unavailable."""
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.base_link_name, self.end_effector_name,
+                Time(), timeout=Duration(seconds=0.2))
+        except Exception:
+            return None, None
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        return np.array([t.x, t.y, t.z]), R.from_quat([q.x, q.y, q.z, q.w])
+
+    def _base_from_eef_rotation(self):
+        """Rotation R_(base<-eef) from TF (latest available), or None."""
+        _pos, rot = self._base_from_eef_transform()
+        return rot
+
+    def _enrich_marker_pose(self, entry):
+        """Add the calibrated eef->camera translation correction to the measured
+        marker-in-base pose. A translation error delta (EEF frame) in the camera
+        mount biases the measurement by -R_(base<-eef) @ delta, so add it back."""
+        entry = super()._enrich_marker_pose(entry)
+        correction = getattr(self, '_camera_offset_correction', None)
+        if entry is None or correction is None:
+            return entry
+        R_be = self._base_from_eef_rotation()
+        if R_be is None:
+            return entry
+        entry['positionInBase'] = (np.asarray(entry['positionInBase'], dtype=float)
+                                   + R_be.apply(correction))
+        # keep the user-facing world position consistent (orientation unaffected)
+        R_BF_GF = R.from_euler("XYZ", self.frameRotationAngles, degrees=False)
+        entry['positionInWorld'] = R_BF_GF.apply(entry['positionInBase'])
+        return entry
+
     def _camera_view_pose(self, marker_pos, marker_euler, offset_pos, offset_ori):
         """EEF pose (pos, euler in base_link) that lands the CAMERA frame at
         offset_pos/offset_ori in the marker frame — so the camera link (not the
@@ -550,6 +643,9 @@ class printerAutomation(ArucoDetectionViewer):
         t_eef_cam = self._eef_to_camera_translation()
         if t_eef_cam is None:
             return cam_pos + np.array([0.0, 0.0, self.camera_z_offset]), eef_euler
+        # fold in the calibrated correction (EEF frame) if one is active
+        if self._camera_offset_correction is not None:
+            t_eef_cam = t_eef_cam + self._camera_offset_correction
         # forward: cam_pos = eef_pos + R_eef @ t_eef_cam
         #  =>      eef_pos = cam_pos - R_eef @ t_eef_cam
         R_eef = R.from_euler("XYZ", eef_euler, degrees=False)
@@ -602,8 +698,18 @@ class printerAutomation(ArucoDetectionViewer):
         n = len(waypoints)
         for i, wp in enumerate(waypoints):
             if 'scan' in wp:
-                if not self._scan_with_retries(markerID, float(wp['scan']), caller):
-                    return False
+                # a locked marker stays pinned everywhere except its own scan:
+                # unlock just for the observation so the camera can refresh it,
+                # then re-lock so subsequent moves can't drift it
+                was_locked = markerID in self.stream.locked_marker_ids
+                if was_locked:
+                    self.unlock_marker(markerID)
+                try:
+                    if not self._scan_with_retries(markerID, float(wp['scan']), caller):
+                        return False
+                finally:
+                    if was_locked:
+                        self.lock_marker(markerID)
                 continue
             if 'gripper' in wp:
                 if wp['gripper'] == 'close':
@@ -640,19 +746,51 @@ class printerAutomation(ArucoDetectionViewer):
 
     # ---- Gripper ----
 
+    def _call_gripper_service(self, client, label, timeout=5.0):
+        """Call an empty-request xarm Call service (open/close_lite6_gripper)
+        and wait on the result. Relies on the background executor to spin."""
+        if not client.wait_for_service(timeout_sec=timeout):
+            self.get_logger().error(
+                f"{label} gripper: service {client.srv_name} unavailable "
+                "(is the xarm driver running?)."
+            )
+            return False
+        from xarm_msgs.srv import Call
+        future = client.call_async(Call.Request())
+        deadline = time.time() + timeout
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.02)
+        if not future.done():
+            self.get_logger().error(f"{label} gripper: service call timed out.")
+            return False
+        resp = future.result()
+        if resp is not None and getattr(resp, 'ret', 0) != 0:
+            self.get_logger().warn(
+                f"{label} gripper: driver returned ret={resp.ret} "
+                f"msg='{getattr(resp, 'message', '')}'."
+            )
+            return False
+        return True
+
     def open_gripper(self):
         if self.gripper_disabled:
             self.get_logger().info("Gripper disabled — skipping open.")
             return
         self.get_logger().info("Opening gripper...")
-        self.gripper.open()
+        if self._gripper_kind == 'lite6_service':
+            self._call_gripper_service(self._gripper_open_client, "open")
+        else:
+            self.gripper.open()
 
     def close_gripper(self):
         if self.gripper_disabled:
             self.get_logger().info("Gripper disabled — skipping close.")
             return
         self.get_logger().info("Closing gripper...")
-        self.gripper.close()
+        if self._gripper_kind == 'lite6_service':
+            self._call_gripper_service(self._gripper_close_client, "close")
+        else:
+            self.gripper.close()
 
     # ---- Marker updates ----
 
@@ -748,7 +886,7 @@ class printerAutomation(ArucoDetectionViewer):
             entry = self._find_marker_entry(marker_id)
             if entry is None:
                 self.get_logger().error(f"Marker {marker_id} not found in found_markers. Register it first.")
-                return False
+                return False, False
 
             offsetPos = np.array([0.0, 0.0, viewing_distance])
             # place the camera frame (from TF, not the wrist) viewing_distance
@@ -1005,6 +1143,7 @@ class printerAutomation(ArucoDetectionViewer):
             (1.25 * viewing_distance, 1.0),
             (1.00 * viewing_distance, 1.0),
             (1.00 * viewing_distance, 1.0),
+            (1.00 * viewing_distance, 1.0),
         ]
 
         for i, (dist, pause) in enumerate(distances):
@@ -1163,6 +1302,331 @@ class printerAutomation(ArucoDetectionViewer):
 
         self.get_logger().info("scrapePlate: sequence complete.")
         return True
+
+    def pickupOnly(self, source_id, wait_after_pickup=False, wait_duration=60.0):
+        """Approach marker source_id and pick up the plate, then stop. Same
+        pickup step as scrapePlate's Step 1 — the plate is left in the gripper
+        (no scrape, no place-back)."""
+        self.get_logger().info(f"pickupOnly: source={source_id}")
+
+        # Step 1 – pick up plate from source (its pickup list scans the marker first)
+        self.get_logger().info(f"Step 1: picking up plate from marker {source_id}")
+        if not self.pickupPlate(markerID=source_id):
+            self.get_logger().error(
+                f"pickupOnly: pickupPlate failed for marker {source_id}. Aborting."
+            )
+            return False
+        if wait_after_pickup:
+            self.get_logger().info(
+                f"pickupOnly: waiting {wait_duration} s after pickup."
+            )
+            time.sleep(wait_duration)
+
+        self.get_logger().info("pickupOnly: sequence complete.")
+        return True
+
+    def _collect_marker_in_base(self, marker_id, window=1.5):
+        """Average the raw (unfiltered) marker detections over `window` seconds.
+        Returns (mean_pos_in_base, mean_pos_in_camera, n_samples); n=0 if the
+        marker wasn't seen. Requires markers unfrozen and marker_id unlocked so
+        detection runs."""
+        self._calib_buf = []
+        self._calib_collect_id = marker_id
+        deadline = time.time() + window
+        while time.time() < deadline:
+            time.sleep(0.05)
+        self._calib_collect_id = None
+        buf = self._calib_buf
+        self._calib_buf = []
+        if not buf:
+            return None, None, 0
+        mean_base = np.mean(np.stack([b for b, _c in buf]), axis=0)
+        mean_cam = np.mean(np.stack([c for _b, c in buf]), axis=0)
+        return mean_base, mean_cam, len(buf)
+
+    def _open_calibration_csv(self, marker_id):
+        """Open a timestamped per-pose CSV under data/logs and write the column
+        header. Rows are appended + flushed as each pose is captured, so an
+        interrupted run still keeps every pose collected so far. Returns
+        (file, writer, path) or (None, None, None) on failure."""
+        try:
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = os.path.join(_LOG_DIR, f"camera_offset_calib_m{marker_id}_{stamp}.csv")
+            f = open(path, "w", newline="")
+            w = csv.writer(f)
+            w.writerow(["pose_i", "tilt_deg", "az_deg", "dist_m", "n_frames",
+                        "Pmeas_x", "Pmeas_y", "Pmeas_z",
+                        "Pcam_x", "Pcam_y", "Pcam_z",
+                        "eef_x", "eef_y", "eef_z",
+                        "q_be_x", "q_be_y", "q_be_z", "q_be_w"])
+            f.flush()
+            self.get_logger().info(f"calibrate: streaming per-pose data to {path}")
+            return f, w, path
+        except Exception as ex:
+            self.get_logger().warn(f"_open_calibration_csv: could not open CSV ({ex}).")
+            return None, None, None
+
+    def _write_calibration_row(self, writer, f, s):
+        """Append one captured pose to the CSV and flush immediately."""
+        if writer is None:
+            return
+        P, C, e, q = s['P'], s['P_cam'], s['eef_pos'], s['quat']
+        writer.writerow([s['i'], s['tilt'], s['az'], round(s['dist'], 4), s['n'],
+                         round(float(P[0]), 6), round(float(P[1]), 6), round(float(P[2]), 6),
+                         round(float(C[0]), 6), round(float(C[1]), 6), round(float(C[2]), 6),
+                         round(float(e[0]), 6), round(float(e[1]), 6), round(float(e[2]), 6),
+                         round(float(q[0]), 6), round(float(q[1]), 6),
+                         round(float(q[2]), 6), round(float(q[3]), 6)])
+        f.flush()
+
+    def _finalize_calibration_csv(self, writer, f, per_pose_resid, delta, P_true,
+                                  cond, before_rms, after_rms, t_cur,
+                                  new_total_correction, eps=None, scale=None):
+        """Append the fit summary (and per-pose residuals) after the solve."""
+        if writer is None:
+            return
+        try:
+            writer.writerow([])
+            writer.writerow(["# per_pose_fit_resid_m", *np.round(per_pose_resid, 6).tolist()])
+            writer.writerow(["# delta_eef_m", *np.round(delta, 6).tolist()])
+            if eps is not None:
+                writer.writerow(["# eps_cam_deg", *np.round(np.degrees(eps), 4).tolist()])
+            if scale is not None:
+                writer.writerow(["# depth_scale_err", round(float(scale), 6)])
+            writer.writerow(["# P_true_base_m", *np.round(P_true, 6).tolist()])
+            writer.writerow(["# current_net_t_ec_m",
+                             *(np.round(t_cur, 6).tolist() if t_cur is not None else [])])
+            writer.writerow(["# new_total_correction_m", *np.round(new_total_correction, 6).tolist()])
+            writer.writerow(["# condition_number", round(float(cond), 3)])
+            writer.writerow(["# spread_rms_before_m", round(before_rms, 6),
+                             "spread_rms_after_m", round(after_rms, 6)])
+            f.flush()
+        except Exception as ex:
+            self.get_logger().warn(f"_finalize_calibration_csv: could not write summary ({ex}).")
+
+    def calibrate_camera_offset(self, marker_id, viewing_distances=(0.25, 0.20, 0.15),
+                                tilt_degs=(12.0, 18.0), azimuths_deg=(0.0, 90.0, 180.0, 270.0),
+                                apply=False):
+        """Estimate the eef->camera translation error from one STATIONARY marker.
+
+        Orbits the camera on a cone around the marker (keeping it centred while
+        varying wrist orientation) and records, per pose, the measured
+        marker-in-base pose P_i and the base<-eef rotation R_i. For a stationary
+        marker the true position P is constant, so P = P_i + R_i @ delta. Least-
+        squares over the orientation-diverse poses solves the 6 unknowns
+        [P, delta]; delta is the correction (EEF frame) to add to the camera
+        mount translation. Reports delta and the corrected net translation.
+
+        viewing_distances is swept FAR->NEAR so the marker is acquired well
+        inside the FOV at the first (farthest) pose before the closer, more
+        tilted poses run (like the scan/approach paths). Pass them large-to-small.
+
+        apply=False (default) only reports. apply=True installs delta for the
+        rest of the session (both scan targeting and measured marker poses).
+        Returns delta (3,) or None on failure.
+        """
+        entry = self._find_marker_entry(marker_id)
+        if entry is None:
+            self.get_logger().error(
+                f"calibrate_camera_offset: marker {marker_id} not found. Scan it first.")
+            return None
+        if marker_id in self.stream.locked_marker_ids:
+            self.get_logger().error(
+                f"calibrate_camera_offset: marker {marker_id} is locked — unlock it so "
+                "the camera can re-measure it across poses.")
+            return None
+
+        marker_pos = np.asarray(entry['positionInBase'], dtype=float)
+        marker_euler = np.asarray(entry['eulerInBase'], dtype=float)
+        offsetOri = np.asarray(self.offsetOri, dtype=float)
+
+        # measure raw (uncorrected) during the sweep; restore/replace afterwards
+        prior_correction = self._camera_offset_correction
+        self._camera_offset_correction = None
+
+        # build the cone of viewing poses, distance-major FAR->NEAR: acquire the
+        # marker head-on at the farthest standoff (safely in-FOV) first, then
+        # work inward, adding the tilted views (orientation diversity) at each
+        # distance. Closer+tilted poses that clip the FOV just get skipped, but
+        # the farther samples at that azimuth still cover them.
+        dists = sorted({float(d) for d in viewing_distances}, reverse=True)
+        poses = []
+        for dist in dists:
+            poses.append((0.0, 0.0, dist))          # head-on at this standoff
+            for th in tilt_degs:
+                for az in azimuths_deg:
+                    poses.append((th, az, dist))
+
+        # open the CSV up front so each pose is persisted as it lands
+        csv_file, csv_writer, save_path = self._open_calibration_csv(marker_id)
+
+        samples = []  # dicts: pose params, P_meas, base<-eef rotation, eef FK pos
+        try:
+            for i, (theta_deg, azim_deg, dist) in enumerate(poses):
+                # tilt the view direction theta towards azimuth az with ZERO net
+                # roll about the optical axis (conjugated rotation). A plain
+                # Rz(az)*Ry(tilt) would also spin the wrist by the full azimuth
+                # (90/180/270 deg!) between poses.
+                Rcone = (R.from_euler('z', azim_deg, degrees=True)
+                         * R.from_euler('y', theta_deg, degrees=True)
+                         * R.from_euler('z', -azim_deg, degrees=True))
+                offset_pos = Rcone.apply([0.0, 0.0, dist])
+                offset_ori = (Rcone * R.from_euler("XYZ", offsetOri, degrees=False)).as_euler("XYZ")
+
+                eef_bad_pos, eef_bad_euler = self._camera_view_pose(
+                    marker_pos, marker_euler, offset_pos, offset_ori)
+                goodPos, goodEuler = self.to_good_frame(eef_bad_pos, eef_bad_euler)
+
+                self.get_logger().info(
+                    f"calibrate: pose {i+1}/{len(poses)} (tilt={theta_deg:.0f} deg "
+                    f"az={azim_deg:.0f} deg dist={dist:.3f})")
+                self.freeze_markers()
+                move_ok = self.move_to_pose(goodPos, goodEuler)
+                self.unfreeze_markers()   # sleeps 0.5s for the pipeline to drain
+                if not move_ok:
+                    self.get_logger().warn("calibrate: pose unreachable, skipping.")
+                    continue
+
+                time.sleep(0.5)  # let the low-pass settle on the fresh view
+                P_meas, P_cam, n = self._collect_marker_in_base(marker_id, window=1.5)
+                eef_pos, R_be = self._base_from_eef_transform()
+                if P_meas is None or R_be is None:
+                    self.get_logger().warn(
+                        f"calibrate: marker not seen / no TF at this pose "
+                        f"(samples={n}), skipping.")
+                    continue
+                s = {
+                    'i': i, 'tilt': theta_deg, 'az': azim_deg, 'dist': dist,
+                    'n': n, 'P': np.asarray(P_meas, dtype=float),
+                    'P_cam': np.asarray(P_cam, dtype=float),
+                    'R': R_be.as_matrix(), 'quat': R_be.as_quat(),
+                    'eef_pos': eef_pos,
+                }
+                samples.append(s)
+                self._write_calibration_row(csv_writer, csv_file, s)  # flush per pose
+                # ideal view: marker centred at [0,0,dist] in the camera frame;
+                # the deviation shows which camera axis is off at this pose
+                cam_dev = np.asarray(P_cam, dtype=float) - np.array([0.0, 0.0, dist])
+                self.get_logger().info(
+                    f"calibrate:   captured P_base={np.round(P_meas,4).tolist()} "
+                    f"P_cam={np.round(P_cam,4).tolist()} "
+                    f"(cam deviation from ideal {np.round(cam_dev,4).tolist()}, "
+                    f"{n} raw frames) -> saved")
+        finally:
+            # sweep done; restore prior state (apply step below may overwrite)
+            self._camera_offset_correction = prior_correction
+
+        if len(samples) < 3:
+            if csv_file is not None:
+                csv_file.close()
+            self.get_logger().error(
+                f"calibrate_camera_offset: only {len(samples)} usable pose(s); "
+                "need >=3 with varied orientation. Aborting. "
+                f"(raw poses saved to {save_path})")
+            return None
+
+        # Extended linear model. True camera extrinsic errors: translation
+        # delta (EEF frame), small-angle rotation eps (camera frame), and a
+        # depth/size scale s (aruco range scales with the configured marker
+        # size, so a size error appears as a range-proportional bias). With
+        # p_i the marker measured in the camera frame:
+        #   P                    = t_i + R_i (t_ec + delta + R_ec (I+[eps]x)(1+s) p_i)
+        #   P_meas_i (pipeline)  = t_i + R_i (t_ec + R_ec p_i)
+        #   => P_meas_i = P - R_i delta + R_i R_ec [p_i]x eps - (R_i R_ec p_i) s
+        # Linear in x = [P(3), delta(3), eps(3), s] -> one lstsq. Separating
+        # eps and s stops them from contaminating delta (they otherwise show
+        # up as a spurious range-dependent translation).
+        R_ec_rot = self._eef_to_camera_rotation()
+        R_ec = R_ec_rot.as_matrix() if R_ec_rot is not None else None
+        n_unk = 10 if R_ec is not None else 6
+        if R_ec is None:
+            self.get_logger().warn(
+                "calibrate: eef->camera rotation unavailable from TF — falling "
+                "back to translation-only model (rotation/scale errors will "
+                "leak into delta).")
+        A = np.zeros((3 * len(samples), n_unk))
+        b = np.zeros(3 * len(samples))
+        for k, s in enumerate(samples):
+            A[3*k:3*k+3, 0:3] = np.eye(3)
+            A[3*k:3*k+3, 3:6] = -s['R']
+            if R_ec is not None:
+                p = s['P_cam']
+                px = np.array([[0.0, -p[2], p[1]],
+                               [p[2], 0.0, -p[0]],
+                               [-p[1], p[0], 0.0]])
+                RiRec = s['R'] @ R_ec
+                A[3*k:3*k+3, 6:9] = RiRec @ px
+                A[3*k:3*k+3, 9] = -(RiRec @ p)
+            b[3*k:3*k+3] = s['P']
+        # rcond=None truncates near-null directions (e.g. roll about the
+        # optical axis, unobservable with the marker centred) to the
+        # minimum-norm solution instead of letting them blow up.
+        x, _res, rank, sing = np.linalg.lstsq(A, b, rcond=None)
+        P_true = x[0:3]
+        delta = x[3:6]
+        eps = x[6:9] if n_unk == 10 else None      # rad, camera frame
+        scale = float(x[9]) if n_unk == 10 else None  # fractional depth error
+        # condition of the retained (rank) subspace; sing[rank-1] is the
+        # smallest singular value actually used
+        cond = sing[0] / sing[rank - 1] if rank > 0 and sing[rank - 1] > 0 else np.inf
+
+        # error signatures: raw spread (before) vs fit residual (after)
+        meas = np.stack([s['P'] for s in samples])
+        before_rms = float(np.sqrt(np.mean(np.sum((meas - meas.mean(axis=0))**2, axis=1))))
+        pred = (A @ x).reshape(-1, 3)
+        per_pose_resid = np.linalg.norm(meas - pred, axis=1)  # m, one per sample
+        after_rms = float(np.sqrt(np.mean(per_pose_resid**2)))
+
+        t_cur = self._eef_to_camera_translation()
+        base = prior_correction if prior_correction is not None else np.zeros(3)
+        new_total_correction = base + delta
+        corrected_net = (t_cur + new_total_correction) if t_cur is not None else None
+
+        # append the fit summary to the already-streamed CSV, then close it
+        self._finalize_calibration_csv(
+            csv_writer, csv_file, per_pose_resid, delta, P_true, cond,
+            before_rms, after_rms, t_cur, new_total_correction,
+            eps=eps, scale=scale)
+        if csv_file is not None:
+            csv_file.close()
+
+        eps_txt = (f"{np.round(np.degrees(eps), 2).tolist()} deg (camera frame)"
+                   if eps is not None else "not fitted (no R_ec)")
+        scale_txt = (f"{scale*100:+.2f} % (negative => camera reports depth LONG => "
+                     "configured marker size too large; actual size ~= configured * (1+s))"
+                     if scale is not None else "not fitted (no R_ec)")
+        self.get_logger().info(
+            "calibrate_camera_offset RESULT:\n"
+            f"  usable poses      : {len(samples)}/{len(poses)}\n"
+            f"  delta (EEF, m)    : {np.round(delta, 4).tolist()}  (this run)\n"
+            f"  |delta|           : {np.linalg.norm(delta)*1000:.1f} mm\n"
+            f"  mount rot eps     : {eps_txt}\n"
+            f"  depth scale err   : {scale_txt}\n"
+            f"  marker spread RMS : before={before_rms*1000:.1f} mm  after={after_rms*1000:.1f} mm\n"
+            f"  A condition #     : {cond:.1f} (retained subspace, rank {rank}/{n_unk}; "
+            f"large => poor pose diversity)\n"
+            f"  current net t_ec  : {np.round(t_cur,4).tolist() if t_cur is not None else 'N/A'} m\n"
+            f"  corrected net t_ec: {np.round(corrected_net,4).tolist() if corrected_net is not None else 'N/A'} m\n"
+            f"  data saved to     : {save_path}\n"
+            f"  -> to make permanent: fix the marker size / intrinsics first if the "
+            f"scale error is large, then shift the camera mount origin in the URDF "
+            f"by delta (EEF frame) and rotate it by eps (camera frame)."
+        )
+        if after_rms > before_rms:
+            self.get_logger().warn(
+                "calibrate_camera_offset: fit did NOT reduce the marker spread — "
+                "the residual may be orientation error, not translation. Treat delta with caution.")
+
+        if apply:
+            self._camera_offset_correction = new_total_correction
+            self.get_logger().warn(
+                f"calibrate_camera_offset: APPLIED correction "
+                f"{np.round(new_total_correction,4).tolist()} m for this session "
+                "(scan targeting + measured marker poses).")
+        else:
+            self.get_logger().info(
+                "calibrate_camera_offset: report only (apply=False); nothing changed.")
+        return delta
 
     @_timed
     def go_home(self, velocity_scaling=0.2):

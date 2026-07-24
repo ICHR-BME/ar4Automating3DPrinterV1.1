@@ -89,7 +89,7 @@ class CameraViewer(Node):
             self._get_aruco_dict('DICT_4X4_50'),
             self._get_aruco_dict('DICT_6X6_50'),
         ]
-        self.marker_sizes = [0.03, 0.05]  # Sizes in meters, indexed by dictionary
+        self.marker_sizes = [0.024, 0.05]  # Sizes in meters, indexed by dictionary (0.024 caliper-measured 2026-07-24)
         self.aruco_params = cv2.aruco.DetectorParameters_create()
         self.last_marker_count = 0
         self._last_log_time = 0.0

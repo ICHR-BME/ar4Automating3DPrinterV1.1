@@ -1,0 +1,14 @@
+timestamp,call_chain,duration_s
+2026-07-23T14:14:31.229104,scanMarkerApproach > scanToMarker,5.4368
+2026-07-23T14:14:36.097600,scanMarkerApproach > scanToMarker,2.8683
+2026-07-23T14:14:38.879015,scanMarkerApproach > scanToMarker,1.7812
+2026-07-23T14:14:41.696688,scanMarkerApproach > scanToMarker,1.8176
+2026-07-23T14:14:44.003885,scanMarkerApproach > scanToMarker,1.3071
+2026-07-23T14:14:45.006250,scanMarkerApproach,19.2139
+2026-07-23T14:14:53.251280,scanMarkerApproach > scanToMarker,8.2436
+2026-07-23T14:15:00.192974,scanMarkerApproach > scanToMarker,4.9302
+2026-07-23T14:15:03.488341,scanMarkerApproach > scanToMarker,2.2651
+2026-07-23T14:15:06.399712,scanMarkerApproach > scanToMarker,1.9112
+2026-07-23T14:15:08.705055,scanMarkerApproach > scanToMarker,1.3052
+2026-07-23T14:15:09.705214,scanMarkerApproach,24.6976
+2026-07-23T14:15:14.711885,startup,51.379

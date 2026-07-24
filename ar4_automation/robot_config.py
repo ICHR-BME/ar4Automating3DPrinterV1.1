@@ -24,7 +24,10 @@ ROBOT_CONFIGS = {
         'camera_info_topic': "/rgbd_camera/camera_info",
         # camera sits below the gripper; raise the EE this much (m) when scanning
         'camera_z_offset': 0.06,
+        # 'moveit_action' kind: driven through pymoveit2's GripperInterface
+        # (a GripperCommand action). The remaining keys are its constructor args.
         'gripper': {
+            'kind': 'moveit_action',
             'gripper_joint_names': ["gripper_jaw1_joint"],
             'open_gripper_joint_positions': [0.00],
             'closed_gripper_joint_positions': [0.0145],
@@ -55,8 +58,19 @@ ROBOT_CONFIGS = {
         #'camera_z_offset': 0.04,
         #It is 0.06 for the x arm lite 6 custom gripper
         'camera_z_offset': 0.06,
-        # no gripper wired up yet: gripper commands are skipped
-        'gripper': None,
+        # Stock UFACTORY Lite 6 gripper. On real hardware it is NOT a MoveIt
+        # GripperCommand controller (that path is sim/fake only) — the xarm
+        # driver exposes empty-request Call services instead. 'lite6_service'
+        # kind routes open_gripper/close_gripper to these. In sim the gripper is
+        # force-disabled (make_sim_node), so these services are only used on hw.
+        # NOTE: namespace is 'ufactory' (hw_ns default in lite6_moveit_realmove
+        # launch), NOT 'xarm'. The services must also be enabled in
+        # xarm_user_params.yaml (open/close_lite6_gripper: true) — off by default.
+        'gripper': {
+            'kind': 'lite6_service',
+            'open_service': '/ufactory/open_lite6_gripper',
+            'close_service': '/ufactory/close_lite6_gripper',
+        },
         # good frame == base frame for the lite6 (robot spawns at the world
         # origin with zero yaw, so no AR4-style 90 deg convention)
         'frame_rotation_angles': np.array([0.0, 0.0, 0.0]),

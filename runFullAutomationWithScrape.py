@@ -10,20 +10,18 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import numpy as np
 import rclpy
 import yaml
 
 from ar4_automation.runner_common import start_webcam_node, restore_saved_printers
-from ar4_automation.simulated3DPrinter import Simulated3DPrinter
 from ar4_automation.printerclass import BambuPrinter, load_printer_config, strip_startup_gcode
 
 
 # ---- Configuration ----
 ROBOT           = 'ar4'       # 'ar4' | 'lite6' | 'xarm6' (see ar4_automation/robot_config.py).
-                              # NOTE: the estimated-marker / register_printers
-                              # positions below are hardcoded AR4-frame values;
-                              # re-tune them for the target robot's good frame.
+                              # Marker poses and printer configs come from the
+                              # per-robot save file (run scanFor2Markers.py for
+                              # this ROBOT first) — no hardcoded frame values here.
 SOURCE_ID       = 2           # marker to pick the plate from (and return it to)
 SCRAPE_ID       = 1           # marker whose surface gets scraped against
 SCAN_DISTANCE   = 0.15        # marker scan distance (m)
@@ -31,7 +29,7 @@ SCAN_DISTANCE   = 0.15        # marker scan distance (m)
 # list of the scrape marker's offset config in printerAutomation.__init__
 
 # credentials come from printer_config.yaml (copy the example file)
-PRINTER_NAME = "a1_mini"
+PRINTER_NAME = "a1"
 
 # lists print folder, file names and repeat counts (see print_queue.yaml)
 PRINT_QUEUE_FILE = "print_queue.yaml"
@@ -131,33 +129,17 @@ def main():
             raise RuntimeError(f"Upload failed for {local_file_prepped}")
         remote_names[local_file] = os.path.basename(local_file_prepped)
 
-    # Marker setup (mirrors scanFor2Markers.py hardware path). Marker 1
-    # (scrape) is scanned once then locked so every cycle uses the same pose;
-    # marker 2 (pickup source) stays unlocked and is re-detected each cycle.
+    # Marker setup. Marker poses, offset config, and printer configs all come
+    # from the per-robot save file (load_state + restore_saved_printers above),
+    # created by running scanFor2Markers.py for this ROBOT first — so this runs
+    # on any arm without hardcoded, AR4-frame seed poses. Marker 1 (scrape) is
+    # scanned once then locked so every cycle uses the same pose; marker 2
+    # (pickup source) stays unlocked and is re-detected each cycle.
     viewing_distance = SCAN_DISTANCE
-    node.marker_offset_config[1] = 'box_offset'
-    node.marker_offset_config[2] = 'printer_offset'
-
-    printer2 = Simulated3DPrinter(
-        node=node, pos=[0.40, -0.3, 0.065], orient=[0.0, 0.0, np.pi],
-        door_marker_texture='materials/textures/marker6x6_1.png',
-    )
-    bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
-    node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
-
-    printer3 = Simulated3DPrinter(
-        node=node, pos=[0.65, 0.1, 0.075], orient=[0.0, 0.0, 3/2*np.pi],
-        door_marker_texture='materials/textures/marker6x6_2.png',
-    )
-    bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
-    node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
-
-    node.register_printers([
-        {"marker_id": 1, "pos": [0.48, -0.3, 0.07], "orient": [0.0, 0.0, np.pi],
-         "door_marker_texture": 'materials/textures/marker6x6_1.png'},
-        {"marker_id": 2, "pos": [0.65, 0.1, 0.07], "orient": [0.0, 0.0, 3/2*np.pi],
-         "door_marker_texture": 'materials/textures/marker6x6_2.png'},
-    ])
+    # re-assert the scrape/source offset configs in case the save file predates
+    # them (load_state restores whatever was saved).
+    node.marker_offset_config[SCRAPE_ID] = 'box_offset'
+    node.marker_offset_config[SOURCE_ID] = 'printer_offset'
 
     node.get_logger().info("Scanning for scrape marker 1...")
     node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
