@@ -21,6 +21,7 @@ from ar4_automation.runner_common import (
     wait_for_joint_states,
     run_command_menu,
     sim_printer_specs,
+    register_manual_estimates,
 )
 from ar4_automation.simulated3DPrinter import Simulated3DPrinter
 
@@ -29,6 +30,11 @@ def main():
     rclpy.init()
     runVirtual = 0    # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
     robot = 'xarm6'   # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
+    # 1 = hardware initial estimates come from data/manual_marker_estimates.json
+    # (written by teachMarkersByHand.py: drag-teach the arm until the camera
+    # sees each marker); markers not in that file keep the geometric estimates
+    # from the printer models below
+    use_manual_estimates = 1
 
     if runVirtual:
         node = printerAutomation(calibration_mode=False, stream_source="ros", robot=robot)
@@ -75,14 +81,19 @@ def main():
     node.marker_offset_config[1] = 'box_offset'
     node.marker_offset_config[2] = 'printer_offset'
 
-    # register the geometric door-marker estimates (after load_state so stale
-    # saved poses can't shadow them), then scan all markers
-    bad_pos, bad_euler = printer1.get_door_marker_pose_in_base()
-    node.register_estimated_marker(marker_id=0, bad_pos=bad_pos, bad_euler=bad_euler)
-    bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
-    node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
-    bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
-    node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
+    # register the initial door-marker estimates (after load_state so stale
+    # saved poses can't shadow them), then scan all markers: hand-taught
+    # estimates where available, geometric estimates from the printer models
+    # for the rest
+    manual_ids = []
+    if not runVirtual and use_manual_estimates:
+        manual_ids = register_manual_estimates(node)
+
+    for marker_id, printer in ((0, printer1), (1, printer2), (2, printer3)):
+        if marker_id in manual_ids:
+            continue
+        bad_pos, bad_euler = printer.get_door_marker_pose_in_base()
+        node.register_estimated_marker(marker_id=marker_id, bad_pos=bad_pos, bad_euler=bad_euler)
 
     if not runVirtual:
         node.register_printers([

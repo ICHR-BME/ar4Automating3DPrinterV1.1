@@ -18,6 +18,7 @@ from ar4_automation.runner_common import (
     restore_saved_printers,
     spawn_sim_printers,
     sim_printer_specs,
+    require_scanned_markers,
 )
 
 
@@ -41,7 +42,11 @@ def main():
             return
 
         restore_saved_printers(node)
-    
+        # only officially scanned poses (scanFor3Markers.py) are accepted here
+        # — hand-taught/geometric estimates must go through a scan first
+        if not require_scanned_markers(node, [0, 1, 2]):
+            return
+
     for i in range(NUM_REPEATS):
         node.get_logger().info(f"=== Iteration {i + 1}/{NUM_REPEATS} ===")
 

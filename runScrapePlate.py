@@ -16,6 +16,7 @@ from ar4_automation.runner_common import (
     restore_saved_printers,
     spawn_sim_printers,
     sim_printer_specs,
+    require_scanned_markers,
 )
 
 # ---- Configuration ----
@@ -46,6 +47,10 @@ def main():
             return
 
         restore_saved_printers(node)
+        # only officially scanned poses (scanFor2Markers.py) are accepted here
+        # — hand-taught/geometric estimates must go through a scan first
+        if not require_scanned_markers(node, [SOURCE_ID, SCRAPE_ID]):
+            return
 
     # the post-scrape wrist roll is a {'rotate': deg} entry in the scrape
     # waypoint list (offset_configs), not an argument here

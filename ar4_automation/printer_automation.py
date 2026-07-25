@@ -199,8 +199,8 @@ class printerAutomation(ArucoDetectionViewer):
                     #    'pos': np.array([0.0, 0.39, 0.20]), 'angle_deg': -90.0},
                 ],
                 'place': [
-                    {'description': 'lift / carry pose',
-                        'pos': np.array([0.0, 0.40, 0.20]), 'angle_deg': -30.0},
+                    #{'description': 'lift / carry pose',
+                    #    'pos': np.array([0.0, 0.40, 0.20]), 'angle_deg': -30.0},
                     {'description': 'lift / carry pose',
                         'pos': np.array([0.0, 0.35, 0.10]), 'angle_deg': 0.0},
                     {'description': 'lift / carry pose',

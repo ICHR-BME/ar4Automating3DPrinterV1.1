@@ -13,7 +13,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rclpy
 import yaml
 
-from ar4_automation.runner_common import start_webcam_node, restore_saved_printers
+from ar4_automation.runner_common import (
+    start_webcam_node,
+    restore_saved_printers,
+    register_manual_estimates,
+)
 from ar4_automation.printerclass import BambuPrinter, load_printer_config, strip_startup_gcode
 
 
@@ -25,6 +29,10 @@ ROBOT           = 'ar4'       # 'ar4' | 'lite6' | 'xarm6' (see ar4_automation/ro
 SOURCE_ID       = 2           # marker to pick the plate from (and return it to)
 SCRAPE_ID       = 1           # marker whose surface gets scraped against
 SCAN_DISTANCE   = 0.15        # marker scan distance (m)
+# 1 = seed the initial scans from data/manual_marker_estimates.json (written
+# by teachMarkersByHand.py), overriding any saved poses; with estimates for
+# both SOURCE_ID and SCRAPE_ID a save file is optional
+USE_MANUAL_ESTIMATES = 1
 # scrape motion (standoff/depth/retract) comes from the 'scrape' waypoint
 # list of the scrape marker's offset config in printerAutomation.__init__
 
@@ -85,13 +93,25 @@ def main():
     node = start_webcam_node(robot=ROBOT)
 
     # Load save file — restores marker poses, offset config, and printer configs
-    if not node.load_state():
+    have_save = node.load_state()
+    if have_save:
+        restore_saved_printers(node)
+
+    # hand-taught estimates (after load_state so stale saved poses can't
+    # shadow them) — the official scanMarkerApproach calls below re-measure
+    # both markers before any motion uses them
+    manual_ids = []
+    if USE_MANUAL_ESTIMATES:
+        manual_ids = register_manual_estimates(
+            node, marker_ids=[SOURCE_ID, SCRAPE_ID]
+        )
+    if not have_save and not {SOURCE_ID, SCRAPE_ID}.issubset(manual_ids):
         node.get_logger().error(
-            "No save file found — run printer_automation.py first to create one."
+            f"No save file and no hand-taught estimates for markers "
+            f"{sorted({SOURCE_ID, SCRAPE_ID})} — run scanFor2Markers.py or "
+            f"teachMarkersByHand.py first."
         )
         return
-
-    restore_saved_printers(node)
 
     # Connect the Bambu printer and register it with the node.
     printer_cfg = load_printer_config(PRINTER_NAME)

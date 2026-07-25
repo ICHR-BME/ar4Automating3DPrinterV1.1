@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Shared setup/menu boilerplate for the run*/scanFor* entry scripts."""
 
+import json
 import math
+import os
 import time
 import threading
 
@@ -198,6 +200,64 @@ def restore_saved_printers(node):
             node.register_estimated_marker(
                 marker_id=p["marker_id"], bad_pos=bad_pos, bad_euler=bad_euler
             )
+
+
+# hand-taught estimates written by teachMarkersByHand.py
+MANUAL_ESTIMATES_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "manual_marker_estimates.json",
+)
+
+
+def register_manual_estimates(node, marker_ids=None):
+    """Register the hand-taught marker estimates from teachMarkersByHand.py
+    as initial scan seeds (call after load_state so stale saved poses can't
+    shadow them). marker_ids, when given, limits which IDs are taken from the
+    file. Returns the list of marker IDs registered — empty if the file is
+    missing or unreadable (a warning is logged; the caller falls back to its
+    own seeds)."""
+    try:
+        with open(MANUAL_ESTIMATES_PATH) as f:
+            markers = json.load(f)["markers"]
+    except (OSError, KeyError, ValueError) as e:
+        node.get_logger().warn(
+            f"Could not load manual estimates from {MANUAL_ESTIMATES_PATH} "
+            f"({e}). Run teachMarkersByHand.py to create them."
+        )
+        return []
+
+    registered = []
+    for m in markers:
+        marker_id = int(m["id"])
+        if marker_ids is not None and marker_id not in marker_ids:
+            continue
+        node.register_estimated_marker(
+            marker_id=marker_id,
+            bad_pos=m["positionInBase"],
+            bad_euler=m["eulerInBase"],
+        )
+        registered.append(marker_id)
+    return registered
+
+
+def require_scanned_markers(node, marker_ids):
+    """True iff every marker has a real scanned (non-estimated) saved pose.
+
+    The run* scripts that move on markers without their own initial scan must
+    work from measurements made by an official scan procedure
+    (scanFor2Markers.py / scanFor3Markers.py) — hand-taught or geometric
+    estimates are not accepted there. Logs an error naming the offenders."""
+    missing = [mid for mid in marker_ids
+               if (entry := node._find_marker_entry(mid)) is None
+               or entry.get('estimated', False)]
+    if missing:
+        node.get_logger().error(
+            f"Marker(s) {missing} have no scanned pose in the save file — "
+            f"run scanFor2Markers.py / scanFor3Markers.py first. Estimates "
+            f"(hand-taught or geometric) are not accepted by this script."
+        )
+        return False
+    return True
 
 
 # ---------------------------------------------------------------------------

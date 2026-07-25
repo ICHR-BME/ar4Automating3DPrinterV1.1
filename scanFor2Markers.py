@@ -7,7 +7,6 @@ Set runVirtual = 1 in main() to run against Gazebo
 scripts/launchVirtualRobot.sh) instead of the physical robot + webcam.
 """
 
-import json
 import sys
 import os
 
@@ -23,6 +22,7 @@ from ar4_automation.runner_common import (
     wait_for_joint_states,
     run_command_menu,
     sim_printer_specs,
+    register_manual_estimates,
 )
 from ar4_automation.simulated3DPrinter import Simulated3DPrinter
 
@@ -35,9 +35,6 @@ def main():
     # (written by teachMarkersByHand.py: drag-teach the arm until the camera
     # sees each marker) instead of the hardcoded printer coordinates below
     use_manual_estimates = 1
-    manual_estimates_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "data", "manual_marker_estimates.json"
-    )
     if runVirtual:
         node = printerAutomation(calibration_mode=False, stream_source="ros", robot=robot)
         node.gripper_disabled = True
@@ -50,7 +47,7 @@ def main():
     # stack default is 0.9 (pose_reader.py). Applies to every planned move
     # here (go_home still overrides with its own velocity_scaling arg, then
     # restores to this value).
-    speed_scale = 0.2
+    speed_scale = 0.3
     node.moveit2.max_velocity = speed_scale
     node.moveit2.max_acceleration = speed_scale
 
@@ -107,27 +104,12 @@ def main():
 
     # register the initial door-marker estimates (after load_state so stale
     # saved poses can't shadow them), then scan both markers
-    manual_markers = None
+    manual_ids = []
     if not runVirtual and use_manual_estimates:
-        try:
-            with open(manual_estimates_path) as f:
-                manual_markers = json.load(f)["markers"]
-        except (OSError, KeyError, ValueError) as e:
-            node.get_logger().warn(
-                f"Could not load manual estimates from {manual_estimates_path} "
-                f"({e}) — falling back to the hardcoded printer coordinates. "
-                f"Run teachMarkersByHand.py to create them."
-            )
-
-    if manual_markers:
         # hand-taught estimates from teachMarkersByHand.py
-        for m in manual_markers:
-            node.register_estimated_marker(
-                marker_id=int(m["id"]),
-                bad_pos=m["positionInBase"],
-                bad_euler=m["eulerInBase"],
-            )
-    else:
+        manual_ids = register_manual_estimates(node)
+
+    if not manual_ids:
         # geometric estimates from the printer models above
         bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
         node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)

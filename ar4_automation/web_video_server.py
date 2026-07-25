@@ -218,8 +218,16 @@ class WebVideoStream:
             if camera_index is None:
                 camera_index = select_camera(preset_keyword=camera_keyword)
             assert camera_index is not None, "No camera selected"
+            self._camera_index = camera_index
             self.cap = cv2.VideoCapture(camera_index)
             assert self.cap.isOpened(), f"Could not open camera {camera_index}"
+            # latest-frame handoff between the capture thread and run():
+            # capture reads as fast as the driver delivers (so the V4L2 buffer
+            # can never accumulate stale frames) and only the newest frame is
+            # kept; run() blocks on the condition instead of sleeping.
+            self._capture_cond = threading.Condition()
+            self._latest_frame = None
+            self._capture_seq = 0
             ret, frame = self.cap.read()
             assert ret, "Could not read initial frame"
             h, w = frame.shape[:2]
@@ -600,21 +608,58 @@ class WebVideoStream:
 
     # ---- Blocking run ----
 
+    def _capture_loop(self):
+        """Read frames as fast as the camera delivers them (cap.read() blocks
+        on the driver, so this needs no pacing) and publish only the newest
+        one. On sustained read failures (USB glitch) reopen the device instead
+        of silently freezing the feed."""
+        _log = self.log_fn or print
+        failures = 0
+        while True:
+            ret, frame = self.cap.read()
+            if not ret:
+                failures += 1
+                if failures == 1:
+                    _log("Webcam read failed — camera glitch? retrying...")
+                if failures >= 30:
+                    _log(f"Webcam dead for {failures} reads — reopening "
+                         f"/dev/video{self._camera_index}")
+                    self.cap.release()
+                    self.cap = cv2.VideoCapture(self._camera_index)
+                    failures = 0
+                # only the failure path sleeps: a dead camera returns
+                # instantly and would otherwise hot-spin
+                time.sleep(0.05)
+                continue
+            if failures:
+                _log("Webcam recovered.")
+                failures = 0
+            with self._capture_cond:
+                self._latest_frame = frame
+                self._capture_seq += 1
+                self._capture_cond.notify_all()
+
     def run(self):
         if self.source == "webcam":
-            dt = 1.0 / self.fps
+            threading.Thread(target=self._capture_loop, daemon=True).start()
+            last_seq = 0
             while True:
-                try:
-                    ret, frame = self.cap.read()
-                    if not ret:
-                        time.sleep(0.1)
+                with self._capture_cond:
+                    # block until the capture thread hands over a NEW frame;
+                    # if detection runs slower than the camera, intermediate
+                    # frames are simply skipped (never queued, never stale)
+                    got = self._capture_cond.wait_for(
+                        lambda: self._capture_seq != last_seq, timeout=1.0)
+                    if not got:
                         continue
+                    frame = self._latest_frame
+                    last_seq = self._capture_seq
+                try:
                     self._build_frame(frame)
                 except Exception as e:
                     _log = self.log_fn or print
                     _log(f'Webcam frame error (recovering): {e}')
-                time.sleep(dt)
-            
+
         else:
             self._rclpy.spin(self._ros_node)
             
