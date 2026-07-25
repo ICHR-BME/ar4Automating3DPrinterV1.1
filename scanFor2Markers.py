@@ -7,6 +7,7 @@ Set runVirtual = 1 in main() to run against Gazebo
 scripts/launchVirtualRobot.sh) instead of the physical robot + webcam.
 """
 
+import json
 import sys
 import os
 
@@ -29,7 +30,14 @@ from ar4_automation.simulated3DPrinter import Simulated3DPrinter
 def main():
     rclpy.init()
     runVirtual = 0    # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
-    robot = 'lite6'     # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
+    robot = 'xarm6'     # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
+    # 1 = hardware initial estimates come from data/manual_marker_estimates.json
+    # (written by teachMarkersByHand.py: drag-teach the arm until the camera
+    # sees each marker) instead of the hardcoded printer coordinates below
+    use_manual_estimates = 1
+    manual_estimates_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "data", "manual_marker_estimates.json"
+    )
     if runVirtual:
         node = printerAutomation(calibration_mode=False, stream_source="ros", robot=robot)
         node.gripper_disabled = True
@@ -77,7 +85,7 @@ def main():
             door_marker_texture='materials/textures/marker6x6_1.png',
         )
         printer3 = Simulated3DPrinter(
-            node=node, pos=[0.30, -0.1, 0.1], orient=[0.0, 0.0, 1*np.pi],
+            node=node, pos=[0.30, 0.1, 0.1], orient=[0.0, 0.0, 1*np.pi],
             door_marker_texture='materials/textures/marker6x6_2.png',
         )
         '''printer3 = Simulated3DPrinter(
@@ -97,12 +105,34 @@ def main():
     node.marker_offset_config[1] = 'box_offset'
     node.marker_offset_config[2] = 'printer_offset'
 
-    # register the geometric door-marker estimates (after load_state so stale
+    # register the initial door-marker estimates (after load_state so stale
     # saved poses can't shadow them), then scan both markers
-    bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
-    node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
-    bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
-    node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
+    manual_markers = None
+    if not runVirtual and use_manual_estimates:
+        try:
+            with open(manual_estimates_path) as f:
+                manual_markers = json.load(f)["markers"]
+        except (OSError, KeyError, ValueError) as e:
+            node.get_logger().warn(
+                f"Could not load manual estimates from {manual_estimates_path} "
+                f"({e}) — falling back to the hardcoded printer coordinates. "
+                f"Run teachMarkersByHand.py to create them."
+            )
+
+    if manual_markers:
+        # hand-taught estimates from teachMarkersByHand.py
+        for m in manual_markers:
+            node.register_estimated_marker(
+                marker_id=int(m["id"]),
+                bad_pos=m["positionInBase"],
+                bad_euler=m["eulerInBase"],
+            )
+    else:
+        # geometric estimates from the printer models above
+        bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
+        node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
+        bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
+        node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
 
     '''if not runVirtual:
         node.register_printers([
