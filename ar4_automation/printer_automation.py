@@ -288,12 +288,31 @@ class printerAutomation(ArucoDetectionViewer):
 
         # Gripper interface (robots without one configured run gripper-disabled)
         gripper_cfg = self.robot_config['gripper']
+        self._lite6_gripper_clients = {}
         if gripper_cfg is None:
             self.gripper = None
             self.gripper_disabled = True
             self.get_logger().info(
                 f"No gripper configured for robot '{robot}'; gripper commands are skipped."
             )
+        elif gripper_cfg.get('type') == 'lite6_service':
+            try:
+                from xarm_msgs.srv import Call
+                namespace = gripper_cfg['namespace'].rstrip('/')
+                self._lite6_gripper_clients = {
+                    'open': self.create_client(
+                        Call, f"{namespace}/open_lite6_gripper"),
+                    'close': self.create_client(
+                        Call, f"{namespace}/close_lite6_gripper"),
+                }
+                # Non-None marks a configured physical gripper for the web
+                # backend's manipulation-hardware guard.
+                self.gripper = 'lite6_service'
+            except ImportError:
+                self.gripper = None
+                self.gripper_disabled = True
+                self.get_logger().error(
+                    "xarm_msgs unavailable; Lite 6 gripper commands disabled")
         else:
             self.gripper = GripperInterface(
                 node=self,
@@ -503,10 +522,63 @@ class printerAutomation(ArucoDetectionViewer):
         waypoints = self.offset_configs[config_name].get(procedure)
         return waypoints if waypoints else None
 
+    def _preflight_waypoints(self, marker_id, waypoints, caller):
+        """Validate the complete routine geometry before its first motion.
+
+        MoveIt still performs self/environment collision checking for every
+        planned segment.  This earlier pass catches missing markers, bad
+        calibration, NaN values and targets outside the commissioned software
+        workspace before a routine can partially execute.
+        """
+        if not waypoints:
+            raise RuntimeError(f"{caller}: routine has no configured waypoints")
+        self.assert_motion_safe()
+        entry = self._find_marker_entry(marker_id)
+        if entry is None:
+            raise RuntimeError(
+                f"{caller}: marker {marker_id} has no registered pose")
+        marker_pos = np.asarray(entry['positionInBase'], dtype=float)
+        marker_euler = np.asarray(entry['eulerInBase'], dtype=float)
+        if (marker_pos.shape != (3,) or marker_euler.shape != (3,)
+                or not np.all(np.isfinite(marker_pos))
+                or not np.all(np.isfinite(marker_euler))):
+            raise RuntimeError(
+                f"{caller}: marker {marker_id} pose is invalid")
+
+        checked = 0
+        for index, waypoint in enumerate(waypoints, start=1):
+            if 'scan' in waypoint:
+                offset = np.array([0.0, 0.0, float(waypoint['scan'])])
+                bad_pos, bad_euler = self._apply_offset_in_marker_frame(
+                    marker_pos, marker_euler, offset, self.offsetOri)
+                bad_pos += np.array([0.0, 0.0, self.camera_z_offset])
+            elif 'pos' in waypoint:
+                orientation = (
+                    self._tilted_offset_ori(waypoint.get('angle_deg'))
+                    if waypoint.get('angle_deg') else self.offsetOri)
+                bad_pos, bad_euler = self._apply_offset_in_marker_frame(
+                    marker_pos, marker_euler,
+                    np.asarray(waypoint['pos'], dtype=float), orientation)
+            else:
+                continue
+            good_pos, _ = self.to_good_frame(bad_pos, bad_euler)
+            try:
+                self.validate_pose_target(good_pos)
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"{caller}: waypoint {index} failed workspace "
+                    f"validation: {exc}") from exc
+            checked += 1
+        self.get_logger().info(
+            f"{caller}: preflight passed for marker {marker_id} "
+            f"({checked} Cartesian targets; MoveIt collision checks remain active)")
+        return True
+
     def _follow_waypoints(self, markerID, waypoints, caller, tolerant_last=False):
         """Run the entries in order: moves, scans, gripper actions (a 'close'
         records joints for the pickup replay). False on first failure, except
         tolerant_last lets a failed final move (scrape retract) just warn."""
+        self._preflight_waypoints(markerID, waypoints, caller)
         self._walk_grasp_joints = None
         n = len(waypoints)
         for i, wp in enumerate(waypoints):
@@ -554,14 +626,41 @@ class printerAutomation(ArucoDetectionViewer):
             self.get_logger().info("Gripper disabled — skipping open.")
             return
         self.get_logger().info("Opening gripper...")
+        if self.gripper == 'lite6_service':
+            return self._call_lite6_gripper('open')
         self.gripper.open()
+        return True
 
     def close_gripper(self):
         if self.gripper_disabled:
             self.get_logger().info("Gripper disabled — skipping close.")
             return
         self.get_logger().info("Closing gripper...")
+        if self.gripper == 'lite6_service':
+            return self._call_lite6_gripper('close')
         self.gripper.close()
+        return True
+
+    def _call_lite6_gripper(self, action, timeout=5.0):
+        """Call the Lite 6 controller gripper and require an explicit success."""
+        from xarm_msgs.srv import Call
+        client = self._lite6_gripper_clients[action]
+        if not client.wait_for_service(timeout_sec=1.0):
+            raise RuntimeError(
+                f"Lite 6 gripper service unavailable for {action}")
+        future = client.call_async(Call.Request())
+        deadline = time.monotonic() + timeout
+        while not future.done() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        if not future.done():
+            raise RuntimeError(f"Lite 6 gripper {action} timed out")
+        response = future.result()
+        if response is None or int(response.ret) != 0:
+            ret = None if response is None else int(response.ret)
+            message = '' if response is None else response.message
+            raise RuntimeError(
+                f"Lite 6 gripper {action} failed (ret={ret}): {message}")
+        return True
 
     # ---- Marker updates ----
 
@@ -675,6 +774,14 @@ class printerAutomation(ArucoDetectionViewer):
             move_ok = self.move_to_pose(goodPos, goodEuler)
             self.unfreeze_markers()
             if not move_ok:
+                break
+
+            # Gazebo setups without a bridged RGBD sensor deliberately use
+            # the registered geometric marker estimates. Treat reaching the
+            # viewing pose as a successful simulated observation instead of
+            # waiting four seconds for an image topic that does not exist.
+            if getattr(self, "simulation_mode", False):
+                marker_spotted = True
                 break
 
             # raw-measurement logging is active only during this observation window
@@ -1099,5 +1206,3 @@ class printerAutomation(ArucoDetectionViewer):
             self.unfreeze_markers()
 
         self.get_logger().info("go_home: reached home position.")
-
-

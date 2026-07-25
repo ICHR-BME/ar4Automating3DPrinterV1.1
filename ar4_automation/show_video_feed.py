@@ -90,7 +90,11 @@ class CameraViewer(Node):
             self._get_aruco_dict('DICT_6X6_50'),
         ]
         self.marker_sizes = [0.03, 0.05]  # Sizes in meters, indexed by dictionary
-        self.aruco_params = cv2.aruco.DetectorParameters_create()
+        factory = getattr(cv2.aruco, "DetectorParameters_create", None)
+        self.aruco_params = (
+            factory() if factory is not None
+            else cv2.aruco.DetectorParameters()
+        )
         self.last_marker_count = 0
         self._last_log_time = 0.0
         self.log_interval_s = 1.0

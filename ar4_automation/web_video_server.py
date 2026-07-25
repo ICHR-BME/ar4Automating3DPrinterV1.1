@@ -18,6 +18,15 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from sensor_msgs.msg import Image, CameraInfo
 from cv_bridge import CvBridge
 
+
+def create_aruco_detector_parameters():
+    """Create ArUco parameters across OpenCV's pre/post-4.7 APIs."""
+    factory = getattr(cv2.aruco, "DetectorParameters_create", None)
+    if factory is not None:
+        return factory()
+    return cv2.aruco.DetectorParameters()
+
+
 # ------------------------------------------------------------------
 # Camera discovery
 # ------------------------------------------------------------------
@@ -170,7 +179,7 @@ class WebVideoStream:
             self.marker_sizes = marker_sizes or [0.03, 0.025]
             self.aruco_dicts = [cv2.aruco.getPredefinedDictionary(ARUCO_DICT_MAP[n])
                                 for n in self.dict_names]
-            self.aruco_params = cv2.aruco.DetectorParameters_create()
+            self.aruco_params = create_aruco_detector_parameters()
             self.camera_matrix = None
             self.dist_coeffs = None
             self.last_marker_count = 0

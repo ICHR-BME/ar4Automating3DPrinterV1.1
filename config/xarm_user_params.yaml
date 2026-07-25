@@ -1,0 +1,13 @@
+ufactory_driver:
+  ros__parameters:
+    # The GUI backend applies these settings at physical-Lite-6 startup.
+    # xarm_api only creates services that are explicitly enabled.
+    services:
+      set_collision_sensitivity: true
+      set_self_collision_detection: true
+      open_lite6_gripper: true
+      close_lite6_gripper: true
+      stop_lite6_gripper: true
+      set_reduced_mode: true
+      set_reduced_max_tcp_speed: true
+      set_reduced_max_joint_speed: true

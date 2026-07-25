@@ -69,7 +69,14 @@ def make_webcam_node(robot='ar4', **overrides):
     kwargs = dict(WEBCAM_NODE_KWARGS)
     kwargs.update(overrides)
     node = printerAutomation(robot=robot, **kwargs)
-    node.stream.distance_scale = WEBCAM_DISTANCE_SCALE
+    # The 0.702 correction was calibrated for the AR4 webcam.  The Lite 6
+    # RealSense depth stream is metric and must not inherit that scale.
+    if robot == 'ar4':
+        node.stream.distance_scale = WEBCAM_DISTANCE_SCALE
+    profile = node.robot_config.get('physical_motion', {})
+    node.moveit2.max_velocity = profile.get('max_velocity', 0.15)
+    node.moveit2.max_acceleration = profile.get('max_acceleration', 0.15)
+    node.move_settle_delay = 0.5
     return node
 
 
@@ -80,10 +87,17 @@ def make_sim_node(robot='ar4', **overrides):
     node = printerAutomation(robot=robot, **kwargs)
     # gripper action is flaky in sim, see printerAutomation.gripper_disabled
     node.gripper_disabled = True
+    node.simulation_mode = True
+    # Smooth enough for interactive GUI testing without making every
+    # waypoint sequence unnecessarily slow.
+    profile = node.robot_config.get('simulation_motion', {})
+    node.moveit2.max_velocity = profile.get('max_velocity', 0.35)
+    node.moveit2.max_acceleration = profile.get('max_acceleration', 0.30)
+    node.move_settle_delay = 0.25
     return node
 
 
-def start_node(sim=False, robot='ar4', **overrides):
+def start_node(sim=False, robot='ar4', joint_state_timeout=10.0, **overrides):
     """(make_webcam_node or make_sim_node) + spin_in_background + wait_for_joint_states.
 
     robot: 'ar4' or 'lite6' (see robot_config.py). Sim launch scripts:
@@ -91,7 +105,12 @@ def start_node(sim=False, robot='ar4', **overrides):
     """
     node = make_sim_node(robot=robot, **overrides) if sim else make_webcam_node(robot=robot, **overrides)
     spin_in_background(node)
-    wait_for_joint_states(node)
+    wait_for_joint_states(node, timeout=joint_state_timeout)
+    if not sim and robot == 'lite6':
+        if not node.configure_xarm_safety():
+            node.get_logger().error(
+                "Lite 6 safety profile was not applied; motion will remain blocked: "
+                f"{node._xarm_safety_error}")
     return node
 
 

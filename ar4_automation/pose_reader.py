@@ -94,6 +94,12 @@ class PoseReader(Node):
 		self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
 		self._last_joint_msg = None  # list[float] ordered by self.moveit2.joint_names
+		self._last_joint_update_monotonic = None
+		self.simulation_mode = False
+		self._xarm_state = None
+		self._xarm_state_update_monotonic = None
+		self._xarm_safety_configured = False
+		self._xarm_safety_error = None
 		self._fk_future = None
 		self.pose = np.array([-1,-1,-1,-1,-1,-1])
 		self.quat = np.array([-1, -1, -1, -1])
@@ -118,6 +124,195 @@ class PoseReader(Node):
 
 		# publishes 'stop' to kill any in-flight trajectory before sending a new goal
 		self._cancellation_pub = self.create_publisher(String, '/trajectory_execution_event', 1)
+		self._init_xarm_safety_monitor()
+
+	def _init_xarm_safety_monitor(self):
+		"""Subscribe to the physical Lite 6 controller state when available."""
+		if self.robot != 'lite6':
+			return
+		try:
+			from xarm_msgs.msg import RobotMsg
+		except ImportError:
+			# Gazebo-only workspaces may not install xarm_api/xarm_msgs.
+			return
+		namespace = self.robot_config['xarm_safety']['namespace'].rstrip('/')
+		self.create_subscription(
+			RobotMsg, f"{namespace}/robot_states",
+			self._on_xarm_state, 10)
+
+	def _on_xarm_state(self, msg):
+		self._xarm_state = {
+			'state': int(msg.state),
+			'mode': int(msg.mode),
+			'error_code': int(msg.err),
+			'warning_code': int(msg.warn),
+			'motor_enabled_mask': int(msg.mt_able),
+			'brake_mask': int(msg.mt_brake),
+		}
+		self._xarm_state_update_monotonic = time.monotonic()
+		if msg.err:
+			# Stop the active MoveIt trajectory as soon as the controller
+			# reports a collision/fault. Recovery remains an explicit operator
+			# action; this code never clears controller errors automatically.
+			stop = String()
+			stop.data = 'stop'
+			self._cancellation_pub.publish(stop)
+
+	def configure_xarm_safety(self, timeout=3.0):
+		"""Apply non-motion controller safety settings for a physical Lite 6.
+
+		No errors are cleared and motors are not enabled here.  The operator
+		must use UFACTORY's normal recovery/enable procedure after inspecting a
+		collision or fault.
+		"""
+		if self.robot != 'lite6' or self.simulation_mode:
+			self._xarm_safety_configured = True
+			return True
+		try:
+			from xarm_msgs.srv import SetFloat32, SetInt16
+		except ImportError as exc:
+			self._xarm_safety_error = f"xarm_msgs unavailable: {exc}"
+			return False
+		cfg = self.robot_config['xarm_safety']
+		ns = cfg['namespace'].rstrip('/')
+		requests = (
+			(f"{ns}/set_collision_sensitivity", SetInt16,
+			 int(cfg['collision_sensitivity'])),
+			(f"{ns}/set_self_collision_detection", SetInt16,
+			 int(bool(cfg['self_collision_detection']))),
+			(f"{ns}/set_reduced_max_tcp_speed", SetFloat32,
+			 float(cfg['reduced_max_tcp_speed_mm_s'])),
+			(f"{ns}/set_reduced_max_joint_speed", SetFloat32,
+			 float(cfg['reduced_max_joint_speed_rad_s'])),
+			(f"{ns}/set_reduced_mode", SetInt16,
+			 int(bool(cfg['reduced_mode']))),
+		)
+		for service_name, service_type, value in requests:
+			client = self.create_client(service_type, service_name)
+			if not client.wait_for_service(timeout_sec=timeout):
+				self._xarm_safety_error = f"service unavailable: {service_name}"
+				return False
+			req = service_type.Request()
+			req.data = value
+			future = client.call_async(req)
+			deadline = time.monotonic() + timeout
+			while not future.done() and time.monotonic() < deadline:
+				time.sleep(0.01)
+			if not future.done():
+				self._xarm_safety_error = f"service timed out: {service_name}"
+				return False
+			response = future.result()
+			if response is None or int(response.ret) != 0:
+				ret = None if response is None else int(response.ret)
+				self._xarm_safety_error = (
+					f"{service_name} rejected safety setting (ret={ret})")
+				return False
+		self._xarm_safety_configured = True
+		self._xarm_safety_error = None
+		return True
+
+	def safety_snapshot(self):
+		"""Return machine-readable interlocks for the GUI and command guard."""
+		now = time.monotonic()
+		profile_name = 'simulation_motion' if self.simulation_mode else 'physical_motion'
+		profile = self.robot_config.get(profile_name, {})
+		checks = []
+		joint_age = (
+			None if self._last_joint_update_monotonic is None
+			else now - self._last_joint_update_monotonic)
+		max_age = float(profile.get('joint_state_max_age', 2.0))
+		checks.append({
+			'name': 'joint_states',
+			'ok': joint_age is not None and joint_age <= max_age,
+			'detail': 'not received' if joint_age is None else f"age={joint_age:.2f}s",
+		})
+		if self.robot == 'lite6' and not self.simulation_mode:
+			state_age = (
+				None if self._xarm_state_update_monotonic is None
+				else now - self._xarm_state_update_monotonic)
+			state = self._xarm_state
+			checks.extend([
+				{
+					'name': 'xarm_state_stream',
+					'ok': state is not None and state_age is not None and state_age <= 1.0,
+					'detail': 'not received' if state_age is None else f"age={state_age:.2f}s",
+				},
+				{
+					'name': 'xarm_controller',
+					# RUNNING(1) and SLEEPING/ready(2) can accept planned motion.
+					'ok': state is not None and state['state'] in (1, 2)
+					      and state['mode'] == 1 and state['error_code'] == 0,
+					'detail': 'unknown' if state is None else (
+						f"state={state['state']} mode={state['mode']} "
+						f"err={state['error_code']} warn={state['warning_code']}"),
+				},
+				{
+					'name': 'controller_safety_profile',
+					'ok': self._xarm_safety_configured,
+					'detail': self._xarm_safety_error or (
+						'reduced mode + controller collision protections applied'),
+				},
+			])
+		return {
+			'ready': all(c['ok'] for c in checks),
+			'profile': 'simulation' if self.simulation_mode else 'physical',
+			'checks': checks,
+			'xarm_state': self._xarm_state,
+		}
+
+	def assert_motion_safe(self):
+		safety = self.safety_snapshot()
+		if not safety['ready']:
+			failed = [c for c in safety['checks'] if not c['ok']]
+			raise RuntimeError(
+				"motion blocked by safety preflight: " +
+				"; ".join(f"{c['name']} ({c['detail']})" for c in failed))
+
+	def validate_joint_target(self, joint_positions, manual=False):
+		if len(joint_positions) != len(self.moveit2.joint_names):
+			raise ValueError("joint target must contain exactly 6 values")
+		if not np.all(np.isfinite(joint_positions)):
+			raise ValueError("joint target contains NaN or infinity")
+		for name, value, limits in zip(
+				self.moveit2.joint_names, joint_positions,
+				self.robot_config.get('joint_limits', [])):
+			if not limits[0] <= value <= limits[1]:
+				raise ValueError(
+					f"{name} target {value:.3f} rad is outside safe "
+					f"range [{limits[0]:.3f}, {limits[1]:.3f}]")
+		if manual and self._last_joint_msg is not None:
+			profile_name = 'simulation_motion' if self.simulation_mode else 'physical_motion'
+			max_delta = self.robot_config.get(profile_name, {}).get(
+				'max_manual_joint_delta')
+			if max_delta is not None:
+				for name, current, target in zip(
+						self.moveit2.joint_names, self._last_joint_msg, joint_positions):
+					if abs(target - current) > max_delta:
+						raise ValueError(
+							f"{name} step is {abs(target-current):.3f} rad; "
+							f"manual limit is {max_delta:.3f} rad")
+		return True
+
+	def validate_pose_target(self, good_position):
+		position = np.asarray(good_position, dtype=float)
+		if position.shape != (3,) or not np.all(np.isfinite(position)):
+			raise ValueError("Cartesian target must contain three finite values")
+		workspace = self.robot_config.get('workspace')
+		if not workspace:
+			return True
+		for index, axis in enumerate(('x', 'y', 'z')):
+			low, high = workspace[axis]
+			if not low <= position[index] <= high:
+				raise ValueError(
+					f"{axis}={position[index]:.3f} m is outside safe "
+					f"workspace [{low:.3f}, {high:.3f}]")
+		radius = float(np.linalg.norm(position))
+		low, high = workspace['radius']
+		if not low <= radius <= high:
+			raise ValueError(
+				f"target radius {radius:.3f} m is outside safe "
+				f"workspace [{low:.3f}, {high:.3f}]")
+		return True
 
 	def _cancel_and_wait(self, wait_timeout=3.0):
 		"""Cancel any in-flight MoveIt trajectory and wait for it to go idle."""
@@ -166,8 +361,24 @@ class PoseReader(Node):
 			js = JointState()
 			js.name = list(self.moveit2.joint_names)
 			js.position = list(self._last_joint_msg)
-			ps = self.moveit2.compute_fk(
+			# This node already belongs to a background executor. The
+			# synchronous pymoveit2 helper calls rclpy.spin_once(node), which
+			# raises when a node is already attached to another executor.
+			# Submit asynchronously and let that existing executor complete it.
+			future = self.moveit2.compute_fk_async(
 				joint_state=js, fk_link_names=[self.end_effector_name])
+			if future is None:
+				return (None, None)
+			deadline = time.monotonic() + 3.0
+			while not future.done() and time.monotonic() < deadline:
+				time.sleep(0.01)
+			if not future.done():
+				self.get_logger().warn(
+					"FK fallback timed out waiting for /compute_fk",
+					throttle_duration_sec=5.0)
+				return (None, None)
+			ps = self.moveit2.get_compute_fk_result(
+				future, fk_link_names=[self.end_effector_name])
 		except Exception:
 			return (None, None)
 		if isinstance(ps, list):
@@ -201,6 +412,8 @@ class PoseReader(Node):
 		wait_until_executed (which has none), and counts the move done once the
 		arm physically reaches the config, so a missed result callback can't
 		turn a completed move into a timeout."""
+		self.assert_motion_safe()
+		self.validate_joint_target(joint_positions)
 		for attempt in range(max_retries + 1):
 			if attempt > 0:
 				# a "failed" attempt may actually have arrived (missed result
@@ -253,76 +466,77 @@ class PoseReader(Node):
 
 		return False
 
-	def move_to_pose(self, pos, euler, max_retries=2):
-		"""Pose move with retries; cancels any in-flight trajectory before
-		each attempt so MoveIt starts from a clean idle state."""
+	def _solve_pose_ik(self, bad_pos, quat, timeout=5.0):
+		"""Resolve a Cartesian target to the arm's ordered joint vector.
+
+		The pymoveit2 synchronous IK helper tries to spin this node itself,
+		which is invalid when the GUI's background executor already owns it.
+		Use the async service and let that executor deliver the response.
+		"""
+		if not self._last_joint_msg:
+			self.get_logger().error("IK unavailable: no current joint state")
+			return None
+		try:
+			future = self.moveit2.compute_ik_async(
+				position=Point(
+					x=float(bad_pos[0]), y=float(bad_pos[1]),
+					z=float(bad_pos[2])),
+				quat_xyzw=Quaternion(
+					x=float(quat[0]), y=float(quat[1]),
+					z=float(quat[2]), w=float(quat[3])),
+				ik_link_name=self.end_effector_name,
+				start_joint_state=list(self._last_joint_msg),
+				wait_for_server_timeout_sec=1.0,
+			)
+			if future is None:
+				return None
+			deadline = time.monotonic() + timeout
+			while not future.done() and time.monotonic() < deadline:
+				time.sleep(0.01)
+			if not future.done():
+				self.get_logger().error(
+					f"IK timed out after {timeout:.1f}s")
+				return None
+			solution = self.moveit2.get_compute_ik_result(future)
+			if solution is None:
+				return None
+			names = list(solution.name)
+			return [
+				float(solution.position[names.index(joint)])
+				for joint in self.moveit2.joint_names
+			]
+		except (ValueError, RuntimeError) as exc:
+			self.get_logger().error(f"IK solution invalid: {exc}")
+			return None
+
+	def move_to_pose(self, pos, euler, max_retries=1, timeout=12.0):
+		"""Move to a Cartesian pose through collision-aware joint planning.
+
+		IK is seeded from the measured joint state, then the resulting joints
+		use the same MoveGroup path already proven for joint goals. This avoids
+		the flaky direct pose-action state machine while remaining portable to
+		the physical robot (the controller still receives a joint trajectory).
+		"""
+		self.assert_motion_safe()
+		self.validate_pose_target(pos)
 		bad_pos, bad_euler = self.to_bad_frame(pos, euler)
 		q = R.from_euler("XYZ", bad_euler, degrees=False).as_quat()  # [x, y, z, w]
-		q_msg = Quaternion(x=float(q[0]), y=float(q[1]), z=float(q[2]), w=float(q[3]))
 		self.get_logger().warn(
-			f"[move_to_pose] MoveIt target in base_link: "
+			f"[move_to_pose] IK target in base_link: "
 			f"pos=[{bad_pos[0]:.4f}, {bad_pos[1]:.4f}, {bad_pos[2]:.4f}] "
 			f"quat=[{q[0]:.3f}, {q[1]:.3f}, {q[2]:.3f}, {q[3]:.3f}]"
 		)
-
-		_timeout = 15.0
-
-		for attempt in range(max_retries + 1):
-			if attempt > 0:
-				# the previous attempt may actually have arrived; cancelling
-				# a completed move desyncs the arm
-				if self._reached_pose(bad_pos, q):
-					time.sleep(self.move_settle_delay)
-					return True
-				self.get_logger().warn(
-					f"[move_to_pose] Retry {attempt}/{max_retries}…"
-				)
-
-			# wait for idle before sending a new goal, else it aborts immediately
-			self._cancel_and_wait()
-			# reset so a stale result can't count for this attempt
-			self.moveit2.motion_suceeded = False
-
-			self.moveit2.move_to_pose(
-				position=Point(x=bad_pos[0], y=bad_pos[1], z=bad_pos[2]),
-				quat_xyzw=q_msg,
-			)
-
-			# poll both flags; wait_until_executed can return early under the
-			# multithreaded executor
-			_deadline = time.time() + _timeout
-			timed_out = False
-			while (getattr(self.moveit2, '_MoveIt2__is_motion_requested', False) or
-			       getattr(self.moveit2, '_MoveIt2__is_executing', False)):
-				# ground truth, same as move_to_configuration
-				if self._reached_pose(bad_pos, q):
-					time.sleep(self.move_settle_delay)
-					return True
-				if time.time() > _deadline:
-					self.get_logger().error(
-						f"[move_to_pose] timed out after {_timeout}s waiting for trajectory to finish."
-					)
-					timed_out = True
-					break
-				time.sleep(0.05)
-
-			# only ground truth counts (motion_suceeded is racy both ways)
-			if self._reached_pose(bad_pos, q):
-				time.sleep(self.move_settle_delay)
-				return True
-
-			reason = f"timed out after {_timeout}s" if timed_out else "motion aborted/failed"
-			err = _moveit_err_str(self.moveit2)
-			if attempt < max_retries:
-				self.get_logger().warn(
-					f"[move_to_pose] {reason} (MoveIt err={err}) on attempt {attempt + 1} — retrying…"
-				)
-			else:
-				self.get_logger().error(
-					f"[move_to_pose] {reason} (MoveIt err={err}) — planning may have been unsuccessful."
-				)
-
-		return False
+		joint_target = self._solve_pose_ik(bad_pos, q)
+		if joint_target is None:
+			self.get_logger().error(
+				"[move_to_pose] no IK solution for requested pose")
+			return False
+		self.validate_joint_target(joint_target)
+		self.get_logger().info(
+			"[move_to_pose] IK joints deg=" +
+			str(np.round(np.degrees(joint_target), 2).tolist()))
+		return self.move_to_configuration(
+			joint_target, timeout=timeout, max_retries=max_retries)
 
 
 	def to_good_frame(self, bad_position, bad_euler_angles):
@@ -390,38 +604,28 @@ class PoseReader(Node):
 			self._last_joint_msg = [
 				float(msg.position[msg.name.index(j)]) for j in self.moveit2.joint_names
 			]
+			self._last_joint_update_monotonic = time.monotonic()
 		except ValueError:
 			# Missing joints in this message; skip
 			return
 	
 	def get_frame(self, frame=None):
-		frame = frame or self.end_effector_name
-		try:
-			temp = self.tf_buffer.lookup_transform(
-				"world",  # target (base)
-				frame,                  # source (camera/link)
-				Time()
-			)
-		except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException) as e:
-			self.get_logger().warn(f"TF Error: {e}")
+		# Use base_link consistently with MoveIt. TF is preferred inside
+		# _eef_pose_truth; FK provides a safe fallback when the web backend's
+		# TF listener starts after robot_state_publisher.
+		bad_pos, quat = self._eef_pose_truth()
+		if bad_pos is None:
+			self.get_logger().warn(
+				f"End-effector pose unavailable for {frame or self.end_effector_name}",
+				throttle_duration_sec=5.0)
 			return self.pose
 
-		position = temp.transform.translation
-		x, y, z = position.x, position.y, position.z
-		
-		# Extract rotation (quaternion)
-		rotation = temp.transform.rotation
-		qx, qy, qz, qw = rotation.x, rotation.y, rotation.z, rotation.w
-		
-		# Convert quaternion to Euler angles (roll, pitch, yaw)
-		roll, pitch, yaw = quat_to_euler(qx, qy, qz, qw)
-
-		good_pos, good_euler = self.to_good_frame(np.array([x, y, z]), np.array([roll, pitch, yaw]))
-
-		bad_pos, bad_euler = self.to_bad_frame(good_pos, good_euler)
-		goodPose = np.array([good_pos[0], good_pos[1], good_pos[2], good_euler[0], good_euler[1], good_euler[2]])
-		badPose = np.array([bad_pos[0], bad_pos[1], bad_pos[2], bad_euler[0], bad_euler[1], bad_euler[2]])
-		return goodPose
+		roll, pitch, yaw = quat_to_euler(*quat)
+		good_pos, good_euler = self.to_good_frame(
+			np.asarray(bad_pos), np.array([roll, pitch, yaw]))
+		self.quat = np.asarray(quat, dtype=float)
+		self.frame = self.base_link_name
+		return np.concatenate((good_pos, good_euler))
 
 	def get_fk(self):
 		# Synchronous FK via MoveIt2.compute_fk()

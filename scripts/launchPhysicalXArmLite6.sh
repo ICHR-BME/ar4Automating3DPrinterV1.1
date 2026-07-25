@@ -9,11 +9,11 @@
 
 source ~/ar4_ws/install/setup.bash
 
-# ---- config (edit these; no CLI args) ------------------------------------
+# ---- config ---------------------------------------------------------------
 # The Lite 6 control box's IP on the current network. The arm must be powered,
 # enabled, and reachable (ping it first). This is the one thing the sim script
 # never needed.
-ROBOT_IP="192.168.0.150"
+ROBOT_IP="${ROBOT_IP:-192.168.0.150}"
 # --------------------------------------------------------------------------
 
 # The 'lite6' automation config subscribes to /camera/color/image_raw,

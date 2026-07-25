@@ -53,8 +53,12 @@ ROBOT_CONFIGS = {
         # link_eef, so raise the EEF to keep the marker centered (mirror of the
         # -0.04 that the camera-above roll needed; re-check on the first scans)
         'camera_z_offset': 0.04,
-        # no gripper wired up yet: gripper commands are skipped
-        'gripper': None,
+        # Lite 6 built-in gripper is controlled by xarm_api services rather
+        # than a FollowJointTrajectory/GripperCommand action.
+        'gripper': {
+            'type': 'lite6_service',
+            'namespace': '/ufactory',
+        },
         # good frame == base frame for the lite6 (robot spawns at the world
         # origin with zero yaw, so no AR4-style 90 deg convention)
         'frame_rotation_angles': np.array([0.0, 0.0, 0.0]),
@@ -64,6 +68,55 @@ ROBOT_CONFIGS = {
         # orientation put the camera above the gripper instead of below it.
         # Same tool Z (still faces the marker), only the roll differs.
         'offset_ori': np.array([np.pi, 0.0, np.pi / 2]),
+        # Software interlocks used before every GUI/automation motion.  These
+        # complement (and never replace) MoveIt's self/environment collision
+        # checking and the controller's collision detection.
+        #
+        # Joint limits mirror xarm_description's lite6 URDF, with a small
+        # margin so a command is not planned directly against a hard stop.
+        'joint_limits': [
+            (-np.pi * 0.99 + 0.035, np.pi * 0.99 - 0.035),
+            (-2.61799 + 0.035, 2.61799 - 0.035),
+            (-0.061087 + 0.035, np.pi * 0.99 - 0.035),
+            (-np.pi * 0.99 + 0.035, np.pi * 0.99 - 0.035),
+            (-2.1642 + 0.035, 2.1642 - 0.035),
+            (-np.pi * 0.99 + 0.035, np.pi * 0.99 - 0.035),
+        ],
+        # Conservative automation envelope in link_base coordinates.  It is
+        # intentionally configurable: commissioning must narrow it around the
+        # actual printer cell before unattended use.
+        'workspace': {
+            'x': (-0.48, 0.48),
+            'y': (-0.48, 0.48),
+            'z': (0.025, 0.65),
+            'radius': (0.08, 0.50),
+        },
+        'physical_motion': {
+            'max_velocity': 0.10,
+            'max_acceleration': 0.10,
+            'max_manual_joint_delta': np.radians(20.0),
+            'max_jog_translation': 0.02,
+            'max_jog_rotation': np.radians(10.0),
+            'joint_state_max_age': 1.0,
+        },
+        'simulation_motion': {
+            'max_velocity': 0.35,
+            'max_acceleration': 0.30,
+            'max_manual_joint_delta': np.radians(60.0),
+            'max_jog_translation': 0.05,
+            'max_jog_rotation': np.radians(15.0),
+            'joint_state_max_age': 2.0,
+        },
+        'xarm_safety': {
+            'namespace': '/ufactory',
+            # UFACTORY accepts 0..5.  Level 3 is a conservative commissioning
+            # default without selecting the most nuisance-prone setting.
+            'collision_sensitivity': 3,
+            'self_collision_detection': True,
+            'reduced_mode': True,
+            'reduced_max_tcp_speed_mm_s': 100.0,
+            'reduced_max_joint_speed_rad_s': 0.35,
+        },
     },
 }
 
