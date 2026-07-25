@@ -87,7 +87,7 @@ each file — there are no command-line flags.
 
 | Script | What it does |
 | --- | --- |
-| `runFullAutomationWithScrape.py` | The full loop: print a job from `print_queue.yaml`, wait for it, scrape the plate, repeat. Real printers only. |
+| `runFullAutomationWithScrape.py` | Not fully tested yet. The full loop: print a job from `print_queue.yaml`, wait for it, scrape the plate, repeat. Real printers only. |
 | `runScrapePlate.py` | One cycle: take the plate off one printer, scrape it against another, put it back. |
 | `runPickupPlate.py` | Just the pickup, then stop. Useful when tuning approach offsets. |
 | `runDoubleTransfer.py` | Shuttles plates between three stations in a loop. |
@@ -104,6 +104,21 @@ rotation, distance correction, `camera_matrix.npz` — don't apply. The gripper
 is disabled in sim because the physics are unstable.
 `runFullAutomationWithScrape.py` has no sim mode: it talks to a real printer
 over MQTT.
+
+## Current Issues
+
+Reliability is questionable. Still needs more debugging and testing. This comes from
+reflections on the Aruco markers, poor and short term path planning, as well
+as imperfect integration with a virtual sim of the system.
+
+Lack of collision detection in path planning. Particularly after picking up a build plate,
+the robot is very unwieldy. It often collides or makes bad movements. This is 
+currently being worked on. Supervision is needed when testing a setup in the real 
+world for the first few runs.
+
+Placing the build plate back on the printer has only been tested with the A1 Mini. 
+All other printers still need to be checked for reliability, particularly the A1.
+
 
 ## Layout
 
