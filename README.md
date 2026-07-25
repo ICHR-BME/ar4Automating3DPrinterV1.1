@@ -1,70 +1,138 @@
-# AR4 3D-Printer Automation
+# 3D-Printer Automation with a Robot Arm
 
-Automates a fleet of Bambu Lab A1 Mini printers with an Annin AR4 robot arm
-(ROS 2 + MoveIt2). The arm scans ArUco markers to locate each printer, scrapes
-finished prints off the build plate, and cycles the print queue.
+Tends a small farm of Bambu Lab printers with a robot arm. The arm finds each
+printer by its ArUco marker, pulls the finished plate off the bed, scrapes the
+print loose against a fixed scraper, puts the plate back and starts the next
+job in the queue.
 
-## Repository layout
+Written for the Annin AR4 (hence the name) but it also drives the UFACTORY
+Lite 6 and xArm 6 — pick one with `robot='ar4' | 'lite6' | 'xarm6'`, see
+`ar4_automation/robot_config.py`. Everything runs on ROS 2 Jazzy + MoveIt 2,
+and most of it can be tried in Gazebo before touching hardware.
 
-```
-runFullAutomationWithScrape.py   Entry points, run these from the repo root.
-runScrapePlate.py,
-runDoubleTransfer.py,
-scanFor2Markers.py, scanFor3Markers.py
+## Installation
 
-printer_config.yaml              Printer credentials (copy the .example file).
-print_queue.yaml                 What to print and how many times.
+Linux only. Developed on Ubuntu 24.04 and Linux Mint 22.2.
 
-ar4_automation/                  Importable library: printerclass (Bambu MQTT/FTPS
-                                 client), printer_automation (robot node),
-                                 aruco_detector, pose_reader, camera stack,
-                                 simulated3DPrinter, runner_common, and moveit2.py
-                                 (patched copy of pymoveit2, do not modify).
-calibration/                     Camera/hand-eye calibration tools and outputs.
-tools/                           Standalone utilities (servo teleop, gripper,
-                                 joint monitor, plotting, object generator).
-scripts/                         Shell launchers (virtual robot, calibration,
-                                 wifi hotspot for the printers).
-gcode/                           Print files (.gcode / .3mf) used by the queue.
-models/                          Gazebo models (spawned by file path from the sim code).
-data/                            Runtime output: printer_state.json, timing CSVs, logs.
-analysis/                        Experiment data and plotting scripts for the paper.
-archive/                         Dormant experiments (SLAM, odometry, old robot code).
-```
-
-Run entry points from the repo root, e.g. `python3 runScrapePlate.py`.
-Scripts in `calibration/`, `tools/`, and `archive/` bootstrap `sys.path`
-themselves and can be run from anywhere.
-
-## Testing in Gazebo
-
-Most entry points have a sim switch at the top of the file (`RUN_SIM = 1` in
-`runScrapePlate.py` / `runDoubleTransfer.py`, `runVirtual = 1` in the
-`scanForNMarkers` scripts). In sim the camera feed comes from the simulated
-RGBD camera (`/rgbd_camera/image` + `camera_info`, bridged by
-`annin_ar4_gazebo`) and simulated printers are spawned in the scene instead of
-loading the hardware save file.
+Install ROS 2 Jazzy following the official instructions, then MoveIt and
+Gazebo:
 
 ```bash
-./scripts/launchVirtualRobot.sh        # Gazebo + MoveIt (wait until loaded)
-python3 runScrapePlate.py              # markers 1, 2   (with RUN_SIM = 1)
-python3 runDoubleTransfer.py           # markers 0, 1, 2 (with RUN_SIM = 1)
-python3 scanFor2Markers.py             # interactive menu (with runVirtual = 1)
-python3 scanFor3Markers.py
+sudo apt install ros-jazzy-moveit
+sudo apt install ros-${ROS_DISTRO}-ros-gz
 ```
 
-The gripper is disabled in sim (physics instability), and the webcam-specific
-settings (90 degree feed rotation, distance-scale correction,
-`camera_matrix.npz`) don't apply since intrinsics come from the sim camera's
-`camera_info`. `runFullAutomationWithScrape.py` has no sim mode: it drives a
-real Bambu printer over MQTT/FTPS, which has no simulated counterpart.
+Clone this repo and its neighbours into a workspace:
 
-## BambuPrinter client (ar4_automation/printerclass.py)
+```bash
+mkdir -p ~/ar4_ws/src && cd ~/ar4_ws/src
+git clone https://github.com/koghalai123/ar4Automating3DPrinter
+git clone https://github.com/koghalai123/ar4_ros_driver
+git clone https://github.com/ycheng517/ar4_hand_eye_calibration
+git clone https://github.com/AndrejOrsula/pymoveit2
+git clone https://github.com/JMU-ROBOTICS-VIVA/ros2_aruco
 
-Local-network control of Bambu printers over MQTT (port 8883, TLS with
-self-signed certs) and implicit FTPS (port 990). No cloud or Bambu Studio
-needed. The protocols are undocumented, so use at your own risk; cert
-verification is disabled and it's meant for LAN use only.
+# only for the UFACTORY arms; the fork carries the sim patches
+git clone -b lite6-sim-patches https://github.com/koghalai123/xarm_ros2
+```
+
+Pull in the hand-eye calibration dependencies and the rest:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+cd ~/ar4_ws/src
+vcs import . --input ar4_hand_eye_calibration/hand_eye_calibration.repos
+sudo apt install ros-jazzy-librealsense2* ros-jazzy-realsense2-*
+sudo apt install ros-jazzy-controller-manager ros-jazzy-ros-gz-sim \
+     ros-jazzy-ros-gz-bridge ros-jazzy-gz-ros2-control ros-jazzy-ros2-control \
+     ros-jazzy-ros2-controllers ros-jazzy-tf-transformations
+cd ~/ar4_ws
+rosdep install --from-paths . --ignore-src -r -y
+colcon build
+source install/setup.bash
+```
+
+Python packages that don't come from ROS:
+
+```bash
+sudo apt install python3-pip
+pip install numpy scipy pandas matplotlib opencv-python flask paho-mqtt \
+    pyyaml trimesh open3d --break-system-packages
+```
+
+Finally copy `printer_config.example.yaml` to `printer_config.yaml` and fill in
+each printer's IP, access code and serial (all under Settings → Network /
+Device on the printer). The real file is gitignored.
+
+## Bringing up a robot
+
+Start one of these first and wait for MoveIt to finish loading, then run an
+entry point in a second terminal.
+
+```bash
+./scripts/launchVirtualRobot.sh        # AR4 in Gazebo
+./scripts/launchVirtualXArm6.sh        # xArm 6 in Gazebo
+./scripts/launchVirtualXArmLite6.sh    # Lite 6 in Gazebo
+./scripts/launchPhysicalXArm6.sh       # real xArm 6
+./scripts/launchPhysicalXArmLite6.sh   # real Lite 6
+./scripts/launchCalibrationPhysical.sh # real AR4, homes the joints first
+```
+
+`scripts/start_hotspot.sh` brings up the wifi hotspot the printers join.
+
+## Main scripts
+
+Run these from the repo root. Options live in a config block at the top of
+each file — there are no command-line flags.
+
+| Script | What it does |
+| --- | --- |
+| `runFullAutomationWithScrape.py` | The full loop: print a job from `print_queue.yaml`, wait for it, scrape the plate, repeat. Real printers only. |
+| `runScrapePlate.py` | One cycle: take the plate off one printer, scrape it against another, put it back. |
+| `runPickupPlate.py` | Just the pickup, then stop. Useful when tuning approach offsets. |
+| `runDoubleTransfer.py` | Shuttles plates between three stations in a loop. |
+| `scanFor2Markers.py`, `scanFor3Markers.py` | Locate the markers, then drop into an interactive menu of moves. This is the usual starting point. |
+| `teachMarkersByHand.py` | Puts a UFACTORY arm in drag-teach mode so you can walk the camera to each marker by hand instead of typing coordinates. Saves to `data/manual_marker_estimates.json`. |
+| `runCalibrateCameraOffset.py` | Orbits a stationary marker to measure the end-effector-to-camera mount error. |
+| `xArm6LiteControl.py` | Minimal joint/pose commands for a Lite 6, handy for checking a new setup. |
+| `robot_agent.py` | HTTP server exposing a whitelist of the above to the web dashboard. See `robot_link.py` for the protocol. |
+
+Most of the motion scripts have a `RUN_SIM` (or `runVirtual`) switch at the top
+for Gazebo. In sim the camera feed comes from the simulated RGBD camera and
+fake printers are spawned in the scene, so the webcam settings — 90° feed
+rotation, distance correction, `camera_matrix.npz` — don't apply. The gripper
+is disabled in sim because the physics are unstable.
+`runFullAutomationWithScrape.py` has no sim mode: it talks to a real printer
+over MQTT.
+
+## Layout
+
+```
+ar4_automation/     The library. printer_automation.py is the robot node,
+                    printerclass.py the Bambu client, plus aruco_detector,
+                    pose_reader, the camera stack, simulated3DPrinter,
+                    robot_config and runner_common. moveit2.py is a patched
+                    copy of pymoveit2 — don't edit it.
+calibration/        Camera intrinsics, hand-eye calibration, marker PDFs.
+tools/              Standalone utilities: servo teleop, gripper cycling, live
+                    joint readout, workspace point cloud, plotting.
+scripts/            Launch wrappers and the printer hotspot.
+gcode/              Print files used by the queue.
+models/             Gazebo models, spawned by file path from the sim code.
+data/               Runtime output: saved marker poses, timing CSVs, logs.
+dataAnalysis/       Experiment data and the plotting scripts for the paper.
+archive/            Dormant experiments (SLAM, odometry, old robot code).
+```
+
+Scripts under `calibration/`, `tools/` and `archive/` set up `sys.path`
+themselves and can be run from anywhere.
+
+## Talking to the printers
+
+`ar4_automation/printerclass.py` controls Bambu printers over the LAN — MQTT
+on 8883 for status and commands, implicit FTPS on 990 for the SD card. No
+cloud account or Bambu Studio involved. The protocols are undocumented and
+certificate verification is off, so keep it on a network you trust.
 
 ```python
 from printerclass import BambuPrinter
@@ -72,31 +140,24 @@ from printerclass import BambuPrinter
 printer = BambuPrinter(ip="192.168.1.50", access_code="12345678",
                        serial="01S00A123456789")
 printer.connect()
-printer.enable_debug_listener()          # print live status updates
-printer.upload_file_timeout("part.3mf")  # to the SD card
+printer.enable_debug_listener()          # live status updates
+printer.upload_file_timeout("part.3mf")  # onto the SD card
 printer.start_print("part.3mf")
 printer.disconnect()
 ```
 
-Main methods:
+Worth knowing:
 
-- `connect()` / `disconnect()` - MQTT session with a background network loop
-- `pause()`, `stop()`, `home()` - basic job control
-- `send_gcode(line)` / `send_gcode_file(path)` - raw g-code (file variant is
-  only sensible for small files, print big ones from the SD card)
-- `blink_light(count)` - identify a printer visually
-- `start_print(filename, bed_levelling=False, flow_cali=False, ...)` - start a
-  file already on the SD card
-- `list_files()`, `upload_file(path)`, `upload_file_timeout(path, timeout=10)` -
-  SD card access over FTPS; plain `upload_file` can hang at 100% on some
-  firmware, the timeout variant works around that
-- `set_on_finish(callback)` - called when a print finishes; the script must
-  stay alive (e.g. a sleep loop) for the callback to fire
+- `pause()`, `stop()`, `home()` — basic job control.
+- `send_gcode(line)` / `send_gcode_file(path)` — raw g-code. Only sensible for
+  short files; print anything real from the SD card.
+- `list_files()`, `upload_file()`, `upload_file_timeout()` — plain
+  `upload_file` can hang at 100% on some firmware, so prefer the timeout one.
+- `set_on_finish(callback)` — fires when a print completes, but only while the
+  script is still alive. `runFullAutomationWithScrape.py` shows the pattern.
+- `blink_light(count)` — flashes the chamber light, for working out which
+  printer is which.
 
-Implicit FTPS needs a small `ftplib.FTP_TLS` subclass that wraps the socket in
-TLS immediately on connect, adapted from
-https://gist.github.com/hoogenm/de42e2ef85b38179297a0bba8d60778b.
-
-To run a batch, loop over files: `start_print(f)`, wait for the finish
-callback to set a flag, repeat. See the print queue handling in
-`runFullAutomationWithScrape.py`.
+Implicit FTPS needs an `ftplib.FTP_TLS` subclass that wraps the socket in TLS
+on connect, adapted from
+<https://gist.github.com/hoogenm/de42e2ef85b38179297a0bba8d60778b>.
