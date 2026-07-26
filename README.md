@@ -1,6 +1,6 @@
 # 3D-Printer Automation with a Robot Arm
 
-Tends a sa Bambu Lab printers with a robot arm. The arm finds each
+Tends a small farm of Bambu Lab printers with a robot arm. The arm finds each
 printer by its ArUco marker, pulls the finished plate off the bed, scrapes the
 print loose against a fixed scraper, puts the plate back and starts the next
 job in the queue.
@@ -14,38 +14,42 @@ and most of it can be tried in Gazebo before touching hardware.
 
 Linux only. Developed on Ubuntu 24.04 and Linux Mint 22.2.
 
-Install ROS 2 Jazzy following the official instructions, then MoveIt and
-Gazebo:
+Install ROS 2 Jazzy following the official instructions, then:
 
 ```bash
-sudo apt install ros-jazzy-moveit
-sudo apt install ros-${ROS_DISTRO}-ros-gz
+sudo apt install ros-jazzy-moveit ros-${ROS_DISTRO}-ros-gz
+sudo apt install ros-jazzy-controller-manager ros-jazzy-ros-gz-sim \
+     ros-jazzy-ros-gz-bridge ros-jazzy-gz-ros2-control ros-jazzy-ros2-control \
+     ros-jazzy-ros2-controllers ros-jazzy-tf-transformations
 ```
 
-Clone this repo and its neighbours into a workspace:
+Clone this repo and pull in pymoveit2, which the automation code imports
+directly (the `.repos` file also brings easy_handeye2 and ros2_aruco, which
+only the calibration package uses):
 
 ```bash
 mkdir -p ~/ar4_ws/src && cd ~/ar4_ws/src
 git clone https://github.com/koghalai123/ar4Automating3DPrinter
-git clone https://github.com/koghalai123/ar4_ros_driver
 git clone https://github.com/ycheng517/ar4_hand_eye_calibration
-git clone https://github.com/AndrejOrsula/pymoveit2
-git clone https://github.com/JMU-ROBOTICS-VIVA/ros2_aruco
 
-# only for the UFACTORY arms; the fork carries the sim patches
+source /opt/ros/jazzy/setup.bash
+vcs import . --input ar4_hand_eye_calibration/hand_eye_calibration.repos
+```
+
+Then add the arm you actually have — at least one is required:
+
+```bash
+# Annin AR4
+git clone https://github.com/koghalai123/ar4_ros_driver
+
+# UFACTORY Lite 6 / xArm 6. The fork carries the sim patches; the upstream
+# jazzy branch will not run the Gazebo launches here.
 git clone -b lite6-sim-patches https://github.com/koghalai123/xarm_ros2
 ```
 
-Pull in the hand-eye calibration dependencies and the rest:
+Build:
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-cd ~/ar4_ws/src
-vcs import . --input ar4_hand_eye_calibration/hand_eye_calibration.repos
-sudo apt install ros-jazzy-librealsense2* ros-jazzy-realsense2-*
-sudo apt install ros-jazzy-controller-manager ros-jazzy-ros-gz-sim \
-     ros-jazzy-ros-gz-bridge ros-jazzy-gz-ros2-control ros-jazzy-ros2-control \
-     ros-jazzy-ros2-controllers ros-jazzy-tf-transformations
 cd ~/ar4_ws
 rosdep install --from-paths . --ignore-src -r -y
 colcon build
@@ -56,13 +60,31 @@ Python packages that don't come from ROS:
 
 ```bash
 sudo apt install python3-pip
-pip install numpy scipy pandas matplotlib opencv-python flask paho-mqtt \
-    pyyaml trimesh open3d --break-system-packages
+pip install numpy scipy opencv-python flask paho-mqtt pyyaml \
+    --break-system-packages
 ```
 
 Finally copy `printer_config.example.yaml` to `printer_config.yaml` and fill in
 each printer's IP, access code and serial (all under Settings → Network /
 Device on the printer). The real file is gitignored.
+
+### Optional
+
+None of this is needed to run the arm or the printers.
+
+```bash
+# a physical Intel RealSense. NOT needed for the Gazebo camera: sim images come
+# from gz through ros_gz_bridge, and the wrist D435i model lives in
+# xarm_description.
+sudo apt install ros-jazzy-librealsense2* ros-jazzy-realsense2-*
+
+# tools/workspace_cloud.py, tools/object_generator.py, and moveit2.py's
+# add_collision_mesh (imported lazily, nothing here calls it yet)
+pip install trimesh open3d --break-system-packages
+
+# dataAnalysis/ plotting scripts
+pip install pandas matplotlib --break-system-packages
+```
 
 ## Bringing up a robot
 
