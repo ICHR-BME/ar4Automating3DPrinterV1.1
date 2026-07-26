@@ -1,6 +1,6 @@
 # 3D-Printer Automation with a Robot Arm
 
-Tends a small farm of Bambu Lab printers with a robot arm. The arm finds each
+Tends a sa Bambu Lab printers with a robot arm. The arm finds each
 printer by its ArUco marker, pulls the finished plate off the bed, scrapes the
 print loose against a fixed scraper, puts the plate back and starts the next
 job in the queue.
