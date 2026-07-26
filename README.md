@@ -141,6 +141,8 @@ world for the first few runs.
 Placing the build plate back on the printer has only been tested with the A1 Mini. 
 All other printers still need to be checked for reliability, particularly the A1.
 
+Testing with a robot maintaining multiple printers still needs to be done.
+
 
 ## Layout
 
