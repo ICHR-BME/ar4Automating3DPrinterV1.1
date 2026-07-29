@@ -52,7 +52,8 @@ def main():
         # per-robot layout from runner_common (positions in the good frame)
         printer1, printer2, printer3 = [
             Simulated3DPrinter(node=node, pos=s["pos"], orient=s["orient"],
-                               door_marker_texture=s["door_marker_texture"])
+                               door_marker_texture=s["door_marker_texture"],
+                               printer_model=s.get("printer_model"))
             for s in sim_printer_specs(robot, 3)
         ]
         printer1.spawn_fast()

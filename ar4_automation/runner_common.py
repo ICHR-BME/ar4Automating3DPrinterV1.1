@@ -65,8 +65,8 @@ SIM_PRINTER_SPECS = {
             {"marker_id": 1, "pos": [0.40, 0.0, -0.1], "orient": [-1/2*math.pi, 0.0, 2/2*math.pi],
              "door_marker_texture": 'materials/textures/marker6x6_1.png'},
         ],
-        '''{"marker_id": 2, "pos": [0.45, -0.2, 0.12], "orient": [0.0, 0.0, -1/2*math.pi],
-                     "door_marker_texture": 'materials/textures/marker6x6_2.png'},'''
+        # {"marker_id": 2, "pos": [0.45, -0.2, 0.12], "orient": [0.0, 0.0, -1/2*math.pi],
+        #  "door_marker_texture": 'materials/textures/marker6x6_2.png'},
     # xArm 6: same door-facing conventions as the lite6, pushed out for the
     # longer (~0.7 m) reach. Starting point — re-probe reachability of each
     # marker's far viewing pose on the first sim runs and nudge as needed.
@@ -131,6 +131,7 @@ def spawn_sim_printers(node, specs):
             pos=p["pos"],
             orient=p["orient"],
             door_marker_texture=p["door_marker_texture"],
+            printer_model=p.get("printer_model"),
         )
         printer.spawn_fast()
         bad_pos, bad_euler = printer.get_door_marker_pose_in_base()
@@ -193,6 +194,7 @@ def restore_saved_printers(node):
             pos=p["pos"],
             orient=p["orient"],
             door_marker_texture=p["door_marker_texture"],
+            printer_model=p.get("printer_model"),
         )
         bad_pos, bad_euler = printer.get_door_marker_pose_in_base()
         existing = node._find_marker_entry(p["marker_id"])

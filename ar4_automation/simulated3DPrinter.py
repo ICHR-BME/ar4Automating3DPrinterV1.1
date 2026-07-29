@@ -1,7 +1,6 @@
 import os
 import atexit
 import subprocess
-import tempfile
 import time
 import math
 import threading
@@ -14,8 +13,10 @@ from geometry_msgs.msg import TransformStamped, PointStamped, PoseStamped, Pose,
 import tf_transformations
 import tf2_geometry_msgs
 import tf2_ros
-from ros_gz_interfaces.srv import SetEntityPose
+from ros_gz_interfaces.srv import SetEntityPose, SpawnEntity
 from ros_gz_interfaces.msg import Entity
+
+from .printer_model import PrinterModel
 
 
 
@@ -52,7 +53,9 @@ class Simulated3DPrinter:
         static_marker_local_pos=None,
         enable_door_flapping_animation=False,
         model_dir=None,
-        use_bad_frame=True
+        use_bad_frame=True,
+        printer_model=None,
+        world_name='default',
     ):
         self._owns_node = node is None
         self.node = node if node else Node('simulated_printer')
@@ -72,6 +75,20 @@ class Simulated3DPrinter:
 
         self.pos = np.array(pos)
         self.orient = np.array(orient)
+
+        # optional realistic body: a primitive-box approximation of a real
+        # printer (models/printers/<name>.json). Its footprint overrides
+        # width/depth/height so the door + markers still land on the front face,
+        # while _generate_combined_sdf emits its boxes instead of plain walls.
+        # The SAME boxes feed MoveIt collision later via PrinterModel.boxes_in_base.
+        self.printer_model = None
+        if printer_model is not None:
+            self.printer_model = (printer_model if isinstance(printer_model, PrinterModel)
+                                  else PrinterModel.load(printer_model))
+            width = self.printer_model.width
+            depth = self.printer_model.depth
+            height = self.printer_model.height
+
         self.width = width
         self.depth = depth
         self.height = height
@@ -98,7 +115,9 @@ class Simulated3DPrinter:
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self.node)
 
+        self.world_name = world_name
         self.set_pose_client = None
+        self.spawn_client = None
         self._bridge_proc = None
 
         self.q = tf_transformations.quaternion_from_euler(
@@ -131,32 +150,87 @@ class Simulated3DPrinter:
         return rot_matrix @ v
     
     def _setup_pose_service(self):
-        """Initialize the ros_gz_bridge and service client.
+        """Bring up ONE persistent ros_gz_bridge for both the set_pose (door/
+        marker animation) and create (spawning) services, plus their ROS
+        clients. Spawning through this in-process client — instead of a fresh
+        `ros2 run ros_gz_sim create` executable per model — is what makes spawns
+        fast and reliable.
 
         Reuse an already-running bridge when possible: every leaked
         parameter_bridge subprocess registers as the SAME node name
         (/ros_gz_bridge), and duplicate node names corrupt DDS discovery —
         symptom: fresh nodes whose camera_info subscription silently never
         matches, so aruco detection runs uncalibrated and spots nothing."""
+        w = self.world_name
+        set_pose_srv = f'/world/{w}/set_pose'
+        create_srv = f'/world/{w}/create'
         self._bridge_proc = None
-        self.set_pose_client = self.node.create_client(SetEntityPose, '/world/default/set_pose')
-        if self.set_pose_client.wait_for_service(timeout_sec=2.0):
-            self.node.get_logger().info('SetEntityPose service already available (reusing bridge)')
+        self.set_pose_client = self.node.create_client(SetEntityPose, set_pose_srv)
+        self.spawn_client = self.node.create_client(SpawnEntity, create_srv)
+        if (self.set_pose_client.wait_for_service(timeout_sec=2.0) and
+                self.spawn_client.wait_for_service(timeout_sec=1.0)):
+            self.node.get_logger().info('gz set_pose+create services available (reusing bridge)')
             return
 
         self._bridge_proc = subprocess.Popen(
             ['ros2', 'run', 'ros_gz_bridge', 'parameter_bridge',
-             '/world/default/set_pose@ros_gz_interfaces/srv/SetEntityPose',
-             '--ros-args', '-r', f'__node:=set_pose_bridge_{os.getpid()}'],
+             f'{set_pose_srv}@ros_gz_interfaces/srv/SetEntityPose',
+             f'{create_srv}@ros_gz_interfaces/srv/SpawnEntity',
+             '--ros-args', '-r', f'__node:=gz_srv_bridge_{os.getpid()}'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
         atexit.register(self._bridge_proc.terminate)
-        self.node.get_logger().info('Started ros_gz_bridge for set_pose service')
-        if self.set_pose_client.wait_for_service(timeout_sec=10.0):
-            self.node.get_logger().info('SetEntityPose service available')
+        self.node.get_logger().info('Started ros_gz_bridge for set_pose + create services')
+        ok_pose = self.set_pose_client.wait_for_service(timeout_sec=10.0)
+        ok_spawn = self.spawn_client.wait_for_service(timeout_sec=10.0)
+        if ok_pose and ok_spawn:
+            self.node.get_logger().info('gz set_pose + create services available')
         else:
-            self.node.get_logger().warn('SetEntityPose service not available')
+            self.node.get_logger().warn(
+                f'gz services not fully available (set_pose={ok_pose}, create={ok_spawn})')
+
+    def _wait_future(self, future, timeout_sec=10.0):
+        """Block until a service future completes, spinning the node only when
+        no background executor owns it (mirrors _spin_or_sleep's rule)."""
+        start = time.time()
+        while not future.done() and (time.time() - start) < timeout_sec:
+            self._spin_or_sleep(0.05)
+        return future.done()
+
+    def _spawn_entity(self, sdf_str, name, pos, rpy):
+        """Spawn one model from an inline SDF string via the persistent create
+        client. Returns True on success. Inline SDF (no temp file) means texture
+        paths inside the SDF must be absolute — see _abs_texture."""
+        if self.spawn_client is None or not self.spawn_client.service_is_ready():
+            self.node.get_logger().error(f'create service not ready; cannot spawn {name}')
+            return False
+        req = SpawnEntity.Request()
+        ef = req.entity_factory
+        ef.name = name
+        ef.sdf = sdf_str
+        ef.relative_to = 'world'
+        q = tf_transformations.quaternion_from_euler(float(rpy[0]), float(rpy[1]), float(rpy[2]))
+        ef.pose.position = Point(x=float(pos[0]), y=float(pos[1]), z=float(pos[2]))
+        ef.pose.orientation = Quaternion(x=float(q[0]), y=float(q[1]), z=float(q[2]), w=float(q[3]))
+        future = self.spawn_client.call_async(req)
+        if not self._wait_future(future):
+            self.node.get_logger().warn(f'spawn of {name} timed out')
+            return False
+        res = future.result()
+        if res is not None and res.success:
+            self.node.get_logger().info(f'Spawned {name}')
+            return True
+        self.node.get_logger().warn(f'spawn of {name} reported failure')
+        return False
+
+    def _abs_texture(self, tex):
+        """Absolute path for a texture referenced in an inline SDF (relative
+        paths only resolve when the SDF is a file inside model_dir; inline SDF
+        strings have no base dir)."""
+        if not tex or os.path.isabs(tex):
+            return tex
+        return os.path.join(self.model_dir, tex)
 
     def _broadcast_printer_frame(self):
         """Broadcast the printer's TF frame."""
@@ -212,7 +286,7 @@ class Simulated3DPrinter:
     def _delete_entity(self, name):
         """Delete an entity from Gazebo."""
         delete_cmd = [
-            'gz', 'service', '-s', '/world/default/remove',
+            'gz', 'service', '-s', f'/world/{self.world_name}/remove',
             '--reqtype', 'gz.msgs.Entity', '--reptype', 'gz.msgs.Boolean',
             '--timeout', '1000', '--req', f'name: "{name}" type: MODEL'
         ]
@@ -230,20 +304,26 @@ class Simulated3DPrinter:
         t = self.wall_thickness
         w, d, h = self.width, self.depth, self.height
 
-        # (name, size, local_pos) in the printer's local frame
-        wall_configs = [
-            ("bottom", [w, d, t], [0, 0, -h/2]),
-            ("top", [w, d, t], [0, 0, h/2]),
-            ("left", [t, d, h], [-w/2, 0, 0]),
-            ("right", [t, d, h], [w/2, 0, 0]),
-            ("back", [w, t, h], [0, d/2, 0]),
-        ]
-        if include_door:
-            wall_configs.append(("front", [w, t, h], [0, -d/2, 0]))
-        
-        visuals = ""
-        for name, size, local_pos in wall_configs:
-            visuals += f"""
+        if self.printer_model is not None:
+            # realistic body: the primitive-box approximation of a real printer,
+            # with <collision> geometry so it's planning-consistent. The SAME
+            # boxes feed MoveIt later via PrinterModel.boxes_in_base.
+            visuals = self.printer_model.to_sdf_links(include_collision=True)
+        else:
+            # legacy hollow box of 5-6 walls (visual only)
+            wall_configs = [
+                ("bottom", [w, d, t], [0, 0, -h/2]),
+                ("top", [w, d, t], [0, 0, h/2]),
+                ("left", [t, d, h], [-w/2, 0, 0]),
+                ("right", [t, d, h], [w/2, 0, 0]),
+                ("back", [w, t, h], [0, d/2, 0]),
+            ]
+            if include_door:
+                wall_configs.append(("front", [w, t, h], [0, -d/2, 0]))
+
+            visuals = ""
+            for name, size, local_pos in wall_configs:
+                visuals += f"""
       <visual name="{name}">
         <pose>{local_pos[0]} {local_pos[1]} {local_pos[2]} 0 0 0</pose>
         <geometry>
@@ -256,7 +336,7 @@ class Simulated3DPrinter:
           <diffuse>0.5 0.5 0.5 1</diffuse>
         </material>
       </visual>"""
-        
+
         if self.static_marker_texture:
             static_local_pos = self.static_marker_local_pos
             if static_local_pos is None:
@@ -276,7 +356,7 @@ class Simulated3DPrinter:
           <specular>0.1 0.1 0.1 1</specular>
           <pbr>
             <metal>
-              <albedo_map>{self.static_marker_texture}</albedo_map>
+              <albedo_map>{self._abs_texture(self.static_marker_texture)}</albedo_map>
               <metalness>0.0</metalness>
               <roughness>1.0</roughness>
             </metal>
@@ -307,7 +387,7 @@ class Simulated3DPrinter:
           <specular>0.1 0.1 0.1 1</specular>
           <pbr>
             <metal>
-              <albedo_map>{self.door_marker_texture}</albedo_map>
+              <albedo_map>{self._abs_texture(self.door_marker_texture)}</albedo_map>
               <metalness>0.0</metalness>
               <roughness>1.0</roughness>
             </metal>
@@ -355,8 +435,9 @@ class Simulated3DPrinter:
 
     def _generate_door_marker_sdf(self, marker_name):
         """Generate SDF for the door marker as a separate model."""
-        # relative path works because the SDF file is written into model_dir
-        texture_path = self.door_marker_texture
+        # absolute path: this SDF is now sent inline to the create service (not
+        # written into model_dir), so a relative texture path would not resolve
+        texture_path = self._abs_texture(self.door_marker_texture)
         
         return f"""<?xml version="1.0"?>
 <sdf version="1.6">
@@ -386,6 +467,21 @@ class Simulated3DPrinter:
   </model>
 </sdf>"""
 
+    def spawn_body_only(self, body_name=None):
+        """Spawn ONLY the printer body (the collision-box model, or legacy walls)
+        through the persistent create client — no door, no marker, no TF warmup.
+        Fast and deterministic: the body pose is self.pos/self.orient directly, so
+        nothing depends on TF being up. Ideal for verifying the collision model."""
+        if body_name is None:
+            body_name = f"printer_body_{self._instance_id}"
+        self._setup_pose_service()
+        self._delete_entity(body_name)
+        body_sdf = self._generate_combined_sdf(body_name, include_door=False)
+        ok = self._spawn_entity(body_sdf, body_name, self.pos, self.orient)
+        if ok:
+            self.spawned_entities.append(body_name)
+        return ok
+
     def spawn_fast(self, body_name=None):
         """Spawn static parts as one model, door + marker separate for animation.
 
@@ -408,69 +504,28 @@ class Simulated3DPrinter:
         for wall_name in ["bottom", "top", "left", "right", "front", "back"]:
             self._delete_entity(f"{wall_name}_{self._instance_id}")
         
-        # 1. static body (5 walls + static marker)
-        sdf_content = self._generate_combined_sdf(body_name, include_door=False)
-        
-        with tempfile.NamedTemporaryFile(dir=self.model_dir, mode='w', suffix='.sdf', delete=False) as f:
-            f.write(sdf_content)
-            body_sdf_path = f.name
-        
-        x, y, z = float(self.pos[0]), float(self.pos[1]), float(self.pos[2])
-        roll, pitch, yaw = float(self.orient[0]), float(self.orient[1]), float(self.orient[2])
-        
-        cmd = [
-            'ros2', 'run', 'ros_gz_sim', 'create',
-            '-file', body_sdf_path, '-name', body_name,
-            '-x', str(x), '-y', str(y), '-z', str(z),
-            '-R', str(roll), '-P', str(pitch), '-Y', str(yaw)
-        ]
-        
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
-            self.node.get_logger().info(f'Spawned printer body: {body_name}')
+        # All three models are sent as inline SDF strings through the persistent
+        # create client (_spawn_entity) — no temp files, and no fresh
+        # `ros2 run ros_gz_sim create` executable per model.
+
+        # 1. static body (real-printer boxes or legacy walls) + static marker
+        body_sdf = self._generate_combined_sdf(body_name, include_door=False)
+        if self._spawn_entity(body_sdf, body_name, self.pos, self.orient):
             self.spawned_entities.append(body_name)
-        except subprocess.CalledProcessError as e:
-            self.node.get_logger().error(f'Failed to spawn body: {e.stderr or e.stdout}')
-        finally:
-            os.unlink(body_sdf_path)
-        
-        # 2. door
-        roll, pitch, yaw = float(self.orient[0]), float(self.orient[1]), float(self.orient[2])
 
+        # 2. door (separate model so it can animate)
         door_sdf = self._generate_door_sdf(door_name)
-        with tempfile.NamedTemporaryFile(dir=self.model_dir, mode='w', suffix='.sdf', delete=False) as f:
-            f.write(door_sdf)
-            door_sdf_path = f.name
-
         door_local = [0, -self.depth/2, 0]
-        door_x, door_y, door_z = self._transform_point_to_world(*door_local)
-
-        cmd = [
-            'ros2', 'run', 'ros_gz_sim', 'create',
-            '-file', door_sdf_path, '-name', door_name,
-            '-x', str(door_x), '-y', str(door_y), '-z', str(door_z),
-            '-R', str(roll), '-P', str(pitch), '-Y', str(yaw)
-        ]
-
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
-            self.node.get_logger().info(f'Spawned door: {door_name}')
+        door_world = self._transform_point_to_world(*door_local)
+        if self._spawn_entity(door_sdf, door_name, door_world, self.orient):
             self.spawned_entities.append(door_name)
             self._door_name = door_name
-        except subprocess.CalledProcessError as e:
-            self.node.get_logger().error(f'Failed to spawn door: {e.stderr or e.stdout}')
-        finally:
-            os.unlink(door_sdf_path)
-        
+
         # 3. door marker
         marker_name = os.path.basename(self.door_marker_texture).split('.')[0]
         self._delete_entity(marker_name)
-        
+
         marker_sdf = self._generate_door_marker_sdf(marker_name)
-        with tempfile.NamedTemporaryFile(dir=self.model_dir, mode='w', suffix='.sdf', delete=False) as f:
-            f.write(marker_sdf)
-            marker_sdf_path = f.name
-        
         door_relative_pos = self.door_marker_local_pos if self.door_marker_local_pos else [0, 0, 0]
         marker_surface_offset = -0.005
         door_front_face_local = [0, -self.depth/2 - self.wall_thickness/2 + marker_surface_offset, 0]
@@ -479,7 +534,7 @@ class Simulated3DPrinter:
             door_front_face_local[1] + door_relative_pos[1],
             door_front_face_local[2] + door_relative_pos[2]
         ]
-        marker_x, marker_y, marker_z = self._transform_point_to_world(*marker_local)
+        marker_world = self._transform_point_to_world(*marker_local)
 
         # Marker normal is its local +X; it must point out of the door's -Y
         # face, i.e. rotated +90 deg about the printer's LOCAL z-axis. That is
@@ -487,25 +542,12 @@ class Simulated3DPrinter:
         # when roll==pitch==0, otherwise adding to yaw rotates about world z and
         # the marker ends up facing the wrong way (position stays right because
         # it goes through the full-orientation TF frame). Convert q_marker to
-        # Gazebo's RPY (Rz*Ry*Rx == tf 'sxyz') for the create tool.
-        marker_roll, marker_pitch, marker_yaw = tf_transformations.euler_from_quaternion(self.q_marker)
-
-        cmd = [
-            'ros2', 'run', 'ros_gz_sim', 'create',
-            '-file', marker_sdf_path, '-name', marker_name,
-            '-x', str(marker_x), '-y', str(marker_y), '-z', str(marker_z),
-            '-R', str(marker_roll), '-P', str(marker_pitch), '-Y', str(marker_yaw)
-        ]
-        
-        try:
-            subprocess.run(cmd, capture_output=True, text=True, check=True)
-            self.node.get_logger().info(f'Spawned door marker: {marker_name}')
+        # RPY (Rz*Ry*Rx == tf 'sxyz'); _spawn_entity turns it back into the same
+        # quaternion.
+        marker_rpy = tf_transformations.euler_from_quaternion(self.q_marker)
+        if self._spawn_entity(marker_sdf, marker_name, marker_world, marker_rpy):
             self.spawned_entities.append(marker_name)
-        except subprocess.CalledProcessError as e:
-            self.node.get_logger().error(f'Failed to spawn marker: {e.stderr or e.stdout}')
-        finally:
-            os.unlink(marker_sdf_path)
-        
+
         self._door_marker_name = marker_name
 
         if self.enable_door_flapping_animation:

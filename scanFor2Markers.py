@@ -29,7 +29,7 @@ from ar4_automation.simulated3DPrinter import Simulated3DPrinter
 
 def main():
     rclpy.init()
-    runVirtual = 0    # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
+    runVirtual = 1    # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
     robot = 'xarm6'     # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
     # 1 = hardware initial estimates come from data/manual_marker_estimates.json
     # (written by teachMarkersByHand.py: drag-teach the arm until the camera
@@ -60,7 +60,8 @@ def main():
         # per-robot layout from runner_common (positions in the good frame)
         printer2, printer3 = [
             Simulated3DPrinter(node=node, pos=s["pos"], orient=s["orient"],
-                               door_marker_texture=s["door_marker_texture"])
+                               door_marker_texture=s["door_marker_texture"],
+                               printer_model=s.get("printer_model"))
             for s in sim_printer_specs(robot, 2)
         ]
         printer2.spawn_fast()
