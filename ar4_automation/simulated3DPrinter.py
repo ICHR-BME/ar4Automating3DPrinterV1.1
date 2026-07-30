@@ -5,6 +5,10 @@ models/printers/<name>.json (visual AND collision, so what you see is what
 MoveIt will avoid) plus a textured plate for every mount in that JSON's
 "markers" list, placed with tools/view_printer_model.py.
 
+collide=False drops the <collision> blocks, leaving visual-only boxes the arm
+passes straight through — the Gazebo half of the runner scripts' COLLISIONS
+switch, which it follows by default via node.collision_scene_enabled.
+
 Mounts are the single source of truth for where a marker sits on a printer:
   * spawn()             puts the plate there in Gazebo
   * marker_pose_in_base() says where the camera should therefore see it
@@ -63,9 +67,24 @@ class Simulated3DPrinter:
         use_bad_frame=True,
         world_name='default',
         name=None,
+        collide=None,
     ):
         self._owns_node = node is None
         self.node = node if node else Node('simulated_printer')
+
+        # Gazebo solidity. The model is <static>, so its boxes never move, but
+        # they are real collision geometry: the arm cannot pass through them, it
+        # STALLS against them — the joints fight a wall they can't push, the
+        # trajectory falls behind, and the controller aborts. That looks nothing
+        # like a planner refusing a goal, so a MoveIt-only switch is not enough
+        # to get the arm out of a printer's way.
+        # None = follow the node's collision_scene_enabled, so the runner
+        # scripts' COLLISIONS var turns off the planning scene AND the physics
+        # together. False spawns visual-only boxes (see-through in Gazebo);
+        # <static> means nothing falls as a result. Marker plates are visuals
+        # with no <collision> either way, so they never block anything.
+        self.collide = (bool(getattr(self.node, 'collision_scene_enabled', True))
+                        if collide is None else bool(collide))
 
         pos = np.array(pos, dtype=float)
         orient = np.array(orient, dtype=float)
@@ -300,7 +319,7 @@ class Simulated3DPrinter:
     def _generate_sdf(self, model_name):
         """One static SDF model: the printer's boxes plus a textured plate for
         every mount that was given an ArUco ID."""
-        visuals = self.printer_model.to_sdf_links(include_collision=True)
+        visuals = self.printer_model.to_sdf_links(include_collision=self.collide)
 
         for mk in self.printer_model.markers:
             texture = self._marker_texture_path(mk.get('name'))
@@ -360,7 +379,9 @@ class Simulated3DPrinter:
             self.spawned_entities.append(name)
             self.node.get_logger().info(
                 f"Spawned {name}: {self.printer_model.name}, "
-                f"{len(self.printer_model.boxes)} boxes, markers {self.marker_ids} "
+                f"{len(self.printer_model.boxes)} boxes "
+                f"({'solid' if self.collide else 'VISUAL-ONLY, arm passes through'}), "
+                f"markers {self.marker_ids} "
                 f"at {[round(float(v), 4) for v in self.pos]} "
                 f"rpy {[round(float(v), 4) for v in self.orient]}")
         return ok

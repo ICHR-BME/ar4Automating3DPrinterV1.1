@@ -1,0 +1,3 @@
+timestamp,call_chain,duration_s
+2026-07-29T18:33:02.940196,purge_collision_scene,10.1815
+2026-07-29T18:33:02.941023,add_ground_plane,0.0008

@@ -68,6 +68,11 @@ def main():
         ('a1',      [0.60,  0.30, 0.302], {'door': 1}),
         ('a1_mini', [0.60, -0.30, 0.193], {'door': 2}),
     ]
+    # 1 = spawn solid printers (real <collision> geometry, the arm stalls against
+    # them). 0 = visual-only boxes the arm passes straight through — the same
+    # switch the runner scripts' COLLISIONS var flips, for a scene spawned by
+    # hand. They are <static> either way, so nothing falls.
+    COLLIDE = 1
     # ===============================================================
 
     rclpy.init()
@@ -92,12 +97,14 @@ def main():
             # model JSON is what turns a marker observation into a printer pose
             p = Simulated3DPrinter.from_marker(
                 *poses[anchor_id], printer_model=model, mount=ANCHOR_MARKER,
-                node=node, marker_ids=marker_ids, world_name=WORLD)
+                node=node, marker_ids=marker_ids, world_name=WORLD,
+                collide=COLLIDE)
             source = f'marker {anchor_id} from {src}'
         else:
             p = Simulated3DPrinter(
                 node=node, pos=fallback_pos, orient=UPRIGHT, printer_model=model,
-                marker_ids=marker_ids, world_name=WORLD, use_bad_frame=False)
+                marker_ids=marker_ids, world_name=WORLD, use_bad_frame=False,
+                collide=COLLIDE)
             source = 'fallback pose'
 
         ok = p.spawn()

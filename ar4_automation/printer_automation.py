@@ -87,7 +87,10 @@ class printerAutomation(ArucoDetectionViewer):
         # in (the printer boxes are the same primitives Gazebo spawns, so what
         # you see is what the planner avoids). Set False to plan in an empty
         # world again — useful to tell "the plan is in collision" apart from
-        # "the goal is unreachable".
+        # "the goal is unreachable". From a runner script set it through
+        # start_node(collisions=0) / start_webcam_node(collisions=0) (the
+        # COLLISIONS config var): those publish the ground plane themselves, so
+        # assigning this after the node is up is too late to suppress it.
         self.collision_scene_enabled = True
         # ground box (x, y, thickness) in m, centred under base_link
         self.ground_size = (2.0, 2.0, 0.05)
@@ -102,6 +105,7 @@ class printerAutomation(ArucoDetectionViewer):
         # ids published so far, in publish order (clear_collision_scene)
         self._scene_object_ids = []
         self._get_scene_client = None
+        self._apply_scene_client = None
         # SRDF home pose, resolved on first use by home_joints()
         self._home_joints_cache = None
         # add noise to estimated markers, for scan robustness testing
@@ -308,10 +312,13 @@ class printerAutomation(ArucoDetectionViewer):
                         'pos': np.array([0.0, 0.06, 0.067]), 'angle_deg': 0.0},
                     {'description': 'grab the handle',
                         'gripper': 'close'},
-                    '''{'description': 'grasp pose at the handle',
-                        'pos': np.array([0.0, 0.05, 0.1]), 'angle_deg': -5.0},
-                    {'description': 'lift / carry pose',
-                        'pos': np.array([0.0, 0.14, 0.1]), 'angle_deg': 0.0},'''
+                    # disabled — '#' per line, NOT a ''' block: a triple-quoted
+                    # string inside a list is a list ELEMENT, not a comment, and
+                    # the walk then hits a str where it expects a waypoint dict
+                    #{'description': 'grasp pose at the handle',
+                    #    'pos': np.array([0.0, 0.05, 0.1]), 'angle_deg': -5.0},
+                    #{'description': 'lift / carry pose',
+                    #    'pos': np.array([0.0, 0.14, 0.1]), 'angle_deg': 0.0},
                 ],
                 'place': [
                     {'description': 'lift / carry pose',
@@ -793,7 +800,28 @@ class printerAutomation(ArucoDetectionViewer):
         failure, except tolerant_last lets a failed last position move (scrape
         retract) just warn."""
         self._walk_grasp_joints = None
+        # _get_waypoints_for_marker returns None when the procedure is missing or
+        # empty; say which one rather than dying on len(None)
+        if not waypoints:
+            self.get_logger().error(
+                f"{caller}: no waypoints for marker {markerID} — check the "
+                "procedure's list in offset_configs.")
+            return False
         n = len(waypoints)
+        # Every entry must be a dict. Checked up front, before anything moves:
+        # these lists get hand-edited, and the usual slip is "commenting out" a
+        # waypoint by wrapping it in ''' ''' — inside a list that is a string
+        # ELEMENT, not a comment. Caught mid-walk it surfaces as an opaque
+        # AttributeError with the gripper already closed on a plate.
+        bad = [(i, type(wp).__name__) for i, wp in enumerate(waypoints)
+               if not isinstance(wp, dict)]
+        if bad:
+            for i, kind in bad:
+                self.get_logger().error(
+                    f"{caller}: waypoint {i+1}/{n} is a {kind}, not a dict — if you "
+                    "meant to disable it, comment each line with '#'; a ''' block "
+                    "inside a list is an element, not a comment.")
+            return False
         # the last 'pos' move, not the last list entry — a rotate may follow it
         last_pos_i = max((i for i, wp in enumerate(waypoints) if 'pos' in wp),
                          default=None)
@@ -946,12 +974,129 @@ class printerAutomation(ArucoDetectionViewer):
 
     @_timed
     def clear_collision_scene(self):
-        """Remove every object this node put in the scene (ground included)."""
+        """Remove every object this node put in the scene (ground included).
+
+        Only ids THIS process published — in a fresh run that list is empty. Use
+        purge_collision_scene() to clear what an earlier run left behind."""
         for object_id in list(self._scene_object_ids):
             self.moveit2.remove_collision_object(object_id)
         self.get_logger().info(
             f"clear_collision_scene: removed {len(self._scene_object_ids)} object(s).")
         self._scene_object_ids = []
+
+    @_timed
+    def purge_collision_scene(self, verify_timeout=5.0, max_passes=6):
+        """Remove EVERY world object from move_group's scene, this process's or not.
+
+        move_group outlives the runner scripts — it belongs to the launch file and
+        keeps its world for its whole lifetime. So boxes published by an EARLIER
+        run are still in it, and still planned against, even though the current
+        run added nothing: not adding is not the same as removing. Ask move_group
+        what it actually holds rather than trusting our own id list."""
+        names = self._scene_object_names()
+        if names is None:
+            self.get_logger().warn(
+                "purge_collision_scene: get_planning_scene unavailable — cannot see "
+                "what move_group holds, so nothing was removed. Anything left from "
+                "an earlier run is STILL being avoided.")
+            return False
+        if not names:
+            self.get_logger().info("purge_collision_scene: scene already empty.")
+            self._scene_object_ids = []
+            return True
+
+        total = len(names)
+        # Preferred path: ONE apply_planning_scene diff carrying every REMOVE.
+        # The /collision_object topic cannot do this reliably — its queue is 10
+        # deep, so removing a 35-box scene overflows it and most REMOVEs are
+        # dropped (measured: 35 -> 8 -> 1 over two passes). The service applies
+        # the whole diff atomically and acknowledges it.
+        remaining = names
+        if self._apply_scene_removals(names, verify_timeout) is not None:
+            remaining = self._remaining_scene_objects(names, verify_timeout)
+
+        # Fallback: the topic, in chunks below the queue depth, until the scene
+        # is clear or we stop making progress.
+        passes = 0
+        while remaining and passes < max_passes:
+            passes += 1
+            before = len(remaining)
+            for start in range(0, len(remaining), 8):
+                for object_id in remaining[start:start + 8]:
+                    self.moveit2.remove_collision_object(object_id)
+                time.sleep(0.2)          # let move_group drain the queue
+            remaining = self._remaining_scene_objects(remaining, verify_timeout)
+            self.get_logger().warn(
+                f"purge_collision_scene: topic pass {passes} removed "
+                f"{before - len(remaining)}; {len(remaining)} left.")
+            if len(remaining) == before:
+                break                    # no progress; more passes won't help
+
+        self._scene_object_ids = []
+        if remaining:
+            self.get_logger().error(
+                f"purge_collision_scene: {len(remaining)} of {total} object(s) would "
+                f"not go away ({', '.join(remaining[:4])}) — those volumes are STILL "
+                "being avoided. Restart move_group to be sure.")
+            return False
+        self.get_logger().info(
+            f"purge_collision_scene: removed all {total} leftover object(s) from "
+            "move_group's world.")
+        return True
+
+    def _apply_scene_removals(self, ids, timeout=5.0):
+        """REMOVE every id in one apply_planning_scene diff.
+
+        True/False = the service ran and reported success/failure; None = service
+        unavailable, so the caller should fall back to the topic. call_async +
+        poll, never a blocking .call() (see _scene_object_names)."""
+        from moveit_msgs.srv import ApplyPlanningScene
+        from moveit_msgs.msg import PlanningScene, CollisionObject
+
+        if self._apply_scene_client is None:
+            self._apply_scene_client = self.create_client(
+                ApplyPlanningScene, "apply_planning_scene",
+                callback_group=self._cb_group)
+        if not self._apply_scene_client.wait_for_service(timeout_sec=timeout):
+            self.get_logger().warn(
+                "purge_collision_scene: apply_planning_scene unavailable — falling "
+                "back to the /collision_object topic.")
+            return None
+
+        scene = PlanningScene()
+        scene.is_diff = True             # a diff: touch only these objects
+        scene.robot_state.is_diff = True
+        for object_id in ids:
+            obj = CollisionObject()
+            obj.id = object_id
+            obj.operation = CollisionObject.REMOVE
+            scene.world.collision_objects.append(obj)
+
+        future = self._apply_scene_client.call_async(
+            ApplyPlanningScene.Request(scene=scene))
+        deadline = time.time() + timeout
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.02)
+        if not future.done() or future.result() is None:
+            self.get_logger().warn(
+                "purge_collision_scene: apply_planning_scene call timed out.")
+            return False
+        return bool(future.result().success)
+
+    def _remaining_scene_objects(self, ids, timeout=5.0):
+        """Poll get_planning_scene until none of `ids` is left, or timeout.
+        Returns the ids still present (empty list == all gone)."""
+        deadline = time.time() + timeout
+        remaining = list(ids)
+        while time.time() < deadline:
+            names = self._scene_object_names()
+            if names is None:
+                return remaining         # no service: can't confirm anything
+            remaining = [i for i in ids if i in names]
+            if not remaining:
+                return []
+            time.sleep(0.2)
+        return remaining
 
     def _pad_boxes(self, boxes, padding=None):
         """Grow every box by `padding` on each side (default printer_box_padding)."""

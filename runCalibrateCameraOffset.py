@@ -46,11 +46,20 @@ USE_MANUAL_ESTIMATES = 1
 # take the marker estimates from there instead — no scan needed, but the save
 # file is then ignored and the scene won't match a scanned run.
 SPAWN_FROM_SCAN = 1
+# 1 = collisions on, in BOTH places they exist: the MoveIt planning scene (a
+# ground plane under the base plus a box model of every printer) and Gazebo
+# physics (printers spawn with real <collision> geometry). 0 = turn off both —
+# the planning scene is emptied, including anything an earlier run left in
+# move_group, and printers spawn visual-only so the arm passes through them
+# instead of stalling against them. Self-collisions and joint limits are ALWAYS
+# enforced. Use 0 to tell "the plan is in collision" apart from "the goal is
+# unreachable", not for a real run.
+COLLISIONS      = 1
 
 
 def main():
     rclpy.init()
-    node = start_node(sim=RUN_SIM, robot=ROBOT)
+    node = start_node(sim=RUN_SIM, robot=ROBOT, collisions=COLLISIONS)
     speed_scale = 0.2
     node.moveit2.max_velocity = speed_scale
     node.moveit2.max_acceleration = speed_scale

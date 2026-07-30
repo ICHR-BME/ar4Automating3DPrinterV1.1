@@ -60,6 +60,13 @@ SIM = 1
 # ROS. Set to 0 on the robot computer to drive the arm.
 DRY_RUN = 0
 
+# 1 = plan against the collision scene: a ground plane under the base plus a box
+# model of every printer added to it. 0 = plan in an EMPTY world, where only
+# self-collisions and joint limits constrain the path, so a move is free to sweep
+# the EEF through the floor or a printer. Diagnostic only — this agent takes
+# motion commands from a website with nobody's hand on a stop button.
+COLLISIONS = 1
+
 HISTORY_LIMIT = 50   # finished commands kept around for polling
 
 
@@ -95,7 +102,7 @@ def get_node():
         # into an immediate error instead of a command stuck at "running".
         sys.stdin = None
         rclpy.init()
-        node = start_node(sim=bool(SIM), robot=ROBOT)
+        node = start_node(sim=bool(SIM), robot=ROBOT, collisions=COLLISIONS)
         node.moveit2.max_velocity = SPEED_SCALE
         node.moveit2.max_acceleration = SPEED_SCALE
         if not node.load_state():

@@ -117,16 +117,39 @@ def make_sim_node(robot='ar4', **overrides):
     return node
 
 
-def start_node(sim=False, robot='ar4', **overrides):
+def start_node(sim=False, robot='ar4', collisions=True, **overrides):
     """(make_webcam_node or make_sim_node) + spin_in_background + wait_for_joint_states.
 
     robot: 'ar4', 'lite6', or 'xarm6' (see robot_config.py). Sim launch scripts:
     launchVirtualRobot.sh for the AR4, launchVirtualXArmLite6.sh for the Lite 6,
     launchVirtualXArm6.sh for the xArm 6.
+
+    collisions: False turns collisions off in BOTH places they exist.
+    (1) MoveIt: plan in an EMPTY world — no ground plane, no printer boxes
+    (spawn_sim_printers / spawn_printers_from_markers add nothing either), AND
+    anything an earlier run left in move_group's world is purged. That purge
+    matters: move_group belongs to the launch file, not to this script, so it
+    keeps its scene between runs — without it, "collisions off" would still plan
+    against the boxes the last collisions-on run published.
+    (2) Gazebo: printers spawn visual-only (Simulated3DPrinter reads this off
+    the node), so the arm passes through them instead of stalling against solid
+    geometry and aborting the trajectory. A MoveIt-only switch leaves the
+    physical obstruction in place, which fails in a way that looks unrelated.
+    Set it here rather than after this returns: the ground plane goes in below,
+    so flipping node.collision_scene_enabled afterwards comes too late for it.
+    Off means nothing stops a path sweeping the EEF through the floor or a
+    printer, so it is a diagnostic — it separates "the plan is in collision"
+    from "the goal is unreachable" — not a way to run an unattended job.
     """
     node = make_sim_node(robot=robot, **overrides) if sim else make_webcam_node(robot=robot, **overrides)
+    node.collision_scene_enabled = bool(collisions)
     spin_in_background(node)
     wait_for_joint_states(node)
+    if not collisions:
+        node.get_logger().warn(
+            "collisions=False: planning in an empty world (no ground plane, no "
+            "printer boxes). Paths may pass through the floor or a printer.")
+        node.purge_collision_scene()
     # move_group's world starts EMPTY — without this the planner happily sweeps
     # the EEF through the floor (printer boxes go in as each printer is spawned)
     node.add_ground_plane()
@@ -253,11 +276,19 @@ def wait_for_joint_states(node, timeout=10.0):
     return False
 
 
-def start_webcam_node(robot='ar4', **overrides):
-    """make_webcam_node + spin_in_background + wait_for_joint_states."""
+def start_webcam_node(robot='ar4', collisions=True, **overrides):
+    """make_webcam_node + spin_in_background + wait_for_joint_states.
+
+    collisions: see start_node — False plans in an empty world."""
     node = make_webcam_node(robot=robot, **overrides)
+    node.collision_scene_enabled = bool(collisions)
     spin_in_background(node)
     wait_for_joint_states(node)
+    if not collisions:
+        node.get_logger().warn(
+            "collisions=False: planning in an empty world (no ground plane, no "
+            "printer boxes). Paths may pass through the floor or a printer.")
+        node.purge_collision_scene()
     node.add_ground_plane()
     return node
 

@@ -46,6 +46,13 @@ PRINT_QUEUE_FILE = "print_queue.yaml"
 # before uploading, keeping only heat-and-home plus the blob squirt. the
 # stock startup shoves the plate around and breaks the scrape.
 STRIP_STARTUP = False
+# 1 = plan against the collision scene: a ground plane under the base plus a box
+# model of every printer added to it. 0 = plan in an EMPTY world, where only
+# self-collisions and joint limits constrain the path, so a move is free to sweep
+# the EEF through the floor or a printer. Use 0 to tell "the plan is in
+# collision" apart from "the goal is unreachable" — never for an unattended job
+# like this one, which drives real hardware for the whole print queue.
+COLLISIONS = 1
 # ---- End Configuration ----
 
 
@@ -90,7 +97,7 @@ def main():
     print_queue = load_print_queue(PRINT_QUEUE_FILE)
 
     rclpy.init()
-    node = start_webcam_node(robot=ROBOT)
+    node = start_webcam_node(robot=ROBOT, collisions=COLLISIONS)
 
     # Load save file — restores marker poses, offset config, and printer configs
     have_save = node.load_state()
