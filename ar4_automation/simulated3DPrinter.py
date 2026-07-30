@@ -1,67 +1,74 @@
+"""Spawn a real-printer box model, with its ArUco mounts, into Gazebo.
+
+One printer == one SDF model: the primitive boxes from
+models/printers/<name>.json (visual AND collision, so what you see is what
+MoveIt will avoid) plus a textured plate for every mount in that JSON's
+"markers" list, placed with tools/view_printer_model.py.
+
+Mounts are the single source of truth for where a marker sits on a printer:
+  * spawn()             puts the plate there in Gazebo
+  * marker_pose_in_base() says where the camera should therefore see it
+  * PrinterModel.pose_from_marker() (via from_marker) inverts it: an observed
+    marker pins the printer body
+so a marker moved in the JSON moves in all three at once.
+
+The legacy hollow-box printer — five walls, a separately spawned swinging door
+and door marker, the animation thread, and the hardcoded front-face marker
+math — is gone. Every spawn now goes through a printer model.
+"""
+
 import os
 import atexit
 import subprocess
 import time
-import math
-import threading
-import re
+
 import numpy as np
 import rclpy
 from rclpy.node import Node
-from tf2_ros import TransformBroadcaster, Buffer, TransformListener
-from geometry_msgs.msg import TransformStamped, PointStamped, PoseStamped, Pose, Point, Quaternion
 import tf_transformations
-import tf2_geometry_msgs
-import tf2_ros
-from ros_gz_interfaces.srv import SetEntityPose, SpawnEntity
-from ros_gz_interfaces.msg import Entity
+from geometry_msgs.msg import Point, Quaternion
+from ros_gz_interfaces.srv import SpawnEntity
 
 from .printer_model import PrinterModel
 
 
-
-
-
 class Simulated3DPrinter:
-    """Simulated 3D printer in Gazebo: box of walls, swinging door, ArUco markers.
+    """A printer model spawned into Gazebo at a known base_link pose.
 
-    door_marker_local_pos is an offset from the door front face center (-y is
-    outward); static_marker_local_pos is in the printer frame (None = default).
+    printer_model: name in models/printers/ (or a PrinterModel).
+    marker_ids: which ArUco ID each mount wears, {mount_name: id} — e.g.
+        {'door': 2}. A bare int is shorthand for the default mount. Mounts left
+        out of the dict are not drawn (no texture to give them).
     """
-    
-    # models/ lives at the repo root, one level above this package
+
+    # models/aruco_marker/ (marker textures) lives at the repo root
     DEFAULT_MODEL_DIR = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         'models', 'aruco_marker', '')
-    
+
+    DEFAULT_PRINTER_MODEL = 'a1_mini'
+    DEFAULT_MOUNT = 'door'
+    MARKER_TEXTURE = 'materials/textures/marker6x6_{}.png'
+
     def __init__(
         self,
         node=None,
-        pos=(0.0, -0.63, 0.15)+np.random.uniform(-0.03, 0.03, size=3),
+        pos=(0.6, 0.0, 0.2),
         orient=(0.0, 0.0, np.pi),
-        width=0.2,
-        depth=0.2,
-        height=0.3,
-        wall_thickness=0.01,
-        door_frequency=0.2,
-        door_amplitude=math.pi / 2,
-        door_marker_texture='materials/textures/marker6x6_0.png',
-        door_marker_size=0.05,
-        door_marker_local_pos=[0,0,0.01],
-        static_marker_texture='materials/textures/marker4x4_0.png',
-        static_marker_size=0.03,
-        static_marker_local_pos=None,
-        enable_door_flapping_animation=False,
+        printer_model=None,
+        marker_ids=None,
+        marker_size=None,
+        marker_texture=None,
         model_dir=None,
         use_bad_frame=True,
-        printer_model=None,
         world_name='default',
+        name=None,
     ):
         self._owns_node = node is None
         self.node = node if node else Node('simulated_printer')
-        
-        pos = np.array(pos)
-        orient = np.array(orient)
+
+        pos = np.array(pos, dtype=float)
+        orient = np.array(orient, dtype=float)
 
         # good frame -> bad frame (base_link/world). Only the frame rotation,
         # not the EEF offset angles that to_bad_frame adds.
@@ -73,86 +80,82 @@ class Simulated3DPrinter:
             R_orient = R_scipy.from_euler("XYZ", orient, degrees=False)
             orient = (R_GF_BF * R_orient).as_euler("XYZ", degrees=False)
 
-        self.pos = np.array(pos)
-        self.orient = np.array(orient)
+        self.pos = np.array(pos, dtype=float)
+        self.orient = np.array(orient, dtype=float)
 
-        # optional realistic body: a primitive-box approximation of a real
-        # printer (models/printers/<name>.json). Its footprint overrides
-        # width/depth/height so the door + markers still land on the front face,
-        # while _generate_combined_sdf emits its boxes instead of plain walls.
-        # The SAME boxes feed MoveIt collision later via PrinterModel.boxes_in_base.
-        self.printer_model = None
-        if printer_model is not None:
-            self.printer_model = (printer_model if isinstance(printer_model, PrinterModel)
-                                  else PrinterModel.load(printer_model))
-            width = self.printer_model.width
-            depth = self.printer_model.depth
-            height = self.printer_model.height
+        model = printer_model if printer_model is not None else self.DEFAULT_PRINTER_MODEL
+        self.printer_model = (model if isinstance(model, PrinterModel)
+                              else PrinterModel.load(model))
 
-        self.width = width
-        self.depth = depth
-        self.height = height
-        self.wall_thickness = wall_thickness
-        self.door_frequency = door_frequency
-        self.door_amplitude = door_amplitude
+        self.width = self.printer_model.width
+        self.depth = self.printer_model.depth
+        self.height = self.printer_model.height
+
+        self.marker_ids = self._normalize_marker_ids(marker_ids)
+        self.marker_size = marker_size
+        self.marker_texture = marker_texture or self.MARKER_TEXTURE
         self.model_dir = model_dir or self.DEFAULT_MODEL_DIR
-        
-        self.door_marker_texture = door_marker_texture
-        self.door_marker_size = door_marker_size
-        self.door_marker_local_pos = door_marker_local_pos
-        self.static_marker_texture = static_marker_texture
-        self.static_marker_size = static_marker_size
-        self.static_marker_local_pos = static_marker_local_pos
-        self.enable_door_flapping_animation = enable_door_flapping_animation
-
-        # instance ID from the trailing number in the marker texture filename
-        # ("marker6x6_0.png" -> "0"), full stem if there are no digits
-        _stem = os.path.basename(door_marker_texture).rsplit('.', 1)[0]
-        _match = re.search(r'(\d+)$', _stem)
-        self._instance_id = _match.group(1) if _match else _stem
-        
-        self.tf_broadcaster = TransformBroadcaster(self.node)
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self.node)
-
         self.world_name = world_name
-        self.set_pose_client = None
+
+        # entity name: model + the IDs it wears, so two printers of the same
+        # model don't overwrite each other in the world
+        ids = '_'.join(str(v) for _, v in sorted(self.marker_ids.items()))
+        self.name = name or f"printer_{self.printer_model.name}" + (f"_{ids}" if ids else "")
+
+        # spawn orientation as tf 'sxyz' (extrinsic xyz) — the same quaternion
+        # marker_pose_in_base() reasons with, so an estimate can't disagree with
+        # where Gazebo actually put the printer
+        self.q = [float(x) for x in tf_transformations.quaternion_from_euler(
+            float(self.orient[0]), float(self.orient[1]), float(self.orient[2]))]
+
         self.spawn_client = None
         self._bridge_proc = None
-
-        self.q = tf_transformations.quaternion_from_euler(
-            float(self.orient[0]), float(self.orient[1]), float(self.orient[2])
-        )
-        self.q = [float(x) for x in self.q]
-        self.q_marker = tf_transformations.quaternion_multiply(
-            self.q, tf_transformations.quaternion_from_euler(0, 0, math.pi/2)
-        )
-        self.q_marker = [float(x) for x in self.q_marker]
-        
-        # spawned entity names, kept for cleanup
         self.spawned_entities = []
-        self.markers = {}
-        self.walls = {}
 
-        self.door_pose_pub = None
-        self.marker_pose_pub = None
+    # ---- construction ----
 
-        self.animation_thread = None
-        self.running = False
+    @classmethod
+    def from_marker(cls, marker_pos, marker_euler, printer_model,
+                    mount=None, **kwargs):
+        """Place a printer so its `mount` lands on an observed marker pose.
 
-        # set during spawn
-        self._door_name = None
-        self._door_marker_name = None
+        marker_pos/marker_euler are in base_link, in ArucoDetector's frames
+        (euler = scipy intrinsic 'XYZ') — i.e. straight out of
+        marker_sources.load_marker_poses(). The pose already IS in the bad
+        frame, so no frame rotation is applied to it.
 
-    def rotate_vector_by_quaternion(self, v, q):
-        """Rotate a 3D vector by a quaternion."""
-        rot_matrix = tf_transformations.quaternion_matrix(q)[:3, :3]
-        return rot_matrix @ v
-    
-    def _setup_pose_service(self):
-        """Bring up ONE persistent ros_gz_bridge for both the set_pose (door/
-        marker animation) and create (spawning) services, plus their ROS
-        clients. Spawning through this in-process client — instead of a fresh
+        Raises ValueError if the model has no such mount (place one with
+        tools/view_printer_model.py).
+        """
+        model = (printer_model if isinstance(printer_model, PrinterModel)
+                 else PrinterModel.load(printer_model))
+        mount = mount or cls.DEFAULT_MOUNT
+        derived = model.pose_from_marker(mount, marker_pos, marker_euler)
+        if derived is None:
+            raise ValueError(
+                f"printer model '{model.name}' has no '{mount}' mount — place one "
+                f"with tools/view_printer_model.py")
+        pos, orient = derived
+        kwargs.setdefault('use_bad_frame', False)
+        return cls(pos=pos, orient=orient, printer_model=model, **kwargs)
+
+    def _normalize_marker_ids(self, marker_ids):
+        """{mount_name: aruco_id}, accepting a bare int for the default mount."""
+        if marker_ids is None:
+            return {}
+        if isinstance(marker_ids, (int, np.integer)):
+            mount = (self.DEFAULT_MOUNT
+                     if self.printer_model.get_marker(self.DEFAULT_MOUNT)
+                     else (self.printer_model.markers[0]['name']
+                           if self.printer_model.markers else self.DEFAULT_MOUNT))
+            return {mount: int(marker_ids)}
+        return {str(k): int(v) for k, v in marker_ids.items()}
+
+    # ---- gz plumbing ----
+
+    def _setup_spawn_client(self):
+        """Bring up ONE persistent ros_gz_bridge for the create service, plus its
+        ROS client. Spawning through this in-process client — instead of a fresh
         `ros2 run ros_gz_sim create` executable per model — is what makes spawns
         fast and reliable.
 
@@ -161,34 +164,25 @@ class Simulated3DPrinter:
         (/ros_gz_bridge), and duplicate node names corrupt DDS discovery —
         symptom: fresh nodes whose camera_info subscription silently never
         matches, so aruco detection runs uncalibrated and spots nothing."""
-        w = self.world_name
-        set_pose_srv = f'/world/{w}/set_pose'
-        create_srv = f'/world/{w}/create'
-        self._bridge_proc = None
-        self.set_pose_client = self.node.create_client(SetEntityPose, set_pose_srv)
+        create_srv = f'/world/{self.world_name}/create'
         self.spawn_client = self.node.create_client(SpawnEntity, create_srv)
-        if (self.set_pose_client.wait_for_service(timeout_sec=2.0) and
-                self.spawn_client.wait_for_service(timeout_sec=1.0)):
-            self.node.get_logger().info('gz set_pose+create services available (reusing bridge)')
+        if self.spawn_client.wait_for_service(timeout_sec=2.0):
+            self.node.get_logger().info('gz create service available (reusing bridge)')
             return
 
         self._bridge_proc = subprocess.Popen(
             ['ros2', 'run', 'ros_gz_bridge', 'parameter_bridge',
-             f'{set_pose_srv}@ros_gz_interfaces/srv/SetEntityPose',
              f'{create_srv}@ros_gz_interfaces/srv/SpawnEntity',
              '--ros-args', '-r', f'__node:=gz_srv_bridge_{os.getpid()}'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
         atexit.register(self._bridge_proc.terminate)
-        self.node.get_logger().info('Started ros_gz_bridge for set_pose + create services')
-        ok_pose = self.set_pose_client.wait_for_service(timeout_sec=10.0)
-        ok_spawn = self.spawn_client.wait_for_service(timeout_sec=10.0)
-        if ok_pose and ok_spawn:
-            self.node.get_logger().info('gz set_pose + create services available')
+        self.node.get_logger().info('Started ros_gz_bridge for the create service')
+        if self.spawn_client.wait_for_service(timeout_sec=10.0):
+            self.node.get_logger().info('gz create service available')
         else:
-            self.node.get_logger().warn(
-                f'gz services not fully available (set_pose={ok_pose}, create={ok_spawn})')
+            self.node.get_logger().warn('gz create service not available')
 
     def _wait_future(self, future, timeout_sec=10.0):
         """Block until a service future completes, spinning the node only when
@@ -197,6 +191,15 @@ class Simulated3DPrinter:
         while not future.done() and (time.time() - start) < timeout_sec:
             self._spin_or_sleep(0.05)
         return future.done()
+
+    def _spin_or_sleep(self, timeout_sec):
+        """Process callbacks for ~timeout_sec. Never spin_once() a node a
+        background executor owns (it detaches the node and kills callback
+        delivery for good); just sleep in that case."""
+        if self.node.executor is None:
+            rclpy.spin_once(self.node, timeout_sec=timeout_sec)
+        else:
+            time.sleep(timeout_sec)
 
     def _spawn_entity(self, sdf_str, name, pos, rpy):
         """Spawn one model from an inline SDF string via the persistent create
@@ -232,59 +235,35 @@ class Simulated3DPrinter:
             return tex
         return os.path.join(self.model_dir, tex)
 
-    def _broadcast_printer_frame(self):
-        """Broadcast the printer's TF frame."""
-        transform = TransformStamped()
-        transform.header.stamp = self.node.get_clock().now().to_msg()
-        transform.header.frame_id = "world"
-        transform.child_frame_id = f"printer_frame_{self._instance_id}"
-        transform.transform.translation.x = float(self.pos[0])
-        transform.transform.translation.y = float(self.pos[1])
-        transform.transform.translation.z = float(self.pos[2])
-        transform.transform.rotation.x = self.q[0]
-        transform.transform.rotation.y = self.q[1]
-        transform.transform.rotation.z = self.q[2]
-        transform.transform.rotation.w = self.q[3]
-        self.tf_broadcaster.sendTransform(transform)
-        return transform
+    def _entity_exists(self, name):
+        """True if a model of this name is in the world right now.
 
-    def _spin_or_sleep(self, timeout_sec):
-        """Process callbacks for ~timeout_sec. Never spin_once() a node a
-        background executor owns (it detaches the node and kills callback
-        delivery for good); just sleep in that case."""
-        if self.node.executor is None:
-            rclpy.spin_once(self.node, timeout_sec=timeout_sec)
-        else:
-            time.sleep(timeout_sec)
+        None if the query itself failed, so callers can tell 'definitely gone'
+        from 'no idea' and not wait on a world they can't see."""
+        try:
+            result = subprocess.run(
+                ['gz', 'model', '--list'],
+                capture_output=True, text=True, timeout=5.0)
+        except (subprocess.SubprocessError, OSError):
+            return None
+        if result.returncode != 0:
+            return None
+        return any(line.strip() == f'- {name}'
+                   for line in result.stdout.splitlines())
 
-    def _get_transform_with_retry(self, target_frame, source_frame, timeout_sec=5.0):
-        """Get a TF transform with retry logic."""
-        start_time = time.time()
-        while time.time() - start_time < timeout_sec:
-            try:
-                return self.tf_buffer.lookup_transform(target_frame, source_frame, rclpy.time.Time())
-            except (tf2_ros.LookupException, tf2_ros.ConnectivityException, tf2_ros.ExtrapolationException):
-                self._broadcast_printer_frame()
-                self._spin_or_sleep(0.1)
-        raise tf2_ros.LookupException(
-            f"Could not get transform from {source_frame} to {target_frame} after {timeout_sec}s"
-        )
+    def _delete_entity(self, name, wait_timeout=3.0):
+        """Remove an entity from Gazebo and WAIT until it is really gone.
 
-    def _transform_point_to_world(self, local_x, local_y, local_z):
-        """Transform a point from printer frame to world frame."""
-        point_stamped = PointStamped()
-        point_stamped.header.frame_id = f"printer_frame_{self._instance_id}"
-        point_stamped.header.stamp = self.node.get_clock().now().to_msg()
-        point_stamped.point.x = float(local_x)
-        point_stamped.point.y = float(local_y)
-        point_stamped.point.z = float(local_z)
+        The remove service returns as soon as gz accepts the request, but the
+        entity isn't erased until the end of an update cycle. Spawning the same
+        name immediately after therefore races: the create lands first, then the
+        pending removal deletes the model that was just made, and the spawn
+        looks successful while nothing appears in the world. That is why
+        respawning a printer used to silently drop whichever body already
+        existed. Polling until the name disappears removes the race."""
+        if self._entity_exists(name) is False:
+            return          # nothing to remove, so nothing to wait for
 
-        transform = self._get_transform_with_retry("world", f"printer_frame_{self._instance_id}")
-        transformed = tf2_geometry_msgs.do_transform_point(point_stamped, transform)
-        return transformed.point.x, transformed.point.y, transformed.point.z
-
-    def _delete_entity(self, name):
-        """Delete an entity from Gazebo."""
         delete_cmd = [
             'gz', 'service', '-s', f'/world/{self.world_name}/remove',
             '--reqtype', 'gz.msgs.Entity', '--reptype', 'gz.msgs.Boolean',
@@ -294,60 +273,51 @@ class Simulated3DPrinter:
             result = subprocess.run(delete_cmd, capture_output=True, text=True, check=True)
             msg = result.stdout.strip() or f'{name} deleted successfully'
             self.node.get_logger().debug(f'Delete: {msg}')
-        except subprocess.CalledProcessError as e:
+        except subprocess.CalledProcessError:
             pass  # entity may not exist
         except Exception as e:
             self.node.get_logger().warn(f'Delete exception for {name}: {e}')
+            return
 
-    def _generate_combined_sdf(self, model_name, include_door=True):
-        """Build one SDF model with all walls and markers as visuals in a single link."""
-        t = self.wall_thickness
-        w, d, h = self.width, self.depth, self.height
+        deadline = time.time() + wait_timeout
+        while time.time() < deadline:
+            if self._entity_exists(name) is not True:
+                return
+            time.sleep(0.05)
+        self.node.get_logger().warn(
+            f'{name} still present {wait_timeout}s after remove; spawning anyway '
+            f'(it may be deleted again by the pending removal)')
 
-        if self.printer_model is not None:
-            # realistic body: the primitive-box approximation of a real printer,
-            # with <collision> geometry so it's planning-consistent. The SAME
-            # boxes feed MoveIt later via PrinterModel.boxes_in_base.
-            visuals = self.printer_model.to_sdf_links(include_collision=True)
-        else:
-            # legacy hollow box of 5-6 walls (visual only)
-            wall_configs = [
-                ("bottom", [w, d, t], [0, 0, -h/2]),
-                ("top", [w, d, t], [0, 0, h/2]),
-                ("left", [t, d, h], [-w/2, 0, 0]),
-                ("right", [t, d, h], [w/2, 0, 0]),
-                ("back", [w, t, h], [0, d/2, 0]),
-            ]
-            if include_door:
-                wall_configs.append(("front", [w, t, h], [0, -d/2, 0]))
+    # ---- SDF ----
 
-            visuals = ""
-            for name, size, local_pos in wall_configs:
-                visuals += f"""
-      <visual name="{name}">
-        <pose>{local_pos[0]} {local_pos[1]} {local_pos[2]} 0 0 0</pose>
-        <geometry>
-          <box>
-            <size>{size[0]} {size[1]} {size[2]}</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>0.5 0.5 0.5 1</ambient>
-          <diffuse>0.5 0.5 0.5 1</diffuse>
-        </material>
-      </visual>"""
+    def _marker_texture_path(self, mount_name):
+        """Texture for a mount, or None when no ArUco ID was assigned to it."""
+        marker_id = self.marker_ids.get(mount_name)
+        if marker_id is None:
+            return None
+        return self._abs_texture(self.marker_texture.format(marker_id))
 
-        if self.static_marker_texture:
-            static_local_pos = self.static_marker_local_pos
-            if static_local_pos is None:
-                static_local_pos = [0, -d/2 - t + 0.05, 0]
-            # marker needs 90 deg yaw
+    def _generate_sdf(self, model_name):
+        """One static SDF model: the printer's boxes plus a textured plate for
+        every mount that was given an ArUco ID."""
+        visuals = self.printer_model.to_sdf_links(include_collision=True)
+
+        for mk in self.printer_model.markers:
+            texture = self._marker_texture_path(mk.get('name'))
+            if not texture:
+                continue
+            # the mount pose is already in the printer-local frame with the
+            # plate convention baked in (+X the inward normal, +Z up), so it
+            # goes straight into <pose> — no anchor math
+            mx, my, mz = mk['pos']
+            mr, mp, myaw = mk['rpy']
+            msize = self.marker_size or mk.get('size', 0.05)
             visuals += f"""
-      <visual name="static_marker">
-        <pose>{static_local_pos[0]} {static_local_pos[1]} {static_local_pos[2]} 0 0 {math.pi/2}</pose>
+      <visual name="marker_{mk.get('name', 'marker')}">
+        <pose>{mx} {my} {mz} {mr} {mp} {myaw}</pose>
         <geometry>
           <box>
-            <size>0.0001 {self.static_marker_size} {self.static_marker_size}</size>
+            <size>0.0001 {msize} {msize}</size>
           </box>
         </geometry>
         <material>
@@ -356,46 +326,15 @@ class Simulated3DPrinter:
           <specular>0.1 0.1 0.1 1</specular>
           <pbr>
             <metal>
-              <albedo_map>{self._abs_texture(self.static_marker_texture)}</albedo_map>
+              <albedo_map>{texture}</albedo_map>
               <metalness>0.0</metalness>
               <roughness>1.0</roughness>
             </metal>
           </pbr>
         </material>
       </visual>"""
-        
-        if include_door and self.door_marker_texture:
-            door_relative_pos = self.door_marker_local_pos if self.door_marker_local_pos else [0, 0, 0]
-            marker_surface_offset = -0.005  # 5mm outside
-            door_front_face_local = [0, -d/2 - t/2 + marker_surface_offset, 0]
-            door_marker_pos = [
-                door_front_face_local[0] + door_relative_pos[0],
-                door_front_face_local[1] + door_relative_pos[1],
-                door_front_face_local[2] + door_relative_pos[2]
-            ]
-            visuals += f"""
-      <visual name="door_marker">
-        <pose>{door_marker_pos[0]} {door_marker_pos[1]} {door_marker_pos[2]} 0 0 {math.pi/2}</pose>
-        <geometry>
-          <box>
-            <size>0.0001 {self.door_marker_size} {self.door_marker_size}</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
-          <specular>0.1 0.1 0.1 1</specular>
-          <pbr>
-            <metal>
-              <albedo_map>{self._abs_texture(self.door_marker_texture)}</albedo_map>
-              <metalness>0.0</metalness>
-              <roughness>1.0</roughness>
-            </metal>
-          </pbr>
-        </material>
-      </visual>"""
-        
-        sdf_content = f"""<?xml version="1.0"?>
+
+        return f"""<?xml version="1.0"?>
 <sdf version="1.6">
   <model name="{model_name}">
     <static>true</static>
@@ -404,457 +343,71 @@ class Simulated3DPrinter:
     </link>
   </model>
 </sdf>"""
-        return sdf_content
 
-    
+    # ---- spawn ----
 
-    def _generate_door_sdf(self, door_name):
-        """Generate SDF for the door (front wall) as a separate model."""
-        t = self.wall_thickness
-        w, h = self.width, self.height
-        
-        return f"""<?xml version="1.0"?>
-<sdf version="1.6">
-  <model name="{door_name}">
-    <static>false</static>
-    <link name="link">
-      <visual name="visual">
-        <geometry>
-          <box>
-            <size>{w} {t} {h}</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>0.5 0.5 0.5 1</ambient>
-          <diffuse>0.5 0.5 0.5 1</diffuse>
-        </material>
-      </visual>
-    </link>
-  </model>
-</sdf>"""
+    def spawn(self, name=None):
+        """Spawn the printer (boxes + marker plates) as a single gz model.
 
-    def _generate_door_marker_sdf(self, marker_name):
-        """Generate SDF for the door marker as a separate model."""
-        # absolute path: this SDF is now sent inline to the create service (not
-        # written into model_dir), so a relative texture path would not resolve
-        texture_path = self._abs_texture(self.door_marker_texture)
-        
-        return f"""<?xml version="1.0"?>
-<sdf version="1.6">
-  <model name="{marker_name}">
-    <static>false</static>
-    <link name="link">
-      <visual name="visual">
-        <geometry>
-          <box>
-            <size>0.0001 {self.door_marker_size} {self.door_marker_size}</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
-          <specular>0.1 0.1 0.1 1</specular>
-          <pbr>
-            <metal>
-              <albedo_map>{texture_path}</albedo_map>
-              <metalness>0.0</metalness>
-              <roughness>1.0</roughness>
-            </metal>
-          </pbr>
-        </material>
-      </visual>
-    </link>
-  </model>
-</sdf>"""
-
-    def spawn_body_only(self, body_name=None):
-        """Spawn ONLY the printer body (the collision-box model, or legacy walls)
-        through the persistent create client — no door, no marker, no TF warmup.
-        Fast and deterministic: the body pose is self.pos/self.orient directly, so
-        nothing depends on TF being up. Ideal for verifying the collision model."""
-        if body_name is None:
-            body_name = f"printer_body_{self._instance_id}"
-        self._setup_pose_service()
-        self._delete_entity(body_name)
-        body_sdf = self._generate_combined_sdf(body_name, include_door=False)
-        ok = self._spawn_entity(body_sdf, body_name, self.pos, self.orient)
+        No TF warmup and no per-part poses: everything is a visual inside the
+        body model, so the only pose that matters is self.pos/self.orient.
+        """
+        name = name or self.name
+        self._setup_spawn_client()
+        self._delete_entity(name)
+        ok = self._spawn_entity(self._generate_sdf(name), name, self.pos, self.orient)
         if ok:
-            self.spawned_entities.append(body_name)
+            self.spawned_entities.append(name)
+            self.node.get_logger().info(
+                f"Spawned {name}: {self.printer_model.name}, "
+                f"{len(self.printer_model.boxes)} boxes, markers {self.marker_ids} "
+                f"at {[round(float(v), 4) for v in self.pos]} "
+                f"rpy {[round(float(v), 4) for v in self.orient]}")
         return ok
 
-    def spawn_fast(self, body_name=None):
-        """Spawn static parts as one model, door + marker separate for animation.
+    # ---- where its markers are ----
 
-        3 spawn commands instead of 8+, much more reliable than spawn_complete().
+    def marker_pose_in_base(self, mount=None):
+        """A mount's ArUco pose in base_link (Z out of the face), matching
+        ArucoDetector's frames: (pos, euler) with euler scipy intrinsic 'XYZ'.
+
+        The exact inverse of PrinterModel.pose_from_marker, so registering this
+        as an estimate and then back-solving the printer from a perfect
+        detection returns the printer to where it was spawned. World ==
+        base_link here (both are the Gazebo fixed frame).
+
+        Raises ValueError if the model has no such mount.
         """
-        if body_name is None:
-            body_name = f"printer_body_{self._instance_id}"
-        door_name = f"door_{self._instance_id}"
-
-        self._setup_pose_service()
-
-        # broadcast a few times so TF has the printer frame before we look it up
-        for _ in range(10):
-            self._broadcast_printer_frame()
-            self._spin_or_sleep(0.1)
-
-        # clear leftovers from either spawn variant
-        self._delete_entity(body_name)
-        self._delete_entity(door_name)
-        for wall_name in ["bottom", "top", "left", "right", "front", "back"]:
-            self._delete_entity(f"{wall_name}_{self._instance_id}")
-        
-        # All three models are sent as inline SDF strings through the persistent
-        # create client (_spawn_entity) — no temp files, and no fresh
-        # `ros2 run ros_gz_sim create` executable per model.
-
-        # 1. static body (real-printer boxes or legacy walls) + static marker
-        body_sdf = self._generate_combined_sdf(body_name, include_door=False)
-        if self._spawn_entity(body_sdf, body_name, self.pos, self.orient):
-            self.spawned_entities.append(body_name)
-
-        # 2. door (separate model so it can animate)
-        door_sdf = self._generate_door_sdf(door_name)
-        door_local = [0, -self.depth/2, 0]
-        door_world = self._transform_point_to_world(*door_local)
-        if self._spawn_entity(door_sdf, door_name, door_world, self.orient):
-            self.spawned_entities.append(door_name)
-            self._door_name = door_name
-
-        # 3. door marker
-        marker_name = os.path.basename(self.door_marker_texture).split('.')[0]
-        self._delete_entity(marker_name)
-
-        marker_sdf = self._generate_door_marker_sdf(marker_name)
-        door_relative_pos = self.door_marker_local_pos if self.door_marker_local_pos else [0, 0, 0]
-        marker_surface_offset = -0.005
-        door_front_face_local = [0, -self.depth/2 - self.wall_thickness/2 + marker_surface_offset, 0]
-        marker_local = [
-            door_front_face_local[0] + door_relative_pos[0],
-            door_front_face_local[1] + door_relative_pos[1],
-            door_front_face_local[2] + door_relative_pos[2]
-        ]
-        marker_world = self._transform_point_to_world(*marker_local)
-
-        # Marker normal is its local +X; it must point out of the door's -Y
-        # face, i.e. rotated +90 deg about the printer's LOCAL z-axis. That is
-        # R_printer * Rz(90) (== self.q_marker), NOT yaw+90: the two agree only
-        # when roll==pitch==0, otherwise adding to yaw rotates about world z and
-        # the marker ends up facing the wrong way (position stays right because
-        # it goes through the full-orientation TF frame). Convert q_marker to
-        # RPY (Rz*Ry*Rx == tf 'sxyz'); _spawn_entity turns it back into the same
-        # quaternion.
-        marker_rpy = tf_transformations.euler_from_quaternion(self.q_marker)
-        if self._spawn_entity(marker_sdf, marker_name, marker_world, marker_rpy):
-            self.spawned_entities.append(marker_name)
-
-        self._door_marker_name = marker_name
-
-        if self.enable_door_flapping_animation:
-            self.start_door_flapping_animation(marker_name)
-        
-        self.node.get_logger().info('Fast printer spawn complete (3 models)')
-        return body_name, door_name, marker_name
-
-    def get_door_marker_pose_in_base(self):
-        """Door marker pose in base_link, ArUco convention (Z out of the
-        face). Returns (bad_pos, bad_euler) matching ArucoDetector's frames."""
         from scipy.spatial.transform import Rotation as R_scipy
 
-        # Marker local position in the printer frame
-        door_relative_pos = self.door_marker_local_pos if self.door_marker_local_pos else [0, 0, 0]
-        marker_surface_offset = -0.005
-        door_front_face_local = np.array([
-            0,
-            -self.depth / 2 - self.wall_thickness / 2 + marker_surface_offset,
-            0,
-        ])
-        marker_local_pos = door_front_face_local + np.array(door_relative_pos)
+        mount = mount or self.DEFAULT_MOUNT
+        mk = self.printer_model.get_marker(mount)
+        R_pm = self.printer_model.marker_aruco_rotation(mount)
+        if mk is None or R_pm is None:
+            raise ValueError(
+                f"printer model '{self.printer_model.name}' has no '{mount}' mount — "
+                f"place one with tools/view_printer_model.py")
 
-        # Printer orientation in world (bad frame). Use the SAME quaternion the
-        # printer is spawned with (self.q, tf 'sxyz'/extrinsic) rather than
-        # re-deriving from self.orient via scipy's intrinsic "XYZ": the two
-        # conventions agree only when a single Euler angle is nonzero, so a
-        # marker with compound roll+yaw (e.g. lite6 marker 1) would otherwise
-        # register an estimate that doesn't match where Gazebo actually spawns it.
-        R_printer = R_scipy.from_quat(self.q)
+        R_bp = R_scipy.from_quat(self.q)          # printer -> base
+        pos = np.asarray(self.pos, dtype=float) + R_bp.apply(mk['pos'])
+        euler = (R_bp * R_pm).as_euler('XYZ', degrees=False)
+        return pos, euler
 
-        # Marker world position
-        marker_world_pos = np.array(self.pos) + R_printer.apply(marker_local_pos)
+    def register_marker_estimates(self, node=None, mounts=None):
+        """Register each mount's pose as an initial marker estimate on the node,
+        so a scan knows where to look. Returns the marker IDs registered."""
+        node = node or self.node
+        registered = []
+        for mount, marker_id in self.marker_ids.items():
+            if mounts is not None and mount not in mounts:
+                continue
+            bad_pos, bad_euler = self.marker_pose_in_base(mount)
+            node.register_estimated_marker(
+                marker_id=marker_id, bad_pos=bad_pos, bad_euler=bad_euler)
+            registered.append(marker_id)
+        return registered
 
-        # ArUco-convention rotation: door faces -Y locally, so marker Z (out
-        # of face) = -Y, marker X = +X, marker Y = Z x X (down)
-        marker_z_local = np.array([0.0, -1.0, 0.0])
-        marker_x_local = np.array([1.0, 0.0, 0.0])
-        marker_y_local = np.cross(marker_z_local, marker_x_local)
-
-        R_marker_local = np.column_stack([marker_x_local, marker_y_local, marker_z_local])
-        R_marker_world = R_printer.as_matrix() @ R_marker_local
-        marker_euler_world = R_scipy.from_matrix(R_marker_world).as_euler("XYZ", degrees=False)
-
-        # world == base_link (both are the Gazebo fixed frame)
-        return marker_world_pos, marker_euler_world
-
-    def _animate_door(self, door_name, marker_name, local_marker_pos):
-        """Animation loop for the swinging door."""
-        offset_to_center = np.array([self.width/2, 0, 0])  # from hinge to door center
-        
-        # Compute hinge position in world
-        hinge_local = [-self.width/2, -self.depth/2, 0]
-        hinge_world = list(self._transform_point_to_world(*hinge_local))
-        
-        # Broadcast hinge frame
-        hinge_transform = TransformStamped()
-        hinge_transform.header.frame_id = "world"
-        hinge_transform.child_frame_id = "hinge_frame"
-        hinge_transform.transform.translation.x = hinge_world[0]
-        hinge_transform.transform.translation.y = hinge_world[1]
-        hinge_transform.transform.translation.z = hinge_world[2]
-        hinge_transform.transform.rotation.x = self.q[0]
-        hinge_transform.transform.rotation.y = self.q[1]
-        hinge_transform.transform.rotation.z = self.q[2]
-        hinge_transform.transform.rotation.w = self.q[3]
-        
-        while self.running:
-            t = time.time()
-            # Oscillate between 0 and -amplitude
-            delta_yaw = -self.door_amplitude * (math.sin(2 * math.pi * self.door_frequency * t) + 1) / 2
-            
-            # Compute rotated offset
-            cos_y, sin_y = math.cos(delta_yaw), math.sin(delta_yaw)
-            rotated_offset = np.array([
-                cos_y * offset_to_center[0] - sin_y * offset_to_center[1],
-                sin_y * offset_to_center[0] + cos_y * offset_to_center[1],
-                offset_to_center[2]
-            ])
-            
-            # Door position and orientation in world
-            door_pos = np.array(hinge_world) + self.rotate_vector_by_quaternion(rotated_offset, self.q)
-            q_delta = tf_transformations.quaternion_from_euler(0, 0, delta_yaw)
-            door_ori = tf_transformations.quaternion_multiply(self.q, q_delta)
-            door_ori = [float(x) for x in door_ori]
-            
-            # Marker position and orientation (with extra 90° rotation)
-            marker_pos = door_pos + self.rotate_vector_by_quaternion(local_marker_pos, door_ori)
-            q_marker_offset = tf_transformations.quaternion_from_euler(0, 0, math.pi/2)
-            marker_ori = tf_transformations.quaternion_multiply(door_ori, q_marker_offset)
-            marker_ori = [float(x) for x in marker_ori]
-            
-            # Update Gazebo poses via service
-            if self.set_pose_client:
-                try:
-                    # Door pose
-                    door_request = SetEntityPose.Request()
-                    door_request.entity = Entity()
-                    door_request.entity.name = door_name
-                    door_request.entity.type = Entity.MODEL
-                    door_request.pose = Pose()
-                    door_request.pose.position = Point(x=float(door_pos[0]), y=float(door_pos[1]), z=float(door_pos[2]))
-                    door_request.pose.orientation = Quaternion(x=float(door_ori[0]), y=float(door_ori[1]), z=float(door_ori[2]), w=float(door_ori[3]))
-                    self.set_pose_client.call_async(door_request)
-                    
-                    # Marker pose
-                    marker_request = SetEntityPose.Request()
-                    marker_request.entity = Entity()
-                    marker_request.entity.name = marker_name
-                    marker_request.entity.type = Entity.MODEL
-                    marker_request.pose = Pose()
-                    marker_request.pose.position = Point(x=float(marker_pos[0]), y=float(marker_pos[1]), z=float(marker_pos[2]))
-                    marker_request.pose.orientation = Quaternion(x=float(marker_ori[0]), y=float(marker_ori[1]), z=float(marker_ori[2]), w=float(marker_ori[3]))
-                    self.set_pose_client.call_async(marker_request)
-                except Exception as e:
-                    self.node.get_logger().warn(f'Failed to set pose: {e}')
-            
-            # Publish poses for other nodes
-            if self.door_pose_pub:
-                door_msg = PoseStamped()
-                door_msg.header.stamp = self.node.get_clock().now().to_msg()
-                door_msg.header.frame_id = "world"
-                door_msg.pose.position = Point(x=float(door_pos[0]), y=float(door_pos[1]), z=float(door_pos[2]))
-                door_msg.pose.orientation = Quaternion(x=float(door_ori[0]), y=float(door_ori[1]), z=float(door_ori[2]), w=float(door_ori[3]))
-                self.door_pose_pub.publish(door_msg)
-            
-            if self.marker_pose_pub:
-                marker_msg = PoseStamped()
-                marker_msg.header.stamp = self.node.get_clock().now().to_msg()
-                marker_msg.header.frame_id = "world"
-                marker_msg.pose.position = Point(x=float(marker_pos[0]), y=float(marker_pos[1]), z=float(marker_pos[2]))
-                marker_msg.pose.orientation = Quaternion(x=float(marker_ori[0]), y=float(marker_ori[1]), z=float(marker_ori[2]), w=float(marker_ori[3]))
-                self.marker_pose_pub.publish(marker_msg)
-            
-            # Broadcast TF frames
-            hinge_transform.header.stamp = self.node.get_clock().now().to_msg()
-            self.tf_broadcaster.sendTransform(hinge_transform)
-            
-            door_transform = TransformStamped()
-            door_transform.header.stamp = self.node.get_clock().now().to_msg()
-            door_transform.header.frame_id = "hinge_frame"
-            door_transform.child_frame_id = "door_frame"
-            door_transform.transform.translation.x = float(rotated_offset[0])
-            door_transform.transform.translation.y = float(rotated_offset[1])
-            door_transform.transform.translation.z = float(rotated_offset[2])
-            door_transform.transform.rotation.x = float(q_delta[0])
-            door_transform.transform.rotation.y = float(q_delta[1])
-            door_transform.transform.rotation.z = float(q_delta[2])
-            door_transform.transform.rotation.w = float(q_delta[3])
-            self.tf_broadcaster.sendTransform(door_transform)
-            
-            marker_transform = TransformStamped()
-            marker_transform.header.stamp = self.node.get_clock().now().to_msg()
-            marker_transform.header.frame_id = "door_frame"
-            marker_transform.child_frame_id = "marker_frame"
-            marker_transform.transform.translation.x = float(local_marker_pos[0])
-            marker_transform.transform.translation.y = float(local_marker_pos[1])
-            marker_transform.transform.translation.z = float(local_marker_pos[2])
-            marker_transform.transform.rotation.x = 0.0
-            marker_transform.transform.rotation.y = 0.0
-            marker_transform.transform.rotation.z = 0.0
-            marker_transform.transform.rotation.w = 1.0
-            self.tf_broadcaster.sendTransform(marker_transform)
-            
-            time.sleep(0.02)  # 50Hz
-
-    def _set_door_angle(self, door_name, marker_name, angle):
-        """Set the door to a specific angle (0 = closed, -amplitude = fully open)."""
-        offset_to_center = np.array([self.width/2, 0, 0])
-        
-        # Marker offset from door center: front face offset + surface offset + user-specified offset
-        # Front face is at y = -wall_thickness/2 from door center, plus 5mm outside
-        marker_surface_offset = -0.005  # 5mm outside the door
-        user_offset = np.array(self.door_marker_local_pos) if self.door_marker_local_pos is not None else np.array([0, 0, 0])
-        local_marker_pos = np.array([0, -self.wall_thickness/2 + marker_surface_offset, 0]) + user_offset
-        
-        # Compute hinge position in world
-        hinge_local = [-self.width/2, -self.depth/2, 0]
-        hinge_world = list(self._transform_point_to_world(*hinge_local))
-        
-        # Compute rotated offset
-        cos_y, sin_y = math.cos(angle), math.sin(angle)
-        rotated_offset = np.array([
-            cos_y * offset_to_center[0] - sin_y * offset_to_center[1],
-            sin_y * offset_to_center[0] + cos_y * offset_to_center[1],
-            offset_to_center[2]
-        ])
-        
-        # Door position and orientation in world
-        door_pos = np.array(hinge_world) + self.rotate_vector_by_quaternion(rotated_offset, self.q)
-        q_delta = tf_transformations.quaternion_from_euler(0, 0, angle)
-        door_ori = tf_transformations.quaternion_multiply(self.q, q_delta)
-        door_ori = [float(x) for x in door_ori]
-        
-        # Marker position and orientation (with extra 90° rotation)
-        marker_pos = door_pos + self.rotate_vector_by_quaternion(local_marker_pos, door_ori)
-        q_marker_offset = tf_transformations.quaternion_from_euler(0, 0, math.pi/2)
-        marker_ori = tf_transformations.quaternion_multiply(door_ori, q_marker_offset)
-        marker_ori = [float(x) for x in marker_ori]
-        
-        # Update Gazebo poses via service
-        if self.set_pose_client:
-            try:
-                # Door pose
-                door_request = SetEntityPose.Request()
-                door_request.entity = Entity()
-                door_request.entity.name = door_name
-                door_request.entity.type = Entity.MODEL
-                door_request.pose = Pose()
-                door_request.pose.position = Point(x=float(door_pos[0]), y=float(door_pos[1]), z=float(door_pos[2]))
-                door_request.pose.orientation = Quaternion(x=float(door_ori[0]), y=float(door_ori[1]), z=float(door_ori[2]), w=float(door_ori[3]))
-                self.set_pose_client.call_async(door_request)
-                
-                # Marker pose
-                marker_request = SetEntityPose.Request()
-                marker_request.entity = Entity()
-                marker_request.entity.name = marker_name
-                marker_request.entity.type = Entity.MODEL
-                marker_request.pose = Pose()
-                marker_request.pose.position = Point(x=float(marker_pos[0]), y=float(marker_pos[1]), z=float(marker_pos[2]))
-                marker_request.pose.orientation = Quaternion(x=float(marker_ori[0]), y=float(marker_ori[1]), z=float(marker_ori[2]), w=float(marker_ori[3]))
-                self.set_pose_client.call_async(marker_request)
-            except Exception as e:
-                self.node.get_logger().warn(f'Failed to set pose: {e}')
-
-    def open_door(self, duration=1.0):
-        """Animate the door to fully open over duration seconds."""
-        if not hasattr(self, '_door_marker_name') or not self._door_marker_name:
-            self.node.get_logger().warn('Door marker not spawned yet')
-            return
-        
-        if not hasattr(self, '_current_door_angle'):
-            self._current_door_angle = 0.0
-        
-        start_angle = self._current_door_angle
-        end_angle = -self.door_amplitude
-        self._animate_door_to_angle(start_angle, end_angle, duration)
-        self._current_door_angle = end_angle
-        self.node.get_logger().info('Door opened')
-
-    def close_door(self, duration=1.0):
-        """Animate the door closed over duration seconds."""
-        if not hasattr(self, '_door_marker_name') or not self._door_marker_name:
-            self.node.get_logger().warn('Door marker not spawned yet')
-            return
-        
-        if not hasattr(self, '_current_door_angle'):
-            self._current_door_angle = -self.door_amplitude
-        
-        start_angle = self._current_door_angle
-        end_angle = 0.0
-        self._animate_door_to_angle(start_angle, end_angle, duration)
-        self._current_door_angle = end_angle
-        self.node.get_logger().info('Door closed')
-
-    def _animate_door_to_angle(self, start_angle, end_angle, duration, fps=50):
-        """Animate the door from start_angle to end_angle (rad) over
-        duration seconds at fps."""
-        num_steps = int(duration * fps)
-        if num_steps < 1:
-            num_steps = 1
-        
-        # Use stored door name, default to "front" for spawn_complete() compatibility
-        door_name = self._door_name if self._door_name else "front"
-        
-        for i in range(num_steps + 1):
-            t = i / num_steps
-            # Smooth easing (ease-in-out)
-            t_smooth = t * t * (3 - 2 * t)
-            angle = start_angle + (end_angle - start_angle) * t_smooth
-            self._set_door_angle(door_name, self._door_marker_name, angle)
-            time.sleep(1.0 / fps)
-
-    def start_door_flapping_animation(self, marker_name):
-        """Start the door animation with attached marker."""
-        if self.animation_thread and self.animation_thread.is_alive():
-            self.node.get_logger().warn('Animation already running')
-            return
-        
-        # Create pose publishers
-        self.door_pose_pub = self.node.create_publisher(PoseStamped, '/door_world_pose', 10)
-        self.marker_pose_pub = self.node.create_publisher(PoseStamped, '/marker_world_pose', 10)
-        
-        # Marker offset from door center: front face offset + surface offset + user-specified offset
-        # Front face is at y = -wall_thickness/2 from door center, plus 5mm outside
-        marker_surface_offset = -0.005  # 5mm outside the door
-        user_offset = np.array(self.door_marker_local_pos) if self.door_marker_local_pos is not None else np.array([0, 0, 0])
-        local_marker_pos = np.array([0, -self.wall_thickness/2 + marker_surface_offset, 0]) + user_offset
-        
-        # Use stored door name, default to "front" for spawn_complete() compatibility
-        door_name = self._door_name if self._door_name else "front"
-        
-        self.running = True
-        self.animation_thread = threading.Thread(
-            target=self._animate_door,
-            args=(door_name, marker_name, local_marker_pos),
-            daemon=True
-        )
-        self.animation_thread.start()
-        self.node.get_logger().info('Door animation started')
-
-    def stop_animation(self):
-        """Stop the door animation."""
-        self.running = False
-        if self.animation_thread:
-            self.animation_thread.join(timeout=1.0)
-        self.node.get_logger().info('Door animation stopped')
+    # ---- lifecycle ----
 
     def spin(self):
         """Convenience method to spin the node."""
@@ -876,39 +429,26 @@ class Simulated3DPrinter:
 
     def cleanup(self):
         """Remove all spawned entities."""
-        self.stop_animation()
         for name in self.spawned_entities:
             self._delete_entity(name)
         self.spawned_entities.clear()
-        self.markers.clear()
-        self.walls.clear()
 
 
 def main():
-    """Simple main function demonstrating the printer usage."""
+    """Spawn one printer of each model with markers 1 and 2, then spin."""
     rclpy.init()
-    
-    # Simple usage - just create and spawn with defaults
-    printer = Simulated3DPrinter()
-    printer.spawn_fast()
-    
-    # Demonstrate opening and closing the door with animation
-    num_cycles = 3
-    pause_between = 0.5  # seconds to pause between open/close
-    animation_duration = 1.0  # seconds for each open/close animation
-    #time.sleep(3)
-    for i in range(num_cycles):
-        printer.node.get_logger().info(f'Cycle {i + 1}/{num_cycles}')
-        
-        time.sleep(pause_between)
-        printer.open_door(duration=animation_duration)
-        
-        time.sleep(pause_between)
-        printer.close_door(duration=animation_duration)
-    
-    printer.node.get_logger().info('Door demo complete, spinning...')
-    printer.spin()
-    
+    node = Node('simulated_printer_demo')
+    for model, marker_id, y in (('a1', 1, 0.35), ('a1_mini', 2, -0.35)):
+        printer = Simulated3DPrinter(
+            node=node, printer_model=model, marker_ids={'door': marker_id},
+            pos=[0.6, y, PrinterModel.load(model).height / 2.0],
+            orient=[0.0, 0.0, 0.0], use_bad_frame=False,
+        )
+        printer.spawn()
+        node.get_logger().info(
+            f"{model} door marker {marker_id} should be seen at "
+            f"{np.round(printer.marker_pose_in_base('door')[0], 3)}")
+    rclpy.spin(node)
     rclpy.shutdown()
 
 

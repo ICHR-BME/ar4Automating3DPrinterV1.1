@@ -13,9 +13,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import rclpy
 
+from ar4_automation.marker_sources import SCAN
 from ar4_automation.runner_common import (
     start_node,
     restore_saved_printers,
+    spawn_printers_from_markers,
     spawn_sim_printers,
     sim_printer_specs,
     require_scanned_markers,
@@ -25,23 +27,35 @@ from ar4_automation.runner_common import (
 RUN_SIM = 1      # 1 = Gazebo (sim camera + spawned printers), 0 = hardware
 ROBOT = 'xarm6'  # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
 NUM_REPEATS = 6  # times to repeat the double transfer
+# 1 = sim printers stand where the last scan MEASURED their markers
+# (data/printer_state.json, written by scanFor3Markers.py), so Gazebo shows the same
+# layout the arm is working from. 0 = spawn them at the runner_common layout and
+# take the marker estimates from there instead — no scan needed, but the save
+# file is then ignored and the scene won't match a scanned run.
+SPAWN_FROM_SCAN = 1
 
 
 def main():
     rclpy.init()
     node = start_node(sim=RUN_SIM, robot=ROBOT)
 
-    if RUN_SIM:
-        # spawn printers instead of loading the save file, its real-world
-        # poses don't match the sim scene
+    if RUN_SIM and not SPAWN_FROM_SCAN:
+        # the spawned printers ARE the ground truth here: marker estimates are
+        # derived from where they were placed, and the save file is ignored
         spawn_sim_printers(node, sim_printer_specs(ROBOT, 3))
     else:
         # save file restores marker poses, offset config, printer configs
         if not node.load_state():
-            node.get_logger().error("No save file found — run printer_automation.py first to create one.")
+            node.get_logger().error("No save file found — run scanFor3Markers.py first to create one.")
             return
 
-        restore_saved_printers(node)
+        if RUN_SIM:
+            # stand each printer where the scan measured its marker (nothing is
+            # re-registered, so the scanned poses stay as saved)
+            spawn_printers_from_markers(node, sim_printer_specs(ROBOT, 3),
+                                        source=SCAN, fallback=False)
+        else:
+            restore_saved_printers(node)
         # only officially scanned poses (scanFor3Markers.py) are accepted here
         # — hand-taught/geometric estimates must go through a scan first
         if not require_scanned_markers(node, [0, 1, 2]):

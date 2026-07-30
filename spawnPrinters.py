@@ -1,25 +1,34 @@
 #!/usr/bin/env python3
-"""Spawn printer collision-box models into a running Gazebo, to verify them.
+"""Spawn printer models into a running Gazebo, placed from a marker file.
 
 Launch a sim first (any gz world with a /world/<WORLD>/create service — e.g.
-scripts/launchVirtualXArm6.sh), then run this. Spawns each model's box body via
-a persistent bridged create client (no per-model ros2 process, no TF warmup), so
-it's fast (~0.3 s/model after a one-time bridge setup) and consistent.
+scripts/launchVirtualXArm6.sh), then run this. Each printer is one SDF model:
+the collision boxes from models/printers/<name>.json plus a textured plate for
+every ArUco mount in that JSON.
 
 Config-driven — edit the CONFIG block below (no command-line args).
 
+Where the printers go (MARKER_SOURCE):
+  'scan'   data/printer_state.json, written by scanFor2Markers.py /
+           scanFor3Markers.py — the poses a real camera scan measured.
+  'manual' data/manual_marker_estimates.json, written by teachMarkersByHand.py
+           — drag-teach measurements, useful before a scan has ever run.
+  'none'   ignore both files and use the fallback poses in PRINTERS.
+For each printer, the body is back-solved from its marker plus the mount offset
+recorded in the model JSON (PrinterModel.pose_from_marker). Markers missing from
+the file fall back to the PRINTERS pose below.
+
 Notes:
-- The A1/A1 mini meshes are modeled Y-up; UPRIGHT rolls them +90 deg about X so
-  the heavy base sits on the floor (world +Z up). Each pose z = half the model's
-  Y-extent so the base rests at z=0.
-- BODY_ONLY spawns just the collision boxes (what MoveIt will use). Set it False
-  to also spawn the swinging door + ArUco marker (needs TF; slower).
+- The box models are already Z-up (printer_mesh_to_boxes recenters the AABB and
+  does no axis swap — a1's Z extent is its 0.605 m height), so the fallback
+  orientation is identity, not a corrective roll. Each fallback z = half the
+  model's HEIGHT so the base rests at z=0. A pose derived from a marker carries
+  its own orientation.
 """
 
 import sys
 import os
 import time
-import math
 import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -28,20 +37,36 @@ import rclpy
 from rclpy.node import Node
 from rclpy.executors import MultiThreadedExecutor
 
+from ar4_automation.marker_sources import load_marker_poses, source_path
+from ar4_automation.printer_model import PrinterModel
 from ar4_automation.simulated3DPrinter import Simulated3DPrinter
 
 
 def main():
     # ===================== CONFIG (edit these) =====================
     WORLD = 'default'          # gz world name (matches /world/<WORLD>/create)
-    BODY_ONLY = True           # True = just collision boxes; False = +door+marker
-    UPRIGHT = [math.pi / 2, 0.0, 0.0]   # roll +90deg: model +Y (up) -> world +Z
+    UPRIGHT = [0.0, 0.0, 0.0]  # box models are already Z-up; no corrective roll
 
-    # (printer_model, [x, y, z] m). z = half the model's Y-extent -> base on floor:
-    #   a1 Y=0.507 -> z=0.254 ; a1_mini Y=0.376 -> z=0.188
+    # which file the printer poses come from: 'scan', 'manual', or 'none'
+    # (or a path to a file in either format)
+    MARKER_SOURCE = 'scan'
+    # 'scan' only: True = ignore markers flagged 'estimated', i.e. seeds a scan
+    # never actually confirmed. The 'manual' file is all measurements, so this
+    # has no effect there.
+    REQUIRE_DETECTED = True
+    # which mount the marker pose refers back to (a key in the model JSON's
+    # "markers", placed with tools/view_printer_model.py)
+    ANCHOR_MARKER = 'door'
+
+    # (printer_model, fallback [x, y, z] m, {marker_name: aruco_id}).
+    # The IDs are what the printer WEARS: they pick the spawned texture, and
+    # they're how a pose from the marker file is matched back to a printer. Two
+    # printers must NOT share an ID or the detector can't tell them apart.
+    # Fallback z = half the model's height -> base on floor:
+    #   a1 h=0.605 -> z=0.302 ; a1_mini h=0.385 -> z=0.193
     PRINTERS = [
-        ('a1',      [0.60,  0.30, 0.254]),
-        ('a1_mini', [0.60, -0.30, 0.188]),
+        ('a1',      [0.60,  0.30, 0.302], {'door': 1}),
+        ('a1_mini', [0.60, -0.30, 0.193], {'door': 2}),
     ]
     # ===============================================================
 
@@ -52,26 +77,45 @@ def main():
     threading.Thread(target=ex.spin, daemon=True).start()
     time.sleep(0.3)
 
+    poses = load_marker_poses(MARKER_SOURCE, require_detected=REQUIRE_DETECTED,
+                              log=node.get_logger().info)
+    src = os.path.basename(source_path(MARKER_SOURCE))
+
     printers = []
-    for name, pos in PRINTERS:
-        p = Simulated3DPrinter(
-            node=node, pos=pos, orient=UPRIGHT, printer_model=name,
-            world_name=WORLD, static_marker_texture=None, use_bad_frame=False)
-        body_name = f"printer_{name}"          # distinct name per model
+    for name, fallback_pos, marker_ids in PRINTERS:
+        model = PrinterModel.load(name)
+        anchor_id = marker_ids.get(ANCHOR_MARKER)
         t0 = time.time()
-        if BODY_ONLY:
-            ok = p.spawn_body_only(body_name=body_name)
+
+        if anchor_id in poses:
+            # back-solve the body pose from the marker: the mount offset in the
+            # model JSON is what turns a marker observation into a printer pose
+            p = Simulated3DPrinter.from_marker(
+                *poses[anchor_id], printer_model=model, mount=ANCHOR_MARKER,
+                node=node, marker_ids=marker_ids, world_name=WORLD)
+            source = f'marker {anchor_id} from {src}'
         else:
-            ok = p.spawn_fast(body_name=body_name)
+            p = Simulated3DPrinter(
+                node=node, pos=fallback_pos, orient=UPRIGHT, printer_model=model,
+                marker_ids=marker_ids, world_name=WORLD, use_bad_frame=False)
+            source = 'fallback pose'
+
+        ok = p.spawn()
+        # sanity flag: a derived pose is only as good as the mount offset, and a
+        # mount clicked at the wrong height shifts the whole body by that error.
+        # Report where the base lands so a printer floating above (or sunk into)
+        # the floor is obvious.
+        base_z = float(p.pos[2]) - model.height / 2.0
         node.get_logger().info(
-            f"spawned '{body_name}' ({p.printer_model.name}, "
-            f"{len(p.printer_model.boxes)} boxes) at {pos} in {time.time()-t0:.2f}s "
-            f"{'OK' if ok else 'FAILED'}")
+            f"'{p.name}' [{source}] in {time.time()-t0:.2f}s "
+            f"{'OK' if ok else 'FAILED'}; base sits at z={base_z:+.3f} m "
+            f"(0 = on the floor). Its {ANCHOR_MARKER} marker should be seen at "
+            f"{[round(float(v), 4) for v in p.marker_pose_in_base(ANCHOR_MARKER)[0]]}")
         printers.append(p)
 
     node.get_logger().info(
-        "Done. Look in Gazebo for the printer bodies. Ctrl-C to exit "
-        "(the printers stay spawned).")
+        "Done. Look in Gazebo for the printers. Ctrl-C to exit "
+        "(they stay spawned).")
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

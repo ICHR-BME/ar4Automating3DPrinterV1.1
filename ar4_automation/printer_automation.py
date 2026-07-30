@@ -76,6 +76,34 @@ class printerAutomation(ArucoDetectionViewer):
 
         # gripper no-op switch, sim workaround
         self.gripper_disabled = False
+        # close the gripper before scanning so the jaws stay out of the camera's
+        # field of view (see close_gripper_for_scan)
+        self.close_gripper_before_scan = True
+        # --- MoveIt planning scene ---
+        # move_group starts with an EMPTY world: with nothing published to
+        # /collision_object the planner only avoids self-collisions and joint
+        # limits, so a path is free to sweep the EEF through the floor or a
+        # printer. add_ground_plane() and add_printer_collision_boxes() fill it
+        # in (the printer boxes are the same primitives Gazebo spawns, so what
+        # you see is what the planner avoids). Set False to plan in an empty
+        # world again — useful to tell "the plan is in collision" apart from
+        # "the goal is unreachable".
+        self.collision_scene_enabled = True
+        # ground box (x, y, thickness) in m, centred under base_link
+        self.ground_size = (2.0, 2.0, 0.05)
+        # z of the surface the robot base is bolted to, in base_link
+        self.ground_z = 0.0
+        # gap left between ground_z and the top of the box, so the robot's own
+        # base link never starts a plan already touching it
+        self.ground_clearance = 0.005
+        # every printer box grows by this much on each side (m): planner margin
+        # for marker-estimate error
+        self.printer_box_padding = 0.01
+        # ids published so far, in publish order (clear_collision_scene)
+        self._scene_object_ids = []
+        self._get_scene_client = None
+        # SRDF home pose, resolved on first use by home_joints()
+        self._home_joints_cache = None
         # add noise to estimated markers, for scan robustness testing
         self.randomize_estimated_markers = False
         # 10s observation window instead of 1s, for noise data collection
@@ -176,15 +204,16 @@ class printerAutomation(ArucoDetectionViewer):
             
             'printer_offset': {
                 'pickup': [
-                    
-                    {'description': 'open gripper for the approach',
-                        'gripper': 'open'},
+                    # scans FIRST, gripper opens after them: open jaws sit in the
+                    # camera's field of view and hide the marker
                     {'description': 'scan the marker before approaching',
                         'move': 0.20},
                     {'description': 'scan the marker before approaching',
                         'scan': 0.20},
                     {'description': 'scan the marker before approaching',
                         'scan': 0.125},
+                    {'description': 'open gripper for the approach',
+                        'gripper': 'open'},
                     {'description': 'approach standoff in front of the handle',
                         'pos': np.array([0.0, 0.075, 0.125]), 'angle_deg': 0.0},
                     {'description': 'grasp pose at the handle',
@@ -259,16 +288,18 @@ class printerAutomation(ArucoDetectionViewer):
             },
             'box_offset': {
                 'pickup': [
+                    # scans FIRST, gripper opens after them: open jaws sit in the
+                    # camera's field of view and hide the marker
+                    {'description': 'scan the marker before approaching',
+                        'scan': 0.15},
+                    {'description': 'scan the marker before approaching',
+                        'scan': 0.15},
+                    {'description': 'scan the marker before approaching',
+                        'scan': 0.125},
+                    {'description': 'scan the marker before approaching',
+                        'scan': 0.125},
                     {'description': 'open gripper for the approach',
                         'gripper': 'open'},
-                    {'description': 'scan the marker before approaching',
-                        'scan': 0.15},
-                    {'description': 'scan the marker before approaching',
-                        'scan': 0.15},
-                    {'description': 'scan the marker before approaching',
-                        'scan': 0.125},
-                    {'description': 'scan the marker before approaching',
-                        'scan': 0.125},
                     {'description': 'approach standoff in front of the handle',
                         'pos': np.array([0.0, 0.06, 0.125]), 'angle_deg': 0.0},
                     {'description': 'grasp pose at the handle',
@@ -366,13 +397,20 @@ class printerAutomation(ArucoDetectionViewer):
         self._pickup_replay = None
 
         # Gripper interface (robots without one configured run gripper-disabled).
-        # Two kinds: 'moveit_action' drives pymoveit2's GripperInterface (AR4);
-        # 'lite6_service' calls the xarm driver's open/close services (Lite 6).
+        # Three kinds: 'moveit_action' drives pymoveit2's GripperInterface (AR4);
+        # 'lite6_service' calls the xarm driver's open/close services (Lite 6);
+        # 'joint_trajectory' publishes to a JointTrajectoryController (xArm 6).
         gripper_cfg = self.robot_config['gripper']
         self.gripper = None
         self._gripper_kind = None
         self._gripper_open_client = None
         self._gripper_close_client = None
+        self._gripper_traj_pub = None
+        self._gripper_cfg = gripper_cfg
+        # last commanded state: None (untouched this session) | 'open' | 'closed'.
+        # close_gripper_for_scan() uses it so a scan never overrides a gripper a
+        # caller deliberately opened for an approach.
+        self._gripper_state = None
         if gripper_cfg is None:
             self.gripper_disabled = True
             self.get_logger().info(
@@ -389,6 +427,14 @@ class printerAutomation(ArucoDetectionViewer):
                 self.get_logger().info(
                     f"Lite 6 gripper via services {gripper_cfg['open_service']} / "
                     f"{gripper_cfg['close_service']}."
+                )
+            elif self._gripper_kind == 'joint_trajectory':
+                from trajectory_msgs.msg import JointTrajectory
+                self._gripper_traj_pub = self.create_publisher(
+                    JointTrajectory, gripper_cfg['topic'], 10)
+                self.get_logger().info(
+                    f"Gripper via joint trajectories on {gripper_cfg['topic']} "
+                    f"({gripper_cfg['gripper_joint_names']})."
                 )
             else:
                 self.gripper = GripperInterface(
@@ -423,23 +469,56 @@ class printerAutomation(ArucoDetectionViewer):
     # ---- State persistence ----
 
     def save_state(self):
-        """Dump marker poses, offset config, and printer configs to JSON."""
+        """Dump marker poses, offset config, and printer configs to JSON.
+
+        An ESTIMATE NEVER OVERWRITES A SAVED MEASUREMENT. Every session runs a
+        5 s auto-save timer, so a script that only registers estimates (a sim
+        run seeding markers from spawned printer poses, a geometric fallback)
+        used to silently erase the scan results a scanFor*Markers.py run had
+        just written — and require_scanned_markers then refused to work off the
+        file it had itself downgraded. Per marker id: a real detection always
+        wins over an estimate, whichever side of the write it is on.
+        """
+        keep = {}
+        if os.path.exists(self._state_save_path):
+            try:
+                with open(self._state_save_path, 'r') as f:
+                    for m in json.load(f).get("markers", []):
+                        if not m.get("estimated", False):
+                            keep[int(m["id"])] = m
+            except (OSError, ValueError):
+                keep = {}      # unreadable file: nothing worth preserving
+
         data = {
             "marker_offset_config": {str(k): v for k, v in self.marker_offset_config.items()},
             "markers": [],
             "printers": getattr(self, '_saved_printer_configs', []),
         }
+        preserved = []
         for entry in self.stream.found_markers.values():
             if 'positionInBase' not in entry or 'eulerInBase' not in entry:
                 continue
+            marker_id = int(entry['id'])
+            estimated = bool(entry.get('estimated', False))
+            if estimated and marker_id in keep:
+                data["markers"].append(keep.pop(marker_id))
+                preserved.append(marker_id)
+                continue
+            keep.pop(marker_id, None)
             data["markers"].append({
-                "id": int(entry['id']),
+                "id": marker_id,
                 "positionInBase": entry['positionInBase'].tolist(),
                 "eulerInBase": entry['eulerInBase'].tolist(),
                 "dict_name": entry.get('dict_name', 'unknown'),
                 "marker_size": float(entry.get('marker_size', 0.024)),
-                "estimated": bool(entry.get('estimated', False)),
+                "estimated": estimated,
             })
+        # scanned markers this session never registered at all stay in the file
+        data["markers"].extend(keep.values())
+        if preserved:
+            self.get_logger().info(
+                f"save_state: kept the scanned pose for marker(s) {sorted(preserved)} "
+                f"instead of overwriting it with this session's estimate.")
         try:
             with open(self._state_save_path, 'w') as f:
                 json.dump(data, f, indent=2)
@@ -447,13 +526,16 @@ class printerAutomation(ArucoDetectionViewer):
             self.get_logger().warn(f"save_state: could not write {self._state_save_path}: {e}")
 
     def register_printers(self, printers):
-        """Store printer configs (dicts with marker_id/pos/orient/door_marker_texture) so save_state includes them."""
+        """Store printer configs (dicts with marker_id/pos/orient and optionally
+        printer_model, the box model in models/printers/) so save_state includes
+        them. pos/orient are the printer BODY pose; where its marker lands comes
+        from the mount in the model JSON."""
         self._saved_printer_configs = [
             {
                 "marker_id": int(p["marker_id"]),
                 "pos": list(p["pos"]),
                 "orient": list(p["orient"]),
-                "door_marker_texture": p["door_marker_texture"],
+                **({"printer_model": p["printer_model"]} if p.get("printer_model") else {}),
             }
             for p in printers
         ]
@@ -781,6 +863,182 @@ class printerAutomation(ArucoDetectionViewer):
         )
         printer.homing()
 
+    # ---- MoveIt planning scene ----
+    #
+    # Every object goes in as a box in base_link, published on /collision_object
+    # by pymoveit2 and then READ BACK from the get_planning_scene service: that
+    # publisher is a plain topic with no latching, so an object added before
+    # move_group's subscriber is connected is silently dropped — and a dropped
+    # object looks exactly like collision avoidance that works. Anything missing
+    # after the first publish is republished once, and still-missing ids are an
+    # error, not a warning.
+
+    GROUND_OBJECT_ID = "ground_plane"
+
+    @_timed
+    def add_ground_plane(self):
+        """Add the floor/table the arm is bolted to as one thin box under the
+        base. Sized/positioned from ground_size, ground_z and ground_clearance."""
+        if not self.collision_scene_enabled:
+            self.get_logger().info(
+                "add_ground_plane: collision_scene_enabled is False; skipped.")
+            return False
+        sx, sy, thickness = (float(v) for v in self.ground_size)
+        top = float(self.ground_z) - float(self.ground_clearance)
+        return self._publish_collision_boxes([{
+            'id': self.GROUND_OBJECT_ID,
+            'size': [sx, sy, thickness],
+            'position': [0.0, 0.0, top - thickness / 2.0],
+            'quat_xyzw': [0.0, 0.0, 0.0, 1.0],
+        }])
+
+    @_timed
+    def add_printer_collision_boxes(self, printer, padding=None):
+        """Add a spawned Simulated3DPrinter's box model to the planning scene.
+
+        printer.pos/printer.q are already in the bad frame (base_link/world),
+        which is the frame boxes_in_base expects, so a printer that moved in
+        Gazebo and its collision boxes cannot disagree."""
+        if not self.collision_scene_enabled:
+            return False
+        boxes = printer.printer_model.boxes_in_base(
+            printer.pos, printer.q, id_prefix=f"printer_{printer.name}")
+        return self._publish_collision_boxes(self._pad_boxes(boxes, padding))
+
+    @_timed
+    def add_printer_collision_boxes_from_marker(self, marker_id, printer_model,
+                                                mount=None, padding=None):
+        """Same, for a printer that is NOT spawned in Gazebo (hardware runs):
+        back-solve the body pose from marker_id's known pose plus the mount
+        offset in the model JSON, then add that model's boxes.
+
+        printer_model is a name in models/printers/ or a PrinterModel. The pose
+        is only as good as the marker estimate — scan the marker first, and keep
+        printer_box_padding above the estimate error."""
+        if not self.collision_scene_enabled:
+            return False
+        from .printer_model import PrinterModel
+        model = (printer_model if isinstance(printer_model, PrinterModel)
+                 else PrinterModel.load(printer_model))
+        mount = mount or Simulated3DPrinter.DEFAULT_MOUNT
+        entry = self._find_marker_entry(marker_id)
+        if entry is None:
+            self.get_logger().error(
+                f"add_printer_collision_boxes_from_marker: marker {marker_id} has no "
+                "pose yet — scan or register it first; nothing added.")
+            return False
+        solved = model.pose_from_marker(
+            mount, np.asarray(entry['positionInBase'], dtype=float),
+            np.asarray(entry['eulerInBase'], dtype=float))
+        if solved is None:
+            self.get_logger().error(
+                f"add_printer_collision_boxes_from_marker: model '{model.name}' has no "
+                f"mount '{mount}'; nothing added.")
+            return False
+        pos, orient = solved
+        # pose_from_marker returns extrinsic xyz euler (Simulated3DPrinter's
+        # convention); boxes_in_base wants the quaternion
+        quat = R.from_euler('xyz', np.asarray(orient, dtype=float)).as_quat()
+        boxes = model.boxes_in_base(
+            np.asarray(pos, dtype=float), [float(v) for v in quat],
+            id_prefix=f"printer_marker{marker_id}")
+        return self._publish_collision_boxes(self._pad_boxes(boxes, padding))
+
+    @_timed
+    def clear_collision_scene(self):
+        """Remove every object this node put in the scene (ground included)."""
+        for object_id in list(self._scene_object_ids):
+            self.moveit2.remove_collision_object(object_id)
+        self.get_logger().info(
+            f"clear_collision_scene: removed {len(self._scene_object_ids)} object(s).")
+        self._scene_object_ids = []
+
+    def _pad_boxes(self, boxes, padding=None):
+        """Grow every box by `padding` on each side (default printer_box_padding)."""
+        pad = self.printer_box_padding if padding is None else padding
+        if not pad:
+            return boxes
+        for box in boxes:
+            box['size'] = [float(s) + 2.0 * float(pad) for s in box['size']]
+        return boxes
+
+    def _publish_collision_boxes(self, boxes, verify_timeout=5.0):
+        """Publish boxes, confirm move_group took them, republish once if not."""
+        if not boxes:
+            return True
+        ids = [b['id'] for b in boxes]
+
+        def _publish():
+            for box in boxes:
+                self.moveit2.add_collision_box(
+                    id=box['id'], size=box['size'],
+                    position=box['position'], quat_xyzw=box['quat_xyzw'])
+
+        _publish()
+        missing = self._missing_scene_objects(ids, verify_timeout)
+        if missing:
+            self.get_logger().warn(
+                f"planning scene: {len(missing)} object(s) missing after the first "
+                "publish (move_group's /collision_object subscriber was probably not "
+                "connected yet); republishing.")
+            _publish()
+            missing = self._missing_scene_objects(ids, verify_timeout)
+
+        for object_id in ids:
+            if object_id not in self._scene_object_ids:
+                self._scene_object_ids.append(object_id)
+
+        if missing:
+            self.get_logger().error(
+                f"planning scene: {missing} never appeared in move_group's scene — "
+                "those volumes are NOT being avoided. Is move_group running?")
+            return False
+        self.get_logger().info(
+            f"planning scene: {len(ids)} box(es) confirmed ({', '.join(ids)}).")
+        return True
+
+    def _missing_scene_objects(self, ids, timeout=5.0):
+        """Poll get_planning_scene until every id is in the world, or timeout.
+        Returns the ids still missing (empty list == all present)."""
+        deadline = time.time() + timeout
+        missing = list(ids)
+        while time.time() < deadline:
+            names = self._scene_object_names()
+            if names is None:
+                return missing            # no service: can't confirm anything
+            missing = [i for i in ids if i not in names]
+            if not missing:
+                return []
+            time.sleep(0.2)
+        return missing
+
+    def _scene_object_names(self, timeout=3.0):
+        """World collision object ids from move_group, or None if unavailable.
+        call_async + poll, never a blocking .call(): a blocking service call from
+        a procedure thread deadlocks against the background executor."""
+        from moveit_msgs.srv import GetPlanningScene
+        from moveit_msgs.msg import PlanningSceneComponents
+
+        if self._get_scene_client is None:
+            self._get_scene_client = self.create_client(
+                GetPlanningScene, "get_planning_scene",
+                callback_group=self._cb_group)
+        if not self._get_scene_client.wait_for_service(timeout_sec=timeout):
+            self.get_logger().warn(
+                "planning scene: get_planning_scene unavailable — collision objects "
+                "were published but cannot be confirmed.")
+            return None
+        request = GetPlanningScene.Request()
+        request.components.components = PlanningSceneComponents.WORLD_OBJECT_NAMES
+        future = self._get_scene_client.call_async(request)
+        deadline = time.time() + timeout
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.02)
+        if not future.done() or future.result() is None:
+            self.get_logger().warn("planning scene: get_planning_scene call timed out.")
+            return None
+        return [obj.id for obj in future.result().scene.world.collision_objects]
+
     # ---- Gripper ----
 
     def _call_gripper_service(self, client, label, timeout=5.0):
@@ -809,6 +1067,77 @@ class printerAutomation(ArucoDetectionViewer):
             return False
         return True
 
+    def _command_gripper_trajectory(self, positions, label):
+        """Send one trajectory point to a JointTrajectoryController-driven
+        gripper (the xArm gripper's only interface — no action, no service).
+
+        Two things this has to do that a blind publish does not. First WAIT FOR
+        THE CONTROLLER'S SUBSCRIPTION: publishing before discovery matches drops
+        the message silently, and the first one or two commands of a session are
+        exactly when that happens. Then watch drive_joint in joint_states until
+        it reaches the target or stops moving — there is no action feedback on
+        this path, and a close that stalls against an object never reaches its
+        commanded position at all.
+        """
+        cfg = self._gripper_cfg
+        move_time = float(cfg.get('move_time', 2.0))
+        joint_names = list(cfg['gripper_joint_names'])
+        targets = [float(p) for p in positions]
+
+        deadline = time.time() + 5.0
+        while self._gripper_traj_pub.get_subscription_count() == 0 and time.time() < deadline:
+            time.sleep(0.05)
+        if self._gripper_traj_pub.get_subscription_count() == 0:
+            self.get_logger().error(
+                f"{label} gripper: nothing subscribed to {cfg['topic']} — is the "
+                f"gripper controller running (ros2 control list_controllers)?")
+            return False
+
+        traj = JointTrajectory()
+        traj.joint_names = joint_names
+        point = JointTrajectoryPoint()
+        point.positions = targets
+        point.time_from_start = Duration(seconds=move_time).to_msg()
+        traj.points = [point]
+        self._gripper_traj_pub.publish(traj)
+        self.get_logger().info(
+            f"{label} gripper: commanded {joint_names} -> {targets} over {move_time:.1f}s.")
+
+        # Settle: reached the target, or stopped moving (stalled against an
+        # object or a stop). The wait is generous because the joint does NOT
+        # track the commanded trajectory time — in Gazebo a full open-to-close
+        # sweep of drive_joint measures ~15 s no matter what time_from_start
+        # says, so settle_timeout, not move_time, is what bounds this.
+        watch = joint_names[0]
+        tolerance = float(cfg.get('tolerance', 0.02))
+        stall_time = float(cfg.get('stall_time', 1.5))
+        deadline = time.time() + float(cfg.get('settle_timeout', 25.0))
+        start = time.time()
+        last, still_since = None, None
+        while time.time() < deadline:
+            time.sleep(0.1)
+            now = self.joint_state_by_name.get(watch)
+            if now is None:
+                continue
+            if abs(now - targets[0]) <= tolerance:
+                self.get_logger().info(
+                    f"{label} gripper: {watch} at {now:.4f} after {time.time()-start:.1f}s.")
+                return True
+            if last is not None and abs(now - last) < 2e-4:
+                still_since = still_since or time.time()
+                if time.time() - still_since > stall_time:
+                    self.get_logger().info(
+                        f"{label} gripper: {watch} stopped at {now:.4f} "
+                        f"(target {targets[0]:.4f}) — holding against a stop or object.")
+                    return True
+            else:
+                still_since = None
+            last = now
+        self.get_logger().warn(
+            f"{label} gripper: {watch} never settled in "
+            f"{time.time()-start:.1f}s (last {last}, target {targets[0]:.4f}).")
+        return False
+
     def open_gripper(self):
         if self.gripper_disabled:
             self.get_logger().info("Gripper disabled — skipping open.")
@@ -816,8 +1145,12 @@ class printerAutomation(ArucoDetectionViewer):
         self.get_logger().info("Opening gripper...")
         if self._gripper_kind == 'lite6_service':
             self._call_gripper_service(self._gripper_open_client, "open")
+        elif self._gripper_kind == 'joint_trajectory':
+            self._command_gripper_trajectory(
+                self._gripper_cfg['open_gripper_joint_positions'], "open")
         else:
             self.gripper.open()
+        self._gripper_state = 'open'
 
     def close_gripper(self):
         if self.gripper_disabled:
@@ -826,8 +1159,47 @@ class printerAutomation(ArucoDetectionViewer):
         self.get_logger().info("Closing gripper...")
         if self._gripper_kind == 'lite6_service':
             self._call_gripper_service(self._gripper_close_client, "close")
+        elif self._gripper_kind == 'joint_trajectory':
+            self._command_gripper_trajectory(
+                self._gripper_cfg['closed_gripper_joint_positions'], "close")
         else:
             self.gripper.close()
+        self._gripper_state = 'closed'
+
+    def close_gripper_for_scan(self):
+        """Close the gripper before a scan so the open jaws stay out of the
+        camera's field of view (the camera looks past the gripper along the tool
+        axis, so spread fingers cut into the frame and hide the marker).
+
+        Closes whenever the gripper is not ALREADY closed — including when a
+        caller opened it on purpose, which used to be left alone and is exactly
+        how a scan ended up looking through open jaws. An explicit 'open' is not
+        lost, though: the state to restore is returned, and
+        restore_gripper_after_scan() reopens once the observation is done, so a
+        {'gripper': 'open'} before a {'scan': ...} still has the jaws open for the
+        approach that follows. A gripper that is already closed (holding a plate)
+        is never touched. close_gripper_before_scan = False disables all of this.
+
+        Returns the state restore_gripper_after_scan() should put back, or None.
+        """
+        if not self.close_gripper_before_scan or self.gripper_disabled:
+            return None
+        if self._gripper_state == 'closed':
+            return None                 # already out of the camera's way
+        previous_state = self._gripper_state    # None (untouched) or 'open'
+        self.get_logger().info("Closing gripper to clear the camera's view for scanning.")
+        self.close_gripper()
+        return previous_state
+
+    def restore_gripper_after_scan(self, previous_state):
+        """Reopen the gripper if close_gripper_for_scan() closed one a caller had
+        deliberately opened. A gripper that was merely untouched stays closed —
+        that is the cheap path, and it keeps the jaws clear for the next scan."""
+        if previous_state != 'open' or self.gripper_disabled:
+            return
+        self.get_logger().info(
+            "Reopening gripper: it was open before the scan closed it.")
+        self.open_gripper()
 
     # ---- Marker updates ----
     # Default-deny: every marker is pinned at all times, except inside an
@@ -996,127 +1368,139 @@ class printerAutomation(ArucoDetectionViewer):
         re-aim at the refreshed pose so the measurement is head-on. The
         approach is step-limited (scan_approach_max_step) and re-observes the
         marker between steps, adapting to poor initial estimates."""
-        move_ok = False
-        marker_spotted = False
-        for scan_pass in range(max(1, 1)):
-            entry = self._find_marker_entry(marker_id)
-            if entry is None:
-                self.get_logger().error(f"Marker {marker_id} not found in found_markers. Register it first.")
-                return False, False
+        # jaws out of the camera's view before any scan travel; an
+        # explicitly opened gripper is reopened in the finally below
+        gripper_restore = self.close_gripper_for_scan()
+        try:
+            move_ok = False
+            marker_spotted = False
+            for scan_pass in range(max(1, 1)):
+                entry = self._find_marker_entry(marker_id)
+                if entry is None:
+                    self.get_logger().error(f"Marker {marker_id} not found in found_markers. Register it first.")
+                    return False, False
 
-            self.get_logger().info(
-                f"Scanning marker {marker_id} (pass {scan_pass + 1}/{max(1, self.scan_passes)}): "
-                f"approaching viewing pose at {viewing_distance:.3f} m"
-            )
-            move_ok = self._approach_viewing_pose(marker_id, viewing_distance)
+                self.get_logger().info(
+                    f"Scanning marker {marker_id} (pass {scan_pass + 1}/{max(1, self.scan_passes)}): "
+                    f"approaching viewing pose at {viewing_distance:.3f} m"
+                )
+                move_ok = self._approach_viewing_pose(marker_id, viewing_distance)
+                if not move_ok:
+                    break
+
+                # raw-measurement logging is active only during this observation window
+                self._scan_log_movement_id += 1
+                self._scan_log_marker_id = marker_id
+                self._scan_log_distance = viewing_distance
+                # a fresh detection commits a NEW entry dict, so an identity change
+                # against this snapshot means the marker was seen THIS window (a
+                # stale pose from an earlier scan doesn't count)
+                prev_entry_id = id(self.stream.found_markers.get(marker_id))
+                # allow_marker_updates sleeps 0.5 s first so frames captured while
+                # still moving drain before the window opens
+                self.allow_marker_updates(marker_id)
+                try:
+                    # poll instead of a blind sleep: the first camera-pose commit
+                    # takes 1-2+ s after arrival (TF + detect latency), and a fixed
+                    # sleep intermittently loses that race; polling exits as soon
+                    # as a real detection lands, so fast detections cost nothing
+                    observation_pause = 10.0 if self.collect_orientation_noise_data else 4.0
+                    deadline = time.time() + observation_pause
+                    while time.time() < deadline:
+                        observed_entry = self.stream.found_markers.get(marker_id)
+                        if (not self.collect_orientation_noise_data
+                                and observed_entry is not None
+                                and id(observed_entry) != prev_entry_id
+                                and not observed_entry.get('estimated', False)):
+                            break
+                        time.sleep(0.25)
+                finally:
+                    self.block_marker_updates()
+                    self._scan_log_marker_id = None
+                    self._scan_log_distance = None
+
+                observed_entry = self.stream.found_markers.get(marker_id)
+                marker_spotted = (observed_entry is not None
+                                  and id(observed_entry) != prev_entry_id
+                                  and not observed_entry.get('estimated', False))
+                if not marker_spotted:
+                    # nothing fresh to re-aim at
+                    break
+
+            observed_entry = self._find_marker_entry(marker_id)
             if not move_ok:
-                break
-
-            # raw-measurement logging is active only during this observation window
-            self._scan_log_movement_id += 1
-            self._scan_log_marker_id = marker_id
-            self._scan_log_distance = viewing_distance
-            # a fresh detection commits a NEW entry dict, so an identity change
-            # against this snapshot means the marker was seen THIS window (a
-            # stale pose from an earlier scan doesn't count)
-            prev_entry_id = id(self.stream.found_markers.get(marker_id))
-            # allow_marker_updates sleeps 0.5 s first so frames captured while
-            # still moving drain before the window opens
-            self.allow_marker_updates(marker_id)
-            try:
-                # poll instead of a blind sleep: the first camera-pose commit
-                # takes 1-2+ s after arrival (TF + detect latency), and a fixed
-                # sleep intermittently loses that race; polling exits as soon
-                # as a real detection lands, so fast detections cost nothing
-                observation_pause = 10.0 if self.collect_orientation_noise_data else 4.0
-                deadline = time.time() + observation_pause
-                while time.time() < deadline:
-                    observed_entry = self.stream.found_markers.get(marker_id)
-                    if (not self.collect_orientation_noise_data
-                            and observed_entry is not None
-                            and id(observed_entry) != prev_entry_id
-                            and not observed_entry.get('estimated', False)):
-                        break
-                    time.sleep(0.25)
-            finally:
-                self.block_marker_updates()
-                self._scan_log_marker_id = None
-                self._scan_log_distance = None
-
-            observed_entry = self.stream.found_markers.get(marker_id)
-            marker_spotted = (observed_entry is not None
-                              and id(observed_entry) != prev_entry_id
-                              and not observed_entry.get('estimated', False))
-            if not marker_spotted:
-                # nothing fresh to re-aim at
-                break
-
-        observed_entry = self._find_marker_entry(marker_id)
-        if not move_ok:
-            print(f"[SCAN] Marker {marker_id}: movement FAILED (pose unreachable).")
-        elif not marker_spotted:
-            self.get_logger().error(
-                f"[SCAN] Marker {marker_id}: NOT detected after moving to view position."
-            )
-            raise MarkerNotVisibleError(
-                f"marker {marker_id} not detected at the scan pose "
-                f"(viewing distance {viewing_distance:.3f} m)"
-            )
-        else:
-            pos = observed_entry.get('positionInWorld', 'N/A')
-            print(f"[SCAN] Marker {marker_id}: detected at {pos}")
-        return move_ok, marker_spotted
+                print(f"[SCAN] Marker {marker_id}: movement FAILED (pose unreachable).")
+            elif not marker_spotted:
+                self.get_logger().error(
+                    f"[SCAN] Marker {marker_id}: NOT detected after moving to view position."
+                )
+                raise MarkerNotVisibleError(
+                    f"marker {marker_id} not detected at the scan pose "
+                    f"(viewing distance {viewing_distance:.3f} m)"
+                )
+            else:
+                pos = observed_entry.get('positionInWorld', 'N/A')
+                print(f"[SCAN] Marker {marker_id}: detected at {pos}")
+            return move_ok, marker_spotted
+        finally:
+            self.restore_gripper_after_scan(gripper_restore)
 
     @_timed
     def scanLocationForMarkers(self, estimated_pos, estimated_orient=[0,0,0], viewing_distance=0.15, frame_name=None):
         """Move the camera to face an estimated marker location."""
-        estimated_pos = np.array(estimated_pos)
-        if frame_name is None:
-            frame_name = f"{self.estimatedMarkerPrefix}0"
-
-        offsetPos = np.array([0.0, 0.0, viewing_distance])
-        offsetOri = np.array([0.0, 0.0, 0.0])
-
-        markerBadPos, markerBadEuler = self.to_bad_frame(estimated_pos, estimated_orient)
-
-        # place the camera frame (from TF) at the viewing distance; the EEF is
-        # backed off by the fixed camera mount offset automatically
-        badPos, badEuler = self._camera_view_pose(
-            markerBadPos, markerBadEuler, offsetPos, offsetOri,
-        )
-
-        goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
-        self.get_logger().info(f'Scanning for markers at estimated position: {estimated_pos}')
-        move_ok = self.move_to_pose(goodPos, goodEuler)
-        if not move_ok:
-            self.get_logger().error(
-                f"scanLocationForMarkers: could not reach the viewing pose for {estimated_pos}."
-            )
-            return False
-        # snapshot entry identities: every fresh detection commits a NEW dict
-        # into found_markers, so a changed/new object during the window means a
-        # marker was actually seen at this location
-        before = {mid: id(e) for mid, e in self.stream.found_markers.items()}
-        # unknown IDs may be here, so open the window for ANY marker
-        self.allow_marker_updates()
+        # jaws out of the camera's view before any scan travel; an
+        # explicitly opened gripper is reopened in the finally below
+        gripper_restore = self.close_gripper_for_scan()
         try:
-            deadline = time.time() + 4.0
-            while time.time() < deadline:
-                for mid, e in list(self.stream.found_markers.items()):
-                    if not e.get('estimated', False) and before.get(mid) != id(e):
-                        self.get_logger().info(
-                            f"scanLocationForMarkers: marker {mid} detected at location {estimated_pos}."
-                        )
-                        return True
-                time.sleep(0.25)
+            estimated_pos = np.array(estimated_pos)
+            if frame_name is None:
+                frame_name = f"{self.estimatedMarkerPrefix}0"
+
+            offsetPos = np.array([0.0, 0.0, viewing_distance])
+            offsetOri = np.array([0.0, 0.0, 0.0])
+
+            markerBadPos, markerBadEuler = self.to_bad_frame(estimated_pos, estimated_orient)
+
+            # place the camera frame (from TF) at the viewing distance; the EEF is
+            # backed off by the fixed camera mount offset automatically
+            badPos, badEuler = self._camera_view_pose(
+                markerBadPos, markerBadEuler, offsetPos, offsetOri,
+            )
+
+            goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
+            self.get_logger().info(f'Scanning for markers at estimated position: {estimated_pos}')
+            move_ok = self.move_to_pose(goodPos, goodEuler)
+            if not move_ok:
+                self.get_logger().error(
+                    f"scanLocationForMarkers: could not reach the viewing pose for {estimated_pos}."
+                )
+                return False
+            # snapshot entry identities: every fresh detection commits a NEW dict
+            # into found_markers, so a changed/new object during the window means a
+            # marker was actually seen at this location
+            before = {mid: id(e) for mid, e in self.stream.found_markers.items()}
+            # unknown IDs may be here, so open the window for ANY marker
+            self.allow_marker_updates()
+            try:
+                deadline = time.time() + 4.0
+                while time.time() < deadline:
+                    for mid, e in list(self.stream.found_markers.items()):
+                        if not e.get('estimated', False) and before.get(mid) != id(e):
+                            self.get_logger().info(
+                                f"scanLocationForMarkers: marker {mid} detected at location {estimated_pos}."
+                            )
+                            return True
+                    time.sleep(0.25)
+            finally:
+                self.block_marker_updates()
+            self.get_logger().error(
+                f"scanLocationForMarkers: NO marker detected at estimated position {estimated_pos}."
+            )
+            raise MarkerNotVisibleError(
+                f"no marker detected at estimated position {list(np.round(estimated_pos, 3))}"
+            )
         finally:
-            self.block_marker_updates()
-        self.get_logger().error(
-            f"scanLocationForMarkers: NO marker detected at estimated position {estimated_pos}."
-        )
-        raise MarkerNotVisibleError(
-            f"no marker detected at estimated position {list(np.round(estimated_pos, 3))}"
-        )
+            self.restore_gripper_after_scan(gripper_restore)
 
     def scanMultipleLocations(self, locations, viewing_distance=0.15, pause_duration=2.0):
         """Scan multiple estimated marker locations sequentially. A location
@@ -1939,8 +2323,16 @@ class printerAutomation(ArucoDetectionViewer):
 
     @_timed
     def go_home(self, velocity_scaling=0.2):
-        """Move all joints to zero. Plans from the actual encoder state, so it
-        corrects drift from lost steps; kept slow to avoid further stalls."""
+        """Move to the robot's home configuration. Plans from the actual encoder
+        state, so it corrects drift from lost steps; kept slow to avoid further
+        stalls.
+
+        Home comes from the SRDF group_state named by robot_config['home_state']
+        — the same pose RViz's goal-state dropdown offers and the sim spawns at,
+        no joint values in this repo. It is NOT the all-zero pose: zeros park the
+        tool at the floor on both xarm arms, and a gripper closing at home moves
+        no arm joints, so nothing can back it off. Aborts (returns False) if that
+        state cannot be read rather than moving to a guessed pose."""
         self.get_logger().warn(
             f"go_home: resyncing to home position (velocity_scaling={velocity_scaling}). "
             "Planning from actual encoder state to correct any step-loss drift."
@@ -1948,7 +2340,11 @@ class printerAutomation(ArucoDetectionViewer):
         # settle before reading the pose
         time.sleep(0.5)
 
-        home_joints = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        home_joints = self.home_joints()
+        if home_joints is None:
+            self.get_logger().error(
+                "go_home: home pose unavailable (see the SRDF errors above); NOT moving.")
+            return False
 
         prev_velocity = self.moveit2.max_velocity
         prev_acceleration = self.moveit2.max_acceleration
@@ -1962,5 +2358,27 @@ class printerAutomation(ArucoDetectionViewer):
             self.moveit2.max_acceleration = prev_acceleration
 
         self.get_logger().info("go_home: reached home position.")
+        return True
+
+    def home_joints(self, refresh=False):
+        """The SRDF home configuration, ordered like robot_config['joint_names'].
+
+        Read once from move_group's robot_description_semantic and cached — the
+        SRDF cannot change while move_group runs. None if it could not be read;
+        callers must not substitute zeros (that is the pose in the floor)."""
+        if self._home_joints_cache is not None and not refresh:
+            return self._home_joints_cache
+        from .srdf_states import group_state_positions
+        state_name = self.robot_config['home_state']
+        values = group_state_positions(
+            self, group=self.robot_config['move_group'], state_name=state_name,
+            joint_names=self.robot_config['joint_names'])
+        if values is None:
+            return None
+        self._home_joints_cache = [float(v) for v in values]
+        self.get_logger().info(
+            f"home pose from SRDF group_state '{state_name}': "
+            f"{np.round(self._home_joints_cache, 4).tolist()}")
+        return self._home_joints_cache
 
 

@@ -1,0 +1,14 @@
+timestamp,call_chain,duration_s
+2026-07-29T16:15:05.864701,add_ground_plane,0.0499
+2026-07-29T16:15:09.975893,add_printer_collision_boxes,0.0294
+2026-07-29T16:15:13.976910,add_printer_collision_boxes,0.0274
+2026-07-29T16:15:14.794807,scrapePlate > pickupPlate > moveToMarker > moveToViewingDistance,0.8156
+2026-07-29T16:15:46.745148,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries > scanToMarker,31.9477
+2026-07-29T16:15:46.745286,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries,31.9479
+2026-07-29T16:15:53.598645,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries > scanToMarker,6.8533
+2026-07-29T16:15:56.442907,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries > scanToMarker,2.8442
+2026-07-29T16:15:59.292392,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries > scanToMarker,2.8494
+2026-07-29T16:15:59.293715,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries,12.5484
+2026-07-29T16:15:59.293806,scrapePlate > pickupPlate > moveToMarker,45.3147
+2026-07-29T16:15:59.294546,scrapePlate > pickupPlate,45.3154
+2026-07-29T16:15:59.295316,scrapePlate,45.318

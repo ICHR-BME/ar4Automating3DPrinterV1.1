@@ -94,6 +94,7 @@ class PoseReader(Node):
 		self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
 		self._last_joint_msg = None  # list[float] ordered by self.moveit2.joint_names
+		self.joint_state_by_name = {}  # every joint by name, gripper included
 		self._fk_future = None
 		self.pose = np.array([-1,-1,-1,-1,-1,-1])
 		self.quat = np.array([-1, -1, -1, -1])
@@ -492,6 +493,11 @@ class PoseReader(Node):
 		# Store joints mapped to the planning group order
 		self.jointAngles = msg.position[2:8]
 		self.linkNames = msg.name[2:8]
+
+		# every joint by name, including ones outside the planning group (the
+		# gripper's drive_joint) — printer_automation watches it to tell when a
+		# gripper trajectory finished or stalled against an object
+		self.joint_state_by_name = dict(zip(msg.name, msg.position))
 
 		try:
 			self._last_joint_msg = [

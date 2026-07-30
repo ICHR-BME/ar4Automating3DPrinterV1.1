@@ -26,11 +26,21 @@ DEFAULT_PRINTERS_DIR = os.path.join(
 
 
 class PrinterModel:
-    def __init__(self, name, footprint, boxes, bed_size=None, meta=None):
+    def __init__(self, name, footprint, boxes, bed_size=None, markers=None,
+                 meta=None):
         self.name = name
         self.footprint = footprint          # dict: width/depth/height (m)
         self.boxes = boxes                  # list of {center:[3], size:[3], rpy:[3]}
         self.bed_size = bed_size            # [w, d] (m) or None
+        # ArUco mount poses in the printer-local frame, placed by CTRL+clicking
+        # the box model in tools/view_printer_model.py:
+        #   [{name, size, pos:[3], rpy:[3]}, ...]
+        # rpy follows the same convention as the legacy door/static markers:
+        # the plate's local +X is the INWARD normal, its +Z is up.
+        # Which ArUco ID a mount wears is deliberately NOT stored here — one
+        # model can be spawned several times with different IDs, so the texture
+        # is a spawn-time argument (Simulated3DPrinter.marker_ids).
+        self.markers = markers or []
         self.meta = meta or {}
 
     # ---- construction ----
@@ -51,6 +61,7 @@ class PrinterModel:
             footprint=d['footprint'],
             boxes=d['boxes'],
             bed_size=d.get('bed_size'),
+            markers=d.get('markers'),
             meta={k: d[k] for k in ('source_mesh', 'coverage', 'frame') if k in d},
         )
 
@@ -98,6 +109,59 @@ class PrinterModel:
         <geometry>{geom}</geometry>
       </collision>"""
         return out
+
+    # ---- markers ----
+
+    def get_marker(self, name):
+        """The named mount from the JSON, or None."""
+        for m in self.markers:
+            if m.get('name') == name:
+                return m
+        return None
+
+    def marker_aruco_rotation(self, name):
+        """Rotation of a mount in the printer frame, in ArUco convention (Z out
+        of the face) rather than the SDF plate convention (+X the inward
+        normal). Returns a scipy Rotation, or None if the mount isn't there.
+
+        The two frames are a fixed relabelling of axes:
+            aruco X = -plate Y,  aruco Y = +plate Z,  aruco Z = -plate X
+        i.e. aruco Z is the face's OUTWARD normal. For a marker on the front
+        (-Y) face — plate yawed +90 deg — that gives X=[1,0,0], Z=[0,-1,0],
+        which is what the old hardcoded front-face math produced."""
+        from scipy.spatial.transform import Rotation as R
+
+        mk = self.get_marker(name)
+        if mk is None:
+            return None
+        plate_to_aruco = np.array([[0.0, 0.0, -1.0],
+                                   [-1.0, 0.0, 0.0],
+                                   [0.0, 1.0, 0.0]])
+        return R.from_euler('xyz', mk['rpy']) * R.from_matrix(plate_to_aruco)
+
+    def pose_from_marker(self, name, marker_pos, marker_euler):
+        """Where the printer must be for its named mount to sit at an observed
+        marker pose. The inverse of the usual direction: a detected marker plus
+        a known mount offset pins the printer body.
+
+        marker_pos/marker_euler are the ArUco pose in base_link, in the frames
+        ArucoDetector reports (euler is scipy intrinsic 'XYZ', matching
+        printer_automation's saved state and marker_sources.load_marker_poses).
+
+        Returns (pos, orient) ready for Simulated3DPrinter, where orient is
+        extrinsic xyz — the convention its tf quaternion_from_euler uses.
+        Returns None if the model has no such mount."""
+        from scipy.spatial.transform import Rotation as R
+
+        mk = self.get_marker(name)
+        R_pm = self.marker_aruco_rotation(name)
+        if mk is None or R_pm is None:
+            return None
+
+        R_bm = R.from_euler('XYZ', np.asarray(marker_euler, dtype=float))
+        R_bp = R_bm * R_pm.inv()                       # printer -> base
+        pos = np.asarray(marker_pos, dtype=float) - R_bp.apply(mk['pos'])
+        return [float(v) for v in pos], [float(v) for v in R_bp.as_euler('xyz')]
 
     # ---- MoveIt planning scene (deferred; the forward-compat seam) ----
 

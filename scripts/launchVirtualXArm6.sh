@@ -5,6 +5,11 @@
 
 source ~/ar4_ws/install/setup.bash
 
+# ---- config (edit these; no CLI args) ------------------------------------
+# Where to park the gripper once the sim is up, in rad on drive_joint
+# (0 = fully open, 0.85 = fully closed). Must be > 0; see GRIPPER PARK below.
+GRIPPER_PARK_POSITION=0.05
+
 # The headless gz Sensors system renders the camera via EGL device platform and
 # grabs EGL device[0] = the NVIDIA RTX 3050 (pci 01:00.0, renderD129) since it
 # sorts before the AMD 780M (63:00.0). Under Mesa's libEGL that device can't be
@@ -28,5 +33,34 @@ sleep 1
 # automation stack's 'xarm6' robot config subscribes to.
 # load_table:=false spawns the robot at the origin in an empty world
 # (patched into xarm_gazebo/_robot_beside_table_gazebo.launch.py).
+# add_gripper:=true appends the xArm gripper at link_eef (xarm_gripper_macro in
+# xarm_description/urdf/xarm_device_macro.xacro); without it the arm is built
+# bare to the flange and no gripper geometry or controller exists.
+# ---- GRIPPER PARK --------------------------------------------------------
+# gz spawns drive_joint on its lower stop (0 = fully open) and it settles a
+# fraction below, so MoveIt's CheckStartStateBounds adapter rejects the start
+# state and every gripper plan from rviz aborts with 'Start state out of
+# bounds' -- including closing it. Jazzy dropped the old
+# start_state_max_bounds_error tolerance, so there is no margin to absorb it.
+# Widening the URDF limit does not help: the joint just settles on whatever the
+# new lower stop is. One explicit command is what fixes it -- the joint tracks
+# it exactly and stays in bounds from then on. Runs in the background and
+# exits on its own; the launch below stays in the foreground as usual.
+(
+    deadline=$((SECONDS + 120))
+    until ros2 control list_controllers 2>/dev/null \
+            | grep -q "xarm_gripper_traj_controller.*active"; do
+        [ "$SECONDS" -ge "$deadline" ] && \
+            echo "GRIPPER PARK: gripper controller never came up, skipping" && exit 1
+        sleep 2
+    done
+    sleep 2
+    ros2 topic pub --once /xarm_gripper_traj_controller/joint_trajectory \
+        trajectory_msgs/msg/JointTrajectory \
+        "{joint_names: ['drive_joint'], points: [{positions: [${GRIPPER_PARK_POSITION}], time_from_start: {sec: 2}}]}" \
+        >/dev/null 2>&1
+    echo "GRIPPER PARK: gripper parked at ${GRIPPER_PARK_POSITION} rad"
+) &
+
 ros2 launch xarm_moveit_config xarm6_moveit_gazebo.launch.py \
-    add_realsense_d435i:=true load_table:=false
+    add_realsense_d435i:=true add_gripper:=true load_table:=false

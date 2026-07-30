@@ -15,6 +15,9 @@ source ~/ar4_ws/install/setup.bash
 # never needed.
 ROBOT_IP="192.168.1.226"
 
+# add_gripper:=true appends the xArm gripper at link_eef and brings up its
+# controller; must match how the arm is physically tooled.
 ros2 launch xarm_moveit_config xarm6_moveit_realmove.launch.py \
     robot_ip:="${ROBOT_IP}" \
-    add_realsense_d435i:=true
+    add_realsense_d435i:=true \
+    add_gripper:=true

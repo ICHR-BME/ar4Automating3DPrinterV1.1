@@ -28,5 +28,8 @@ sleep 1
 # automation stack's 'lite6' robot config subscribes to.
 # load_table:=false spawns the robot at the origin in an empty world
 # (patched into xarm_gazebo/_robot_beside_table_gazebo.launch.py).
+# add_gripper:=true appends the UFACTORY Lite gripper at link_eef
+# (uflite_gripper_macro in xarm_description/urdf/xarm_device_macro.xacro);
+# without it the arm is built bare to the flange and no gripper exists.
 ros2 launch xarm_moveit_config lite6_moveit_gazebo.launch.py \
-    add_realsense_d435i:=true load_table:=false
+    add_realsense_d435i:=true add_gripper:=true load_table:=false

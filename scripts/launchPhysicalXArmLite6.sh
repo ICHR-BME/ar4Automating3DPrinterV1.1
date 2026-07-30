@@ -16,6 +16,9 @@ source ~/ar4_ws/install/setup.bash
 ROBOT_IP="192.168.0.181"
 #ROBOT_IP="192.168.0.150"
 
+# add_gripper:=true appends the UFACTORY Lite gripper at link_eef and brings up
+# its controller; must match how the arm is physically tooled.
 ros2 launch xarm_moveit_config lite6_moveit_realmove.launch.py \
     robot_ip:="${ROBOT_IP}" \
-    add_realsense_d435i:=true
+    add_realsense_d435i:=true \
+    add_gripper:=true

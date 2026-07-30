@@ -15,29 +15,38 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import numpy as np
 import rclpy
 
-from ar4_automation.printer_automation import printerAutomation
+from ar4_automation.marker_sources import MANUAL
 from ar4_automation.runner_common import (
+    make_sim_node,
+    make_sim_printer,
     make_webcam_node,
+    spawn_printers_from_markers,
+    spawn_sim_printers,
     spin_in_background,
     wait_for_joint_states,
     run_command_menu,
     sim_printer_specs,
     register_manual_estimates,
 )
-from ar4_automation.simulated3DPrinter import Simulated3DPrinter
 
 
 def main():
     rclpy.init()
     runVirtual = 1    # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
     robot = 'xarm6'     # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
-    # 1 = hardware initial estimates come from data/manual_marker_estimates.json
+    # 1 = initial estimates come from data/manual_marker_estimates.json
     # (written by teachMarkersByHand.py: drag-teach the arm until the camera
-    # sees each marker) instead of the hardcoded printer coordinates below
+    # sees each marker) instead of the geometric seeds below. Applies in sim as
+    # well as on hardware — in sim that means the scan starts from the measured
+    # poses rather than from where the printers were spawned, which is how you
+    # rehearse the hardware flow without the arm.
     use_manual_estimates = 1
     if runVirtual:
-        node = printerAutomation(calibration_mode=False, stream_source="ros", robot=robot)
-        node.gripper_disabled = True
+        # make_sim_node, not a bare printerAutomation: it carries the shared
+        # marker_sizes (a sim node built without them fell back to the detector's
+        # old 0.05 default and reported every marker twice as far as it was) and
+        # the per-robot gripper_disabled rule.
+        node = make_sim_node(robot=robot)
         node.randomize_estimated_markers = False
     else:
         node = make_webcam_node(robot=robot)
@@ -47,7 +56,7 @@ def main():
     # stack default is 0.9 (pose_reader.py). Applies to every planned move
     # here (go_home still overrides with its own velocity_scaling arg, then
     # restores to this value).
-    speed_scale = 0.3
+    speed_scale = 0.7
     node.moveit2.max_velocity = speed_scale
     node.moveit2.max_acceleration = speed_scale
 
@@ -56,44 +65,30 @@ def main():
     spin_in_background(node)
     wait_for_joint_states(node)
 
+    # Printer layout: BODY poses (the box model's center) in the good frame, one
+    # entry per printer, with the ArUco ID its 'door' mount wears. Sim uses the
+    # per-robot layout from runner_common; hardware uses the measured bench
+    # layout below. printer_model names a box model in models/printers/.
+    hardware_specs = [
+        {"marker_id": 1, "pos": [0.40, 0.10, -0.1],
+         "orient": [-1/2*np.pi, 0.0, 2/2*np.pi], "printer_model": 'a1'},
+        {"marker_id": 2, "pos": [0.30, 0.10, 0.1],
+         "orient": [0.0, 0.0, 1*np.pi], "printer_model": 'a1_mini'},
+    ]
+    specs = sim_printer_specs(robot, 2) if runVirtual else hardware_specs
+
     if runVirtual:
-        # per-robot layout from runner_common (positions in the good frame)
-        printer2, printer3 = [
-            Simulated3DPrinter(node=node, pos=s["pos"], orient=s["orient"],
-                               door_marker_texture=s["door_marker_texture"],
-                               printer_model=s.get("printer_model"))
-            for s in sim_printer_specs(robot, 2)
-        ]
-        printer2.spawn_fast()
-        printer3.spawn_fast()
+        if use_manual_estimates:
+            # spawn the printers where the hand-taught markers say they are, so
+            # what the scan looks for and what stands in Gazebo agree
+            printer2, printer3 = spawn_printers_from_markers(
+                node, specs, source=MANUAL)
+        else:
+            printer2, printer3 = spawn_sim_printers(node, specs)
     else:
-        '''
-        printer2 = Simulated3DPrinter(
-            node=node, pos=[0.40, -0.3, 0.065], orient=[0.0, 0.0, np.pi],
-            door_marker_texture='materials/textures/marker6x6_1.png',
-        )
-        printer3 = Simulated3DPrinter(
-            node=node, pos=[0.65, 0.1, 0.075], orient=[0.0, 0.0, 3/2*np.pi],
-            door_marker_texture='materials/textures/marker6x6_2.png',
-        )
-        '''
-        
-        printer2 = Simulated3DPrinter(
-            node=node, pos=[0.40, 0.10, -0.1], orient=[-1/2*np.pi, 0.0, 2/2*np.pi],
-            door_marker_texture='materials/textures/marker6x6_1.png',
-        )
-        printer3 = Simulated3DPrinter(
-            node=node, pos=[0.30, 0.1, 0.1], orient=[0.0, 0.0, 1*np.pi],
-            door_marker_texture='materials/textures/marker6x6_2.png',
-        )
-        '''printer3 = Simulated3DPrinter(
-            node=node, pos=[0.35, -0.3, 0.15], orient=[0.0, 0.0, -1/2*np.pi],
-            door_marker_texture='materials/textures/marker6x6_2.png',
-        )'''
-        '''printer2 = Simulated3DPrinter(
-                    node=node, pos=[0.1, -0.6, 0.25], orient=[0.0, 0.0, 1*np.pi],
-                    door_marker_texture='materials/textures/marker6x6_1.png',
-                )'''
+        # hardware: nothing is spawned; these only supply geometric seeds for
+        # the scan when no marker file is used (see use_manual_estimates)
+        printer2, printer3 = [make_sim_printer(node, s) for s in specs]
 
     node.get_logger().info("Starting initial scan for markers 1 and 2...")
     node.load_state()
@@ -106,31 +101,24 @@ def main():
     # register the initial door-marker estimates (after load_state so stale
     # saved poses can't shadow them), then scan both markers
     manual_ids = []
-    if not runVirtual and use_manual_estimates:
-        # hand-taught estimates from teachMarkersByHand.py
+    if use_manual_estimates:
+        # hand-taught estimates from teachMarkersByHand.py. Not gated on
+        # runVirtual: the file is just measured marker poses in base_link, which
+        # seed a sim scan the same way they seed a hardware one. A missing or
+        # unreadable file returns [] and falls through to the seeds below.
         manual_ids = register_manual_estimates(node)
 
     if not manual_ids:
-        # geometric estimates from the printer models above
-        bad_pos, bad_euler = printer2.get_door_marker_pose_in_base()
-        node.register_estimated_marker(marker_id=1, bad_pos=bad_pos, bad_euler=bad_euler)
-        bad_pos, bad_euler = printer3.get_door_marker_pose_in_base()
-        node.register_estimated_marker(marker_id=2, bad_pos=bad_pos, bad_euler=bad_euler)
+        # geometric estimates: where each printer's 'door' mount sits, given the
+        # body poses above
+        printer2.register_marker_estimates(node)
+        printer3.register_marker_estimates(node)
 
-    '''if not runVirtual:
-        node.register_printers([
-            {"marker_id": 2, "pos": [0.3, -0.45, 0.24], "orient": [0.0, 0.0, 0*np.pi],
-                "door_marker_texture": 'materials/textures/marker6x6_2.png'},
-            {"marker_id": 1, "pos": [0.75, 0.1, 0.07], "orient": [0.0, 0.0, 3/2*np.pi],
-                "door_marker_texture": 'materials/textures/marker6x6_1.png'},
-        ])
-        '''''''node.register_printers([
-            {"marker_id": 1, "pos": [0.56, -0.35, 0.07], "orient": [0.0, 0.0, np.pi],
-             "door_marker_texture": 'materials/textures/marker6x6_1.png'},
-            {"marker_id": 2, "pos": [0.75, 0.1, 0.07], "orient": [0.0, 0.0, 3/2*np.pi],
-             "door_marker_texture": 'materials/textures/marker6x6_2.png'},
-        ])'''
-    
+    # save the body poses alongside the markers, so restore_saved_printers can
+    # rebuild these printers in a later session
+    node.register_printers(specs)
+
+
     viewing_distance = 0.15
     node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
     node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)

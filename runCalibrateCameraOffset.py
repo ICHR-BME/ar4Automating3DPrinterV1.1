@@ -20,9 +20,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import rclpy
 
+from ar4_automation.marker_sources import SCAN
 from ar4_automation.runner_common import (
     start_node,
     restore_saved_printers,
+    spawn_printers_from_markers,
     spawn_sim_printers,
     sim_printer_specs,
     register_manual_estimates,
@@ -38,6 +40,12 @@ APPLY             = 1                     # 1 = install the correction this sess
 # (written by teachMarkersByHand.py), overriding any saved pose; with it a
 # save file is optional
 USE_MANUAL_ESTIMATES = 1
+# 1 = sim printers stand where the last scan MEASURED their markers
+# (data/printer_state.json, written by scanFor2Markers.py), so Gazebo shows the same
+# layout the arm is working from. 0 = spawn them at the runner_common layout and
+# take the marker estimates from there instead — no scan needed, but the save
+# file is then ignored and the scene won't match a scanned run.
+SPAWN_FROM_SCAN = 1
 
 
 def main():
@@ -46,11 +54,18 @@ def main():
     speed_scale = 0.2
     node.moveit2.max_velocity = speed_scale
     node.moveit2.max_acceleration = speed_scale
-    if RUN_SIM:
+    if RUN_SIM and not SPAWN_FROM_SCAN:
+        # the spawned printers ARE the ground truth here: marker estimates are
+        # derived from where they were placed, and the save file is ignored
         spawn_sim_printers(node, sim_printer_specs(ROBOT, 2))
     else:
         have_save = node.load_state()
-        if have_save:
+        if have_save and RUN_SIM:
+            # stand each printer where the scan measured its marker (nothing is
+            # re-registered, so the scanned poses stay as saved)
+            spawn_printers_from_markers(node, sim_printer_specs(ROBOT, 2),
+                                        source=SCAN, fallback=False)
+        elif have_save:
             restore_saved_printers(node)
         # hand-taught estimates (after load_state so stale saved poses can't
         # shadow them) — the official scanToMarker below re-measures anyway

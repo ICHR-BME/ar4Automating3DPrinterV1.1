@@ -54,7 +54,14 @@ class ArucoDetectionViewer(PoseReader):
         # Single object handles web server + aruco detection + frame compositing.
         # Pass through source / camera options so caller can choose "ros" or "webcam"
         if marker_sizes is None:
-            marker_sizes = [0.03, 0.05]
+            # Edge length in metres per dictionary, indexed the same way as
+            # dict_names below: [DICT_4X4_50, DICT_6X6_50]. The 6x6 entry is what
+            # every printer marker uses, and estimatePoseSingleMarkers scales
+            # range LINEARLY with it — a 2x size error puts the marker 2x too far
+            # away. 0.025 is both the physical tag and the mount size recorded in
+            # models/printers/*.json, so sim and hardware measure alike. Do not
+            # raise this to match a sim marker: fix the mount size in the JSON.
+            marker_sizes = [0.024, 0.025]
         self.stream = WebVideoStream(
             source=source,
             port=5000,
@@ -488,8 +495,9 @@ def main(args=None):
         node=node,
         pos=[0.0, -0.67, 0.38],
         orient=[0.0, 0.0, np.pi],
+        marker_ids={'door': 0},
     )
-    printer.spawn_fast()
+    printer.spawn()
     
     
 

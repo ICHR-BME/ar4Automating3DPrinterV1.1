@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Shared setup/menu boilerplate for the run*/scanFor* entry scripts."""
 
-import json
 import math
 import os
 import time
@@ -11,17 +10,28 @@ import rclpy
 
 from .printer_automation import printerAutomation, MarkerNotVisibleError
 from .simulated3DPrinter import Simulated3DPrinter
+from .marker_sources import (
+    MANUAL, NONE, SCAN, load_marker_poses, source_path,
+)
+
+# Marker edge length (m) per ArUco dictionary, indexed like the detector's
+# dict_names: [DICT_4X4_50, DICT_6X6_50]. First entry: 0.024 m measured with
+# calipers 2026-07-24 (black square side). NB calibrate_camera_offset's
+# depth-scale fit implied an effective 0.0271 — the leftover ~13% is elsewhere
+# (likely camera intrinsics), not the marker size.
+# SIM USES THE SAME VALUES on purpose: the spawned plate takes its size from the
+# mount in models/printers/*.json (0.025), so a sim scan and a hardware scan of
+# the same marker must resolve to the same distance. Estimated range scales
+# linearly with this number — the old sim-only 0.05 default put every marker
+# twice as far away as it really was.
+MARKER_SIZES = [0.024, 0.025]
 
 # standard hardware config for all runner scripts
 WEBCAM_NODE_KWARGS = dict(
     calibration_mode=False,
     stream_source="webcam",
     feed_rotation_deg=90.0,
-    # first entry (DICT_4X4_50, all printer markers): 0.024 m measured with
-    # calipers 2026-07-24 (black square side). NB calibrate_camera_offset's
-    # depth-scale fit implied an effective 0.0271 — the leftover ~13% is
-    # elsewhere (likely camera intrinsics), not the marker size.
-    marker_sizes=[0.024, 0.025],
+    marker_sizes=MARKER_SIZES,
 )
 
 # Gazebo: images come from the bridged RGBD camera on /rgbd_camera/*, so no
@@ -29,20 +39,25 @@ WEBCAM_NODE_KWARGS = dict(
 SIM_NODE_KWARGS = dict(
     calibration_mode=False,
     stream_source="ros",
+    marker_sizes=MARKER_SIZES,
 )
 
-# sim printer layouts per robot (positions in the robot's good frame);
-# marker IDs match the door textures
+# sim printer layouts per robot. pos/orient are the PRINTER BODY pose (its box
+# model's center) in the robot's good frame; marker_id is the ArUco ID its
+# 'door' mount wears, and printer_model names the box model in models/printers/.
+# Where that marker then appears is derived from the mount recorded in the
+# model's JSON — see Simulated3DPrinter.marker_pose_in_base.
+DEFAULT_SIM_PRINTER_MODEL = 'a1_mini'
+# the mount (a name in the model JSON's "markers") a spec's marker_id refers to
+MOUNT = Simulated3DPrinter.DEFAULT_MOUNT
+
 SIM_PRINTER_SPECS = {
     'ar4': [
-        {"marker_id": 0, "pos": [0.22, -0.2, 0.21], "orient": [0.0, 0.0, math.pi],
-         "door_marker_texture": 'materials/textures/marker6x6_0.png'},
+        {"marker_id": 0, "pos": [0.22, -0.2, 0.21], "orient": [0.0, 0.0, math.pi]},
         # y must stay -0.3: at -0.2 the 0.38m scrape standoff has no IK solution
         # and scrapePlate aborts at the scrape waypoints
-        {"marker_id": 1, "pos": [0.44, -0.3, 0.21], "orient": [0.0, 0.0, math.pi],
-         "door_marker_texture": 'materials/textures/marker6x6_1.png'},
-        {"marker_id": 2, "pos": [0.60, 0.1, 0.21], "orient": [0.0, 0.0, 3/2*math.pi],
-         "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+        {"marker_id": 1, "pos": [0.44, -0.3, 0.21], "orient": [0.0, 0.0, math.pi]},
+        {"marker_id": 2, "pos": [0.60, 0.1, 0.21], "orient": [0.0, 0.0, 3/2*math.pi]},
     ],
     # tuned in sim for the lite6's 0.44 m reach: the far (1.75x) viewing pose
     # of each marker must stay reachable even with the 0.03 m estimate
@@ -50,33 +65,23 @@ SIM_PRINTER_SPECS = {
     # reliably for marker x <= ~0.30 with y around -0.24 (at 0.263 m standoff).
     # Davis layout (inactive — swap with the Monterrey block below to use):
     # 'lite6': [
-    #     {"marker_id": 0, "pos": [0.14, -0.16, 0.15], "orient": [0.0, 0.0, math.pi],
-    #      "door_marker_texture": 'materials/textures/marker6x6_0.png'},
-    #     {"marker_id": 1, "pos": [0.3, -0.3, 0.18], "orient": [0.0, 0.0, math.pi],
-    #      "door_marker_texture": 'materials/textures/marker6x6_1.png'},
-    #     {"marker_id": 2, "pos": [0.58, 0.08, 0.20], "orient": [0.0, 0.0, 3/2*math.pi],
-    #      "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+    #     {"marker_id": 0, "pos": [0.14, -0.16, 0.15], "orient": [0.0, 0.0, math.pi]},
+    #     {"marker_id": 1, "pos": [0.3, -0.3, 0.18], "orient": [0.0, 0.0, math.pi]},
+    #     {"marker_id": 2, "pos": [0.58, 0.08, 0.20], "orient": [0.0, 0.0, 3/2*math.pi]},
     # ],
-    'lite6': [ #Monterrey 
-            {"marker_id": 0, "pos": [0.14, -0.16, 0.15], "orient": [0.0, 0.0, math.pi],
-             "door_marker_texture": 'materials/textures/marker6x6_0.png'},
-             {"marker_id": 2, "pos": [0.3, -0.45, 0.24], "orient": [0.0, 0.0, 0*math.pi],
-            "door_marker_texture": 'materials/textures/marker6x6_2.png'},
-            {"marker_id": 1, "pos": [0.40, 0.0, -0.1], "orient": [-1/2*math.pi, 0.0, 2/2*math.pi],
-             "door_marker_texture": 'materials/textures/marker6x6_1.png'},
+    'lite6': [ #Monterrey
+            {"marker_id": 0, "pos": [0.14, -0.16, 0.15], "orient": [0.0, 0.0, math.pi]},
+            {"marker_id": 2, "pos": [0.3, -0.45, 0.24], "orient": [0.0, 0.0, 0*math.pi]},
+            {"marker_id": 1, "pos": [0.40, 0.0, -0.1], "orient": [-1/2*math.pi, 0.0, 2/2*math.pi]},
         ],
-        # {"marker_id": 2, "pos": [0.45, -0.2, 0.12], "orient": [0.0, 0.0, -1/2*math.pi],
-        #  "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+        # {"marker_id": 2, "pos": [0.45, -0.2, 0.12], "orient": [0.0, 0.0, -1/2*math.pi]},
     # xArm 6: same door-facing conventions as the lite6, pushed out for the
     # longer (~0.7 m) reach. Starting point — re-probe reachability of each
     # marker's far viewing pose on the first sim runs and nudge as needed.
     'xarm6': [
-            {"marker_id": 0, "pos": [0.20, -0.22, 0.15], "orient": [0.0, 0.0, math.pi],
-             "door_marker_texture": 'materials/textures/marker6x6_0.png'},
-            {"marker_id": 1, "pos": [0.30, 0.35, 0.10], "orient": [0.0, 0.0, 0*math.pi],
-             "door_marker_texture": 'materials/textures/marker6x6_1.png'},
-            {"marker_id": 2, "pos": [0.70, 0.10, 0.20], "orient": [0.0, 0.0, 3/2*math.pi],
-             "door_marker_texture": 'materials/textures/marker6x6_2.png'},
+            {"marker_id": 0, "pos": [0.20, -0.22, 0.15], "orient": [0.0, 0.0, math.pi]},
+            {"marker_id": 1, "pos": [0.30, 0.35, 0.10], "orient": [0.0, 0.0, 0*math.pi]},
+            {"marker_id": 2, "pos": [0.70, 0.10, 0.20], "orient": [0.0, 0.0, 3/2*math.pi]},
         ],
 }
 
@@ -104,8 +109,11 @@ def make_sim_node(robot='ar4', **overrides):
     kwargs = dict(SIM_NODE_KWARGS)
     kwargs.update(overrides)
     node = printerAutomation(robot=robot, **kwargs)
-    # gripper action is flaky in sim, see printerAutomation.gripper_disabled
-    node.gripper_disabled = True
+    # The AR4's GripperCommand action and the Lite 6's driver services don't work
+    # in sim, so gripper commands are skipped there. The xArm 6's gripper is a
+    # plain JointTrajectoryController that DOES work in sim (verified), and scans
+    # need it closed to keep the jaws out of the camera's view.
+    node.gripper_disabled = (robot != 'xarm6')
     return node
 
 
@@ -119,25 +127,92 @@ def start_node(sim=False, robot='ar4', **overrides):
     node = make_sim_node(robot=robot, **overrides) if sim else make_webcam_node(robot=robot, **overrides)
     spin_in_background(node)
     wait_for_joint_states(node)
+    # move_group's world starts EMPTY — without this the planner happily sweeps
+    # the EEF through the floor (printer boxes go in as each printer is spawned)
+    node.add_ground_plane()
     return node
 
 
+def make_sim_printer(node, spec, **overrides):
+    """One Simulated3DPrinter from a layout spec (marker_id/pos/orient[/printer_model])."""
+    kwargs = dict(
+        node=node,
+        pos=spec["pos"],
+        orient=spec["orient"],
+        printer_model=spec.get("printer_model", DEFAULT_SIM_PRINTER_MODEL),
+        marker_ids={MOUNT: spec["marker_id"]},
+    )
+    kwargs.update(overrides)
+    return Simulated3DPrinter(**kwargs)
+
+
 def spawn_sim_printers(node, specs):
-    """Spawn a sim printer per spec and register its door marker estimate so scans know where to look."""
+    """Spawn a sim printer per spec, at the spec's body pose, and register where
+    its door marker therefore is so scans know where to look. Use this when the
+    SPAWNED printers are the ground truth (pure-sim rehearsal); use
+    spawn_printers_from_markers when a marker file is."""
     printers = []
     for p in specs:
-        printer = Simulated3DPrinter(
-            node=node,
-            pos=p["pos"],
-            orient=p["orient"],
-            door_marker_texture=p["door_marker_texture"],
-            printer_model=p.get("printer_model"),
-        )
-        printer.spawn_fast()
-        bad_pos, bad_euler = printer.get_door_marker_pose_in_base()
-        node.register_estimated_marker(
-            marker_id=p["marker_id"], bad_pos=bad_pos, bad_euler=bad_euler
-        )
+        printer = make_sim_printer(node, p)
+        printer.spawn()
+        printer.register_marker_estimates(node)
+        # same boxes Gazebo just spawned, now in the planning scene
+        node.add_printer_collision_boxes(printer)
+        printers.append(printer)
+    return printers
+
+
+def spawn_printers_from_markers(node, specs, source=SCAN, require_detected=True,
+                                mount=None, fallback=True, register=False):
+    """Spawn each spec's printer where a MARKER FILE says its marker is.
+
+    The inverse of spawn_sim_printers: instead of deriving marker poses from
+    printer poses, this back-solves each printer body from an observed marker
+    plus the mount offset in its model JSON. Use it to see the real layout in
+    Gazebo, and to put it in the planning scene (each spawned printer's boxes are
+    added there too, so the planner avoids what you see).
+
+    source: marker_sources.SCAN (data/printer_state.json, written by
+        scanFor2Markers.py / scanFor3Markers.py), marker_sources.MANUAL
+        (data/manual_marker_estimates.json, written by teachMarkersByHand.py),
+        or a path to a file in either format.
+    require_detected: with SCAN, ignore markers flagged 'estimated' — poses a
+        scan never confirmed. Pass False to place printers from seeds too.
+    fallback: when a spec's marker isn't in the file, spawn it at the spec's own
+        pos/orient anyway (False = skip it).
+    register: also register each spawned printer's mount pose as a marker
+        estimate on the node.
+
+    Returns the list of spawned printers.
+    """
+    mount = mount or MOUNT
+    log = node.get_logger().info if hasattr(node, 'get_logger') else None
+    poses = load_marker_poses(source, require_detected=require_detected, log=log)
+
+    printers = []
+    for p in specs:
+        marker_id = p["marker_id"]
+        model = p.get("printer_model", DEFAULT_SIM_PRINTER_MODEL)
+        if marker_id in poses:
+            printer = Simulated3DPrinter.from_marker(
+                *poses[marker_id], printer_model=model, mount=mount,
+                node=node, marker_ids={mount: marker_id})
+            origin = f"marker {marker_id} from {os.path.basename(source_path(source))}"
+        elif fallback:
+            printer = make_sim_printer(node, p, printer_model=model)
+            origin = "spec pose (marker not in the file)"
+        else:
+            if log:
+                log(f"marker {marker_id}: not in the marker file — printer skipped")
+            continue
+        printer.spawn()
+        if log:
+            base_z = float(printer.pos[2]) - printer.height / 2.0
+            log(f"printer for marker {marker_id} placed from {origin}; "
+                f"base sits at z={base_z:+.3f} m (0 = on the floor)")
+        if register:
+            printer.register_marker_estimates(node)
+        node.add_printer_collision_boxes(printer)
         printers.append(printer)
     return printers
 
@@ -183,20 +258,16 @@ def start_webcam_node(robot='ar4', **overrides):
     node = make_webcam_node(robot=robot, **overrides)
     spin_in_background(node)
     wait_for_joint_states(node)
+    node.add_ground_plane()
     return node
 
 
 def restore_saved_printers(node):
-    """Rebuild sim printers from load_state() configs; their door-marker estimates back-fill markers with no real saved pose."""
+    """Rebuild printers from load_state() configs (not spawned); their door-mount
+    poses back-fill markers with no real saved pose."""
     for p in getattr(node, "_saved_printer_configs", []):
-        printer = Simulated3DPrinter(
-            node=node,
-            pos=p["pos"],
-            orient=p["orient"],
-            door_marker_texture=p["door_marker_texture"],
-            printer_model=p.get("printer_model"),
-        )
-        bad_pos, bad_euler = printer.get_door_marker_pose_in_base()
+        printer = make_sim_printer(node, p)
+        bad_pos, bad_euler = printer.marker_pose_in_base(MOUNT)
         existing = node._find_marker_entry(p["marker_id"])
         if existing is None or existing.get("estimated"):
             node.register_estimated_marker(
@@ -205,10 +276,7 @@ def restore_saved_printers(node):
 
 
 # hand-taught estimates written by teachMarkersByHand.py
-MANUAL_ESTIMATES_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "data", "manual_marker_estimates.json",
-)
+MANUAL_ESTIMATES_PATH = source_path(MANUAL)
 
 
 def register_manual_estimates(node, marker_ids=None):
@@ -218,26 +286,20 @@ def register_manual_estimates(node, marker_ids=None):
     file. Returns the list of marker IDs registered — empty if the file is
     missing or unreadable (a warning is logged; the caller falls back to its
     own seeds)."""
-    try:
-        with open(MANUAL_ESTIMATES_PATH) as f:
-            markers = json.load(f)["markers"]
-    except (OSError, KeyError, ValueError) as e:
+    poses = load_marker_poses(MANUAL, log=node.get_logger().info)
+    if not poses:
         node.get_logger().warn(
-            f"Could not load manual estimates from {MANUAL_ESTIMATES_PATH} "
-            f"({e}). Run teachMarkersByHand.py to create them."
+            f"No hand-taught estimates in {MANUAL_ESTIMATES_PATH}. "
+            f"Run teachMarkersByHand.py to create them."
         )
         return []
 
     registered = []
-    for m in markers:
-        marker_id = int(m["id"])
+    for marker_id, (pos, euler) in poses.items():
         if marker_ids is not None and marker_id not in marker_ids:
             continue
         node.register_estimated_marker(
-            marker_id=marker_id,
-            bad_pos=m["positionInBase"],
-            bad_euler=m["eulerInBase"],
-        )
+            marker_id=marker_id, bad_pos=pos, bad_euler=euler)
         registered.append(marker_id)
     return registered
 

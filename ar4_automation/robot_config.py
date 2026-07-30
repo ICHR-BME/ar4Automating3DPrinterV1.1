@@ -7,6 +7,13 @@ ArucoDetectionViewer and PoseReader), e.g.:
 'ar4' is the Annin AR4 (annin_ar4 packages); 'lite6' is the UFACTORY Lite 6
 via xarm_ros2 (launch Gazebo with scripts/launchVirtualXArmLite6.sh, which
 adds the simulated D435i wrist camera).
+
+NO JOINT VALUES FOR THE HOME POSE LIVE HERE. 'home_state' names a group_state in
+the robot's SRDF, and go_home reads that state's joint values off the live
+/robot_description_semantic at runtime (see srdf_states.py). The SRDF is
+therefore the single source of truth: the same pose RViz offers in its goal-state
+dropdown, and the pose the sim spawns at (the matching initial_value params in
+each description's ros2_control xacro).
 """
 
 import numpy as np
@@ -18,6 +25,8 @@ ROBOT_CONFIGS = {
         'base_link': "base_link",
         'end_effector_link': "link_6",
         'move_group': "ar_manipulator",
+        # group_state in annin_ar4_moveit_config/srdf/ar_macro.srdf.xacro
+        'home_state': 'home',
         'camera_frame': "ee_camera_link",
         'color_topic': "/rgbd_camera/image",
         'depth_topic': "/rgbd_camera/depth_image",
@@ -47,6 +56,8 @@ ROBOT_CONFIGS = {
         'base_link': "link_base",
         'end_effector_link': "link_eef",
         'move_group': "lite6",
+        # group_state in xarm_moveit_config/srdf/_lite6_macro.srdf.xacro
+        'home_state': 'home',
         # simulated RealSense D435i (add_realsense_d435i:=true on the launch)
         'camera_frame': "camera_color_optical_frame",
         'color_topic': "/camera/color/image_raw",
@@ -96,13 +107,37 @@ ROBOT_CONFIGS = {
         'base_link': "link_base",
         'end_effector_link': "link_eef",
         'move_group': "xarm6",
+        # group_state in xarm_moveit_config/srdf/_xarm6_macro.srdf.xacro
+        'home_state': 'home',
         'camera_frame': "camera_color_optical_frame",
         'color_topic': "/camera/color/image_raw",
         'depth_topic': "/camera/depth/image",
         'camera_info_topic': "/camera/color/camera_info",
         'camera_z_offset': 0.04,
-        # no gripper wired up yet: gripper commands are skipped
-        'gripper': None,
+        # Stock UFACTORY xArm gripper (add_gripper:=true on the launch). It is
+        # exposed as a plain JointTrajectoryController — xarm_gripper_traj_controller
+        # over drive_joint — with no GripperCommand action and no driver service,
+        # so the 'joint_trajectory' kind publishes trajectory points directly.
+        # That is the same mechanism launchVirtualXArm6.sh uses to park the
+        # gripper, so it works in sim as well as on hardware.
+        # drive_joint: 0 = fully open, 0.85 = fully closed (URDF limit). Open is
+        # 0.05 rather than 0: gz settles the joint just under its lower stop and
+        # MoveIt's CheckStartStateBounds then rejects every plan (see the
+        # GRIPPER PARK note in scripts/launchVirtualXArm6.sh).
+        'gripper': {
+            'kind': 'joint_trajectory',
+            'topic': '/xarm_gripper_traj_controller/joint_trajectory',
+            'gripper_joint_names': ["drive_joint"],
+            'open_gripper_joint_positions': [0.05],
+            'closed_gripper_joint_positions': [0.80],
+            # trajectory duration asked for, and how long to wait for the joint
+            # to get there. They differ a lot on purpose: measured in Gazebo, a
+            # full 0.05 -> 0.80 sweep takes ~15 s whatever time_from_start says,
+            # so the wait has to be generous or every command logs a false
+            # 'never settled'. A scan closes the gripper once per session.
+            'move_time': 4.0,
+            'settle_timeout': 25.0,
+        },
         # good frame == base frame (robot spawns at the world origin, zero yaw)
         'frame_rotation_angles': np.array([0.0, 0.0, 0.0]),
         'frame_offset_angles': np.array([0.0, 0.0, 0.0]),
