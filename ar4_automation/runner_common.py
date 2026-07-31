@@ -3,6 +3,8 @@
 
 import math
 import os
+import socket
+import subprocess
 import time
 import threading
 
@@ -96,6 +98,99 @@ SIM_PRINTER_SPECS_3 = SIM_PRINTER_SPECS['ar4']
 SIM_PRINTER_SPECS_2 = SIM_PRINTER_SPECS_3[1:]
 
 
+# The gz world name the sim launch scripts load (empty_gz.world).
+GZ_WORLD = 'default'
+
+
+def ensure_gz_ip():
+    """Make sure gz-transport can talk to itself on this host, WITHOUT
+    hardcoding an address. gz binds its sockets to the first non-loopback
+    interface; on some networks host-local traffic on that interface is
+    dropped (seen with wifi that hands out CGNAT 100.64/10 addresses while
+    Tailscale's firewall claims the same range) and then every gz service
+    call — model spawns included — hangs forever. Rather than looking for
+    that one culprit, empirically test the interface gz would pick: bind a
+    listening socket to it and try to connect. Only if that self-connection
+    fails is GZ_IP pinned to loopback; on machines where the default works,
+    nothing changes. An existing GZ_IP (e.g. from a launch script) is
+    respected either way."""
+    if os.environ.get('GZ_IP'):
+        return os.environ['GZ_IP']
+    # The IP gz-transport would choose: source address of the default route.
+    # Connecting a UDP socket sends no packets; it just resolves routing.
+    try:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        probe.connect(('8.8.8.8', 53))
+        candidate = probe.getsockname()[0]
+        probe.close()
+    except OSError:
+        return None  # no route at all; gz will use loopback on its own
+    try:
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind((candidate, 0))
+        srv.listen(1)
+        cli = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        cli.settimeout(1.0)
+        cli.connect((candidate, srv.getsockname()[1]))
+        cli.close()
+        srv.close()
+        return None  # interface is healthy; leave gz on its default
+    except OSError:
+        os.environ['GZ_IP'] = '127.0.0.1'
+        return '127.0.0.1'
+
+
+# Invisible static box whose TOP face sits at z=0, standing in for the floor.
+# The world's ground_plane is visual-only (see empty_gz.world: scanned markers
+# can sit below z=0, and a solid floor wedges the arm on scrape waypoints), so
+# floor physics is opt-in: collisions=True runs spawn this.
+GZ_FLOOR_SDF = """<?xml version="1.0"?>
+<sdf version="1.8">
+  <model name="{name}">
+    <static>true</static>
+    <link name="link">
+      <pose>0 0 -0.05 0 0 0</pose>
+      <collision name="collision">
+        <geometry><box><size>100 100 0.1</size></box></geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>"""
+
+
+def add_gz_floor_collision(node, world=GZ_WORLD, name='floor_collision'):
+    """Spawn the collision-only floor box (top face at z=0). The visual floor
+    in empty_gz.world carries no collision of its own, so this is what makes
+    the ground solid in collisions=True sim runs. A second call in the same gz
+    session finds the model already there — that counts as success. Returns
+    True when the floor is solid."""
+    sdf = GZ_FLOOR_SDF.format(name=name)
+    req = f'sdf: {_gz_quote(sdf)}, name: "{name}"'
+    try:
+        out = subprocess.run(
+            ['gz', 'service', '-s', f'/world/{world}/create',
+             '--reqtype', 'gz.msgs.EntityFactory', '--reptype', 'gz.msgs.Boolean',
+             '--timeout', '4000', '--req', req],
+            capture_output=True, text=True, timeout=8)
+        ok = 'true' in out.stdout
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        ok = False
+    log = node.get_logger()
+    if ok:
+        log.info(f'collisions=True: spawned gz floor collision box "{name}".')
+    else:
+        # create returns false for duplicate names; treat "already spawned
+        # this session" as solid rather than warning every rerun.
+        log.info(f'collisions=True: gz floor box "{name}" not created '
+                 '(already present from an earlier run, or gz unreachable).')
+    return ok
+
+
+def _gz_quote(s):
+    """Quote a string for a protobuf text-format field."""
+    return '"' + s.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n') + '"'
+
+
 def make_webcam_node(robot='ar4', **overrides):
     """Build a printerAutomation node with the standard webcam config."""
     kwargs = dict(WEBCAM_NODE_KWARGS)
@@ -124,7 +219,7 @@ def start_node(sim=False, robot='ar4', collisions=True, **overrides):
     launchVirtualRobot.sh for the AR4, launchVirtualXArmLite6.sh for the Lite 6,
     launchVirtualXArm6.sh for the xArm 6.
 
-    collisions: False turns collisions off in BOTH places they exist.
+    collisions: False turns collisions off in ALL the places they exist.
     (1) MoveIt: plan in an EMPTY world — no ground plane, no printer boxes
     (spawn_sim_printers / spawn_printers_from_markers add nothing either), AND
     anything an earlier run left in move_group's world is purged. That purge
@@ -135,12 +230,21 @@ def start_node(sim=False, robot='ar4', collisions=True, **overrides):
     the node), so the arm passes through them instead of stalling against solid
     geometry and aborting the trajectory. A MoveIt-only switch leaves the
     physical obstruction in place, which fails in a way that looks unrelated.
+    (3) The gz floor: empty_gz.world's ground plane is VISUAL-ONLY, so with
+    collisions off, waypoints that dip the gripper below z=0 pass through
+    instead of wedging the arm against a solid floor (CONTROL_FAILED aborts).
+    collisions=True spawns a collision-only floor box (add_gz_floor_collision)
+    to give the ground physics back.
     Set it here rather than after this returns: the ground plane goes in below,
     so flipping node.collision_scene_enabled afterwards comes too late for it.
     Off means nothing stops a path sweeping the EEF through the floor or a
     printer, so it is a diagnostic — it separates "the plan is in collision"
     from "the goal is unreachable" — not a way to run an unattended job.
     """
+    if sim:
+        # Before anything gz-flavored starts: the spawn bridge subprocess and
+        # every `gz service` call inherit this environment.
+        ensure_gz_ip()
     node = make_sim_node(robot=robot, **overrides) if sim else make_webcam_node(robot=robot, **overrides)
     node.collision_scene_enabled = bool(collisions)
     spin_in_background(node)
@@ -150,6 +254,9 @@ def start_node(sim=False, robot='ar4', collisions=True, **overrides):
             "collisions=False: planning in an empty world (no ground plane, no "
             "printer boxes). Paths may pass through the floor or a printer.")
         node.purge_collision_scene()
+    elif sim:
+        # The world's floor is visual-only; collisions=True makes it solid.
+        add_gz_floor_collision(node)
     # move_group's world starts EMPTY — without this the planner happily sweeps
     # the EEF through the floor (printer boxes go in as each printer is spawned)
     node.add_ground_plane()

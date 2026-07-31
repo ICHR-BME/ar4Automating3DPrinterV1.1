@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 
-# gz-transport binds to the first non-loopback interface; on this wifi that is a
-# CGNAT address inside 100.64.0.0/10, which Tailscale's ts-input chain DROPs when
-# it does not arrive on tailscale0 -- so gz service calls between the local gz
-# processes hang forever. Pin gz to loopback. See launchVirtualXArm6.sh.
-export GZ_IP=127.0.0.1
+# Pin gz to loopback ONLY on hosts where the default interface can't talk to
+# itself (e.g. wifi handing out CGNAT 100.64/10 addresses that Tailscale's
+# firewall drops); healthy machines keep gz's stock behavior. Detection logic
+# and the full story live in detect_gz_ip.py.
+GZ_IP_AUTO=$(python3 "$(dirname "$0")/detect_gz_ip.py")
+[ -n "$GZ_IP_AUTO" ] && export GZ_IP="$GZ_IP_AUTO"
 
 ros2 launch annin_ar4_gazebo gazebo.launch.py
 sleep 6

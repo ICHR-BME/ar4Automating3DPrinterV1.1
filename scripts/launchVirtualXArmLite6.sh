@@ -16,15 +16,12 @@ source ~/ar4_ws/install/setup.bash
 # the AMD X display and are unaffected by this EGL vendor pin.
 export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 
-# gz-transport binds its ZMQ sockets to the first non-loopback interface, here
-# wlp2s0. This wifi hands out a CGNAT address (100.127.230.162/14) that falls
-# inside 100.64.0.0/10 -- the same range Tailscale claims. Tailscale's ts-input
-# netfilter chain DROPs anything sourced from 100.64.0.0/10 that does not arrive
-# on tailscale0, and host-local traffic to your own wlp2s0 address is delivered
-# via lo, so gz processes cannot reach each other: discovery (UDP multicast)
-# still works, but every service call hangs -- 'ros_gz_sim: Requesting list of
-# world names' loops forever and the robot never spawns. Pin gz to loopback.
-export GZ_IP=127.0.0.1
+# Pin gz to loopback ONLY on hosts where the default interface can't talk to
+# itself (e.g. wifi handing out CGNAT 100.64/10 addresses that Tailscale's
+# firewall drops); healthy machines keep gz's stock behavior. Detection logic
+# and the full story live in detect_gz_ip.py.
+GZ_IP_AUTO=$(python3 "$(dirname "$0")/detect_gz_ip.py")
+[ -n "$GZ_IP_AUTO" ] && export GZ_IP="$GZ_IP_AUTO"
 
 # a stale gz server from a previous run holds the 'default' world topics and
 # makes the new launch hang waiting for /world/default/create; clear it first
