@@ -21,6 +21,16 @@ GRIPPER_PARK_POSITION=0.05
 # the AMD X display and are unaffected by this EGL vendor pin.
 export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json
 
+# gz-transport binds its ZMQ sockets to the first non-loopback interface, here
+# wlp2s0. This wifi hands out a CGNAT address (100.127.230.162/14) that falls
+# inside 100.64.0.0/10 -- the same range Tailscale claims. Tailscale's ts-input
+# netfilter chain DROPs anything sourced from 100.64.0.0/10 that does not arrive
+# on tailscale0, and host-local traffic to your own wlp2s0 address is delivered
+# via lo, so gz processes cannot reach each other: discovery (UDP multicast)
+# still works, but every service call hangs -- 'ros_gz_sim: Requesting list of
+# world names' loops forever and the robot never spawns. Pin gz to loopback.
+export GZ_IP=127.0.0.1
+
 # a stale gz server from a previous run holds the 'default' world topics and
 # makes the new launch hang waiting for /world/default/create; clear it first
 for p in $(ps -eo pid,comm | grep -iE "gz-sim|ruby" | awk '{print $1}'); do
