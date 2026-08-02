@@ -89,6 +89,10 @@ class PoseReader(Node):
 
 		self.base_link_name = base_link_name
 		self.end_effector_name = end_effector_name
+		# where a grasped object hangs: the gripper's TCP frame when the URDF
+		# has one, else the eef flange (see robot_config 'grasp_frame')
+		self.grasp_frame_name = self.robot_config.get(
+			'grasp_frame', end_effector_name)
 
 		self.tf_buffer = tf2_ros.Buffer()
 		self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)

@@ -11,17 +11,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import rclpy
 
+from ar4_automation.marker_sources import SCAN
 from ar4_automation.runner_common import (
     start_node,
     restore_saved_printers,
+    spawn_printers_from_markers,
     spawn_sim_printers,
     sim_printer_specs,
     require_scanned_markers,
 )
 
 # ---- Configuration ----
-RUN_SIM         = 0           # 1 = Gazebo (sim camera + spawned printers), 0 = hardware
-ROBOT           = 'lite6'     # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
+RUN_SIM         = 1           # 1 = Gazebo (sim camera + spawned printers), 0 = hardware
+ROBOT           = 'xarm6'     # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
 SOURCE_ID       = 2          # marker to pick the plate from
 # 1 = sim printers stand where the last scan MEASURED their markers
 # (data/printer_state.json, written by scanFor2Markers.py), so Gazebo shows the
@@ -37,9 +39,9 @@ SPAWN_FROM_SCAN = 1
 # instead of stalling against them. Self-collisions and joint limits are ALWAYS
 # enforced. Use 0 to tell "the plan is in collision" apart from "the goal is
 # unreachable", not for a real run.
-COLLISIONS      = 1
-# all motion and tilt angles come from the waypoint lists in
-# printerAutomation.__init__'s offset_configs
+COLLISIONS      = 0
+# all motion, gripper actions and tilt angles come from the printer model's
+# procedures section (models/printers/<name>.json)
 
 
 def main():

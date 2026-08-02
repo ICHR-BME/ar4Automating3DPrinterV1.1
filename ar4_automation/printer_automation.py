@@ -36,6 +36,19 @@ class MarkerNotVisibleError(RuntimeError):
     not detected. Left uncaught it terminates the calling procedure/script."""
 
 
+# The canonical grasp orientation, in the MARKER frame: the pose of the
+# gripper's TCP (robot_config 'grasp_frame') when facing a marker head-on —
+# TCP X = -marker X, Y = +marker Y, Z = -marker Z (tool axis straight INTO the
+# face). Euler XYZ intrinsic. This is task geometry, defined ONCE for every
+# robot: the robot-specific part (how the flange hangs behind the TCP, which
+# side the camera sits on) is back-solved from TF, so 'grasp'-frame waypoints
+# transfer between arms. The value equals the xarm robots' old hand-tuned
+# offset_ori — their link_tcp shares link_eef's orientation, so behavior there
+# is bit-identical; the AR4 reproduces its old offset_ori through the rotation
+# in its synthetic tcp_offset (see robot_config).
+GRASP_ORI_IN_MARKER = np.array([np.pi, 0.0, np.pi])
+
+
 def _timed(method):
     """Log wall-clock duration + call chain for a public method."""
     @functools.wraps(method)
@@ -131,10 +144,14 @@ class printerAutomation(ArucoDetectionViewer):
         self._traj_guide_cache = {}
         self._traj_samples_cache = {}
 
-        # Offset configs: per printer type, one waypoint list per procedure
-        # (pickup/place/scrape) in the marker's local frame. Each procedure
-        # runs exactly its own list, so every action is visible here.
-        # Entry kinds:
+        # LEGACY offset configs: per printer type, one waypoint list per
+        # procedure (pickup/place/scrape) in the marker's local frame. NEW
+        # lists belong in models/printers/<name>.json under 'procedures' with
+        # 'frame': 'grasp' — those position the gripper TCP instead of the
+        # flange, so they transfer between arms (see _get_waypoints_for_marker
+        # for the lookup order). The lists below position the FLANGE with the
+        # per-robot offsetOri and are kept for un-migrated printers only.
+        # Entry kinds (shared by both sources):
         #   {'pos': [x,y,z], 'angle_deg': tilt about marker X (None = untilted)}
         #       add 'linear': True to force a straight Cartesian line to that
         #       waypoint (scrape strokes); the move fails rather than run a
@@ -143,9 +160,33 @@ class printerAutomation(ArucoDetectionViewer):
         #                                  marker; retried closer if the move fails
         #   {'move': viewing_distance_m}   direct move to the viewing pose at that
         #                                  distance — no step limit, no detection
-        #   {'gripper': 'open'|'close'}    close records joints for the replay
+        #   {'gripper': 'open'|'close'|f}  f = fraction of travel, 0.0 fully
+        #                                  open .. 1.0 fully closed; >= 0.5
+        #                                  counts as a grasp and records
+        #                                  joints for the replay
+        #   {'gripper_width': meters}      physical jaw opening instead of a
+        #                                  fraction — mapped per robot via
+        #                                  open_width/closed_width in
+        #                                  robot_config, so the same width
+        #                                  works on any arm
         #   {'rotate': degrees}            roll the wrist by -degrees and back
         #                                  (dislodge debris); failure only warns
+        #   {'held_plate': 'attach'|'detach'}  show/remove the grasped build
+        #                                  plate (Gazebo box following the
+        #                                  gripper + MoveIt attached collision
+        #                                  box); size/grasp offset from the
+        #                                  printer model JSON's 'plate'.
+        #                                  Failure only warns
+        #   {'entry_zone_collisions': 'off'|'on'}  toggle the collisions of
+        #                                  the marker's printer's ENTRY-ZONE
+        #                                  boxes (flagged in the model JSON via
+        #                                  the definePrinterApproximateModel
+        #                                  tool): off before reaching in, on
+        #                                  after withdrawing. Recolors in
+        #                                  Gazebo, boxes leave/rejoin the RViz
+        #                                  planning scene. A SUBSET toggle —
+        #                                  the global COLLISIONS switch covers
+        #                                  everything
         #   {'traj': 'traj/<file>.traj'}   replay a recorded joint path (rough
         #                                  collision-free guide between phases,
         #                                  e.g. pickup end -> scrape approach);
@@ -348,13 +389,51 @@ class printerAutomation(ArucoDetectionViewer):
                 ],
             },
         }
-        ## marker_id -> config name, unlisted ids fall back to 'box_offset'
+        ## marker_id -> where its waypoints come from: a printer model name
+        ## (models/printers/<name>.json 'procedures' — the normal case, filled
+        ## in by the spawn/restore helpers) or a legacy offset_configs key.
+        ## Unlisted ids fall back to default_offset_config.
         self.marker_offset_config = {}
+        self.default_offset_config = 'a1_mini'
+        # PrinterModel cache for procedure lookups (one load per model name)
+        self._procedure_models = {}
+        # marker_id -> what set_entry_zone_collisions needs to toggle that
+        # printer's entry-zone boxes mid-sequence: {'model', 'pos', 'quat',
+        # 'prefix', 'printer' (Simulated3DPrinter or None on hw)}.
+        # Filled by add_printer_collision_boxes[_from_marker].
+        self._entry_zone_registry = {}
 
-        # tool orientation used to face a marker, and the camera's vertical
-        # mount offset (m, base Z), both per robot
+        # LEGACY per-robot shims, kept only as fallbacks for markers still on
+        # the in-code offset_configs lists and for the moments before TF is up:
+        # offsetOri hand-encodes "tool faces the marker" per robot;
+        # camera_z_offset hand-encodes the camera mount height. The
+        # grasp-frame path derives both from TF instead (GRASP_ORI_IN_MARKER).
         self.offsetOri = self.robot_config['offset_ori']
         self.camera_z_offset = self.robot_config['camera_z_offset']
+
+        # cached rigid eef->frame transforms from TF ({frame: (t, R) | None})
+        self._eef_frame_tf = {}
+        # Robots whose URDF has no TCP frame (AR4) declare one as
+        # 'tcp_offset' in robot_config; broadcast it as a static TF so the
+        # SAME grasp-frame math (and RViz) sees it like a real link_tcp.
+        tcp = self.robot_config.get('tcp_offset')
+        if tcp is not None:
+            t = TransformStamped()
+            t.header.stamp = self.get_clock().now().to_msg()
+            t.header.frame_id = self.end_effector_name
+            t.child_frame_id = self.grasp_frame_name
+            t.transform.translation.x = float(tcp['pos'][0])
+            t.transform.translation.y = float(tcp['pos'][1])
+            t.transform.translation.z = float(tcp['pos'][2])
+            q = R.from_euler("XYZ", tcp['rpy'], degrees=False).as_quat()
+            t.transform.rotation.x = float(q[0])
+            t.transform.rotation.y = float(q[1])
+            t.transform.rotation.z = float(q[2])
+            t.transform.rotation.w = float(q[3])
+            self.tf2_static_broadcaster.sendTransform(t)
+            self.get_logger().info(
+                f"Broadcast synthetic TCP frame '{self.grasp_frame_name}' "
+                f"from {self.end_effector_name} (robot_config tcp_offset)")
 
         # optional in-session correction (EEF frame, metres) to the eef->camera
         # translation, produced by calibrate_camera_offset(apply=True). None =
@@ -414,10 +493,12 @@ class printerAutomation(ArucoDetectionViewer):
         self._gripper_close_client = None
         self._gripper_traj_pub = None
         self._gripper_cfg = gripper_cfg
-        # last commanded state: None (untouched this session) | 'open' | 'closed'.
-        # close_gripper_for_scan() uses it so a scan never overrides a gripper a
-        # caller deliberately opened for an approach.
+        # last commanded state: None (untouched this session) | 'open' |
+        # 'partial' | 'closed', plus the exact commanded fraction (0..1).
+        # close_gripper_for_scan() uses them so a scan never permanently
+        # overrides an opening a caller deliberately set for an approach.
         self._gripper_state = None
+        self._gripper_fraction = None
         if gripper_cfg is None:
             self.gripper_disabled = True
             self.get_logger().info(
@@ -696,6 +777,58 @@ class printerAutomation(ArucoDetectionViewer):
         self._R_eef_cam = R.from_quat([q.x, q.y, q.z, q.w])
         return self._R_eef_cam
 
+    def _eef_to_frame_transform(self, frame):
+        """Cached rigid transform of `frame` in the EEF frame from TF:
+        (t, R) with t a 3-vector and R a scipy Rotation, or (None, None)
+        while TF doesn't have it. Cached per frame — everything asked for here
+        (TCP, camera) is bolted to the wrist."""
+        if frame in self._eef_frame_tf:
+            return self._eef_frame_tf[frame]
+        try:
+            tf = self.tf_buffer.lookup_transform(
+                self.end_effector_name, frame,
+                Time(), timeout=Duration(seconds=2.0))
+        except Exception as e:
+            self.get_logger().warn(
+                f"_eef_to_frame_transform: TF {self.end_effector_name} -> "
+                f"{frame} unavailable ({e}); caller falls back to the legacy "
+                f"per-robot shims.", throttle_duration_sec=10.0)
+            return None, None
+        t = tf.transform.translation
+        q = tf.transform.rotation
+        result = (np.array([t.x, t.y, t.z]),
+                  R.from_quat([q.x, q.y, q.z, q.w]))
+        self._eef_frame_tf[frame] = result
+        self.get_logger().info(
+            f"{frame} offset from {self.end_effector_name}: "
+            f"{np.round(result[0], 4)} m, rpy {np.round(result[1].as_euler('XYZ'), 4)}")
+        return result
+
+    def _grasp_eef_ori_in_marker(self, angle_deg=None):
+        """EEF orientation (euler XYZ, marker frame) that puts the GRASP frame
+        at the canonical grasp orientation, optionally tilted about marker X.
+        This replaces the per-robot offsetOri: the robot-specific rotation of
+        the flange behind the TCP comes from TF. None while TF lacks the grasp
+        frame (callers fall back to offsetOri)."""
+        _t, R_eg = self._eef_to_frame_transform(self.grasp_frame_name)
+        if R_eg is None:
+            return None
+        R_mg = R.from_euler("XYZ", GRASP_ORI_IN_MARKER, degrees=False)
+        if angle_deg:
+            R_mg = R.from_euler("x", np.radians(angle_deg)) * R_mg
+        return (R_mg * R_eg.inv()).as_euler("XYZ", degrees=False)
+
+    def _eef_pose_for_frame_target(self, frame, target_pos_b, R_b_frame):
+        """T_base_eef that lands `frame` at (target_pos_b, R_b_frame) in
+        base_link: the frame-retargeting back-solve
+            T_base_eef = T_base_frame * inv(T_eef_frame)
+        Returns (pos, Rotation), or (None, None) while TF lacks the frame."""
+        t_ef, R_ef = self._eef_to_frame_transform(frame)
+        if R_ef is None:
+            return None, None
+        R_be = R_b_frame * R_ef.inv()
+        return np.asarray(target_pos_b, dtype=float) - R_be.apply(t_ef), R_be
+
     def _base_from_eef_transform(self):
         """(position, rotation) of the EEF in base_link from TF (latest), or
         (None, None) if unavailable."""
@@ -732,17 +865,24 @@ class printerAutomation(ArucoDetectionViewer):
         entry['positionInWorld'] = R_BF_GF.apply(entry['positionInBase'])
         return entry
 
-    def _camera_view_pose(self, marker_pos, marker_euler, offset_pos, offset_ori):
+    def _camera_view_pose(self, marker_pos, marker_euler, offset_pos, offset_ori=None):
         """EEF pose (pos, euler in base_link) that lands the CAMERA frame at
-        offset_pos/offset_ori in the marker frame — so the camera link (not the
-        wrist) ends up facing the marker at the requested distance.
+        offset_pos in the marker frame — so the camera link (not the wrist)
+        ends up facing the marker at the requested distance.
 
         offset_pos is the desired camera position in the marker frame (e.g.
-        [0,0,viewing_distance] along the marker normal); offset_ori still sets
-        the EEF orientation (the tuned per-robot self.offsetOri). The wrist is
-        backed off the camera target by the fixed EEF->camera translation from
-        TF, replacing the hand-tuned base-Z camera_z_offset shim. Falls back to
-        that shim only if TF isn't available yet."""
+        [0,0,viewing_distance] along the marker normal). The EEF orientation
+        defaults to the canonical grasp pose back-solved through TF
+        (_grasp_eef_ori_in_marker) — identical to the old per-robot offsetOri
+        on every configured robot, but derived instead of hand-tuned; pass
+        offset_ori to override, and offsetOri is the fallback while TF is
+        down. The wrist is backed off the camera target by the fixed
+        EEF->camera translation from TF, replacing the hand-tuned base-Z
+        camera_z_offset shim (the remaining fallback use of that shim)."""
+        if offset_ori is None:
+            offset_ori = self._grasp_eef_ori_in_marker()
+            if offset_ori is None:
+                offset_ori = self.offsetOri
         cam_pos, eef_euler = self._apply_offset_in_marker_frame(
             marker_pos, marker_euler, offset_pos, offset_ori)
         t_eef_cam = self._eef_to_camera_translation()
@@ -765,12 +905,20 @@ class printerAutomation(ArucoDetectionViewer):
         tilt = R.from_euler("x", np.radians(angle_deg))
         return (tilt * R.from_euler("XYZ", self.offsetOri, degrees=False)).as_euler("XYZ", degrees=False)
 
-    def _move_to_marker_offset(self, marker_id, offset_pos, offset_ori=None, linear=False):
+    def _move_to_marker_offset(self, marker_id, offset_pos, offset_ori=None,
+                               linear=False, frame='eef', angle_deg=None):
         """Find the marker, apply the offset, move there. linear=True demands
-        a straight Cartesian line to the target."""
-        if offset_ori is None:
-            offset_ori = self.offsetOri
+        a straight Cartesian line to the target.
 
+        frame='grasp' (JSON procedures) reads offset_pos as the GRIPPER TCP's
+        position in the marker frame, orientation = the canonical grasp pose
+        tilted angle_deg about marker X, and back-solves the flange through
+        TF — the waypoint numbers then hold no robot geometry. frame='eef'
+        (legacy offset_configs) keeps the historical behavior: offset_pos
+        positions the flange itself and offset_ori/angle_deg fall back to the
+        per-robot offsetOri. If TF lacks the grasp frame, 'grasp' degrades to
+        the legacy path with a warning — wrong by the flange->TCP offset, but
+        it fails loudly rather than silently."""
         entry = self._find_marker_entry(marker_id)
         if entry is None:
             self.get_logger().warn(f"Marker ID {marker_id} not found in detected marker poses.")
@@ -781,6 +929,29 @@ class printerAutomation(ArucoDetectionViewer):
         bad_pos = entry['positionInBase']
         bad_euler = entry['eulerInBase']
 
+        if frame == 'grasp':
+            R_bm = R.from_euler("XYZ", bad_euler, degrees=False)
+            R_mg = R.from_euler("XYZ", GRASP_ORI_IN_MARKER, degrees=False)
+            if angle_deg:
+                R_mg = R.from_euler("x", np.radians(angle_deg)) * R_mg
+            grasp_pos_b = np.asarray(bad_pos, dtype=float) + R_bm.apply(offset_pos)
+            badPos, R_be = self._eef_pose_for_frame_target(
+                self.grasp_frame_name, grasp_pos_b, R_bm * R_mg)
+            if badPos is not None:
+                badEuler = R_be.as_euler("XYZ", degrees=False)
+                goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
+                self.get_logger().info(
+                    f'Moving {self.grasp_frame_name} to marker {marker_id} offset '
+                    f'{np.round(offset_pos, 4)} — flange target: {np.round(badPos, 4)}')
+                return self.move_to_pose(goodPos, goodEuler, linear=linear)
+            self.get_logger().warn(
+                f"_move_to_marker_offset: grasp frame '{self.grasp_frame_name}' "
+                "not in TF — falling back to the legacy flange offset (target "
+                "will be off by the flange->TCP distance).")
+
+        if offset_ori is None:
+            offset_ori = self._tilted_offset_ori(angle_deg) or self.offsetOri
+
         badPos, badEuler = self._apply_offset_in_marker_frame(bad_pos, bad_euler, offset_pos, offset_ori)
 
         goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
@@ -788,11 +959,51 @@ class printerAutomation(ArucoDetectionViewer):
         # markers are pinned by default, so the move can't drift any pose
         return self.move_to_pose(goodPos, goodEuler, linear=linear)
 
+    def _printer_procedures(self, model_name):
+        """The 'procedures' dict from models/printers/<model_name>.json (cached),
+        with each 'pos' waypoint stamped with the procedures-level 'frame' tag
+        so _follow_waypoints knows how to interpret its numbers. None when the
+        model or its procedures section doesn't exist."""
+        if model_name in self._procedure_models:
+            return self._procedure_models[model_name]
+        from .printer_model import PrinterModel
+        try:
+            procs = PrinterModel.load(model_name).procedures
+        except FileNotFoundError:
+            procs = None
+        if procs:
+            frame = procs.get('frame', 'eef')
+            for name, waypoints in procs.items():
+                if not isinstance(waypoints, list):
+                    continue
+                for wp in waypoints:
+                    if isinstance(wp, dict) and 'pos' in wp:
+                        wp.setdefault('frame', frame)
+        self._procedure_models[model_name] = procs
+        return procs
+
     def _get_waypoints_for_marker(self, marker_id, procedure):
-        """Waypoint list for 'pickup'/'place'/'scrape', or None."""
-        config_name = self.marker_offset_config.get(marker_id, 'box_offset')
-        waypoints = self.offset_configs[config_name].get(procedure)
-        return waypoints if waypoints else None
+        """Waypoint list for 'pickup'/'place'/'scrape', or None.
+
+        The marker's config name (marker_offset_config, default
+        default_offset_config) is first treated as a printer model whose JSON
+        carries a 'procedures' section — the normal, robot-portable source —
+        and only then as a key into the legacy in-code offset_configs dict."""
+        config_name = self.marker_offset_config.get(
+            marker_id, self.default_offset_config)
+        procs = self._printer_procedures(config_name)
+        if procs is not None:
+            waypoints = procs.get(procedure)
+            if waypoints:
+                return waypoints
+        if config_name in self.offset_configs:
+            waypoints = self.offset_configs[config_name].get(procedure)
+            return waypoints if waypoints else None
+        if procs is None:
+            self.get_logger().error(
+                f"_get_waypoints_for_marker: '{config_name}' is neither a "
+                f"printer model with procedures nor an offset_configs key.")
+        return None
 
     def _follow_waypoints(self, markerID, waypoints, caller, tolerant_last=False):
         """Run the entries in order: moves, scans, gripper actions (a 'close'
@@ -842,18 +1053,78 @@ class printerAutomation(ArucoDetectionViewer):
                     )
                     return False
                 continue
-            if 'gripper' in wp:
-                if wp['gripper'] == 'close':
+            if 'gripper' in wp or 'gripper_width' in wp:
+                # {'gripper': 'open'|'close'|fraction} — fraction of travel,
+                # 0.0 fully open .. 1.0 fully closed — or
+                # {'gripper_width': meters} — a physical jaw opening, mapped
+                # per robot so the same list works across arms. Closing
+                # motions (past half travel) are treated as grasps: joints
+                # are recorded for the pickup replay and the grip gets a
+                # settle pause.
+                if 'gripper_width' in wp:
+                    fraction = self.gripper_width_to_fraction(wp['gripper_width'])
+                    if fraction is None:
+                        self.get_logger().error(
+                            f"{caller}: waypoint {i+1}/{n} needs a width "
+                            "calibration this robot doesn't have — skipped.")
+                        continue
+                else:
+                    g = wp['gripper']
+                    fraction = {'open': 0.0, 'close': 1.0}.get(g, None)
+                    if fraction is None:
+                        fraction = min(max(float(g), 0.0), 1.0)
+                if fraction >= 0.5:
                     self._walk_grasp_joints = self._current_arm_joints()
-                    self.close_gripper()
+                    self.set_gripper(fraction)
                     time.sleep(3.0)
                 else:
-                    self.open_gripper()
+                    self.set_gripper(fraction)
                 continue
             if 'rotate' in wp:
                 # wrist roll-and-return (e.g. dislodge debris after the scrape
                 # retract); a failed rotation only warns — the walk continues
                 self._rotate_wrist(float(wp['rotate']))
+                continue
+            if 'held_plate' in wp:
+                # {'held_plate': 'attach'|'detach'} — show/remove the grasped
+                # build plate: the Gazebo box that follows the gripper plus
+                # (collisions permitting) the MoveIt attached collision box.
+                # Size and grasp offset come from this marker's printer model
+                # JSON ('plate' section). Failure only warns — the plate is a
+                # visualization/planning aid, not a motion.
+                action = str(wp['held_plate']).lower()
+                if action == 'attach':
+                    model = self.marker_offset_config.get(
+                        markerID, self.default_offset_config)
+                    try:
+                        plate = self.attach_held_plate(model)
+                    except Exception as e:
+                        plate = None
+                        self.get_logger().warn(
+                            f"{caller}: waypoint {i+1}/{n} could not attach the "
+                            f"held plate for model '{model}': {e}")
+                    if plate is None:
+                        self.get_logger().warn(
+                            f"{caller}: waypoint {i+1}/{n} held plate not "
+                            "attached — continuing without it.")
+                else:
+                    self.detach_held_plate()
+                continue
+
+            if 'entry_zone_collisions' in wp:
+                # toggle this marker's printer's entry-zone collisions: 'off'
+                # before reaching into the printer, 'on' after withdrawing.
+                # A failed switch NEVER aborts the walk — it only warns and
+                # continues; if the stale collision state then breaks a later
+                # move, that move fails on its own terms. Fix up manually with
+                # set_entry_zone_collisions if needed.
+                enable = str(wp['entry_zone_collisions']).lower() == 'on'
+                if not self.set_entry_zone_collisions(markerID, enable):
+                    self.get_logger().warn(
+                        f"{caller}: waypoint {i+1}/{n} could not switch "
+                        f"marker {markerID}'s entry-zone collisions "
+                        f"{'on' if enable else 'off'} — continuing anyway; "
+                        "call set_entry_zone_collisions to fix up.")
                 continue
             if 'traj' in wp:
                 # recorded rough path (joint space) guiding between phases
@@ -865,10 +1136,11 @@ class printerAutomation(ArucoDetectionViewer):
                     )
                     return False
                 continue
-            tilt_ori = self._tilted_offset_ori(wp.get('angle_deg'))
             pos = np.asarray(wp['pos'], dtype=float)
-            if not self._move_to_marker_offset(markerID, pos, tilt_ori,
-                                               linear=bool(wp.get('linear'))):
+            if not self._move_to_marker_offset(markerID, pos,
+                                               linear=bool(wp.get('linear')),
+                                               frame=wp.get('frame', 'eef'),
+                                               angle_deg=wp.get('angle_deg')):
                 if tolerant_last and i == last_pos_i:
                     self.get_logger().error(
                         f"{caller}: last position waypoint {i+1}/{n} failed for marker {markerID}. Continuing."
@@ -927,10 +1199,16 @@ class printerAutomation(ArucoDetectionViewer):
         printer.pos/printer.q are already in the bad frame (base_link/world),
         which is the frame boxes_in_base expects, so a printer that moved in
         Gazebo and its collision boxes cannot disagree."""
+        prefix = f"printer_{printer.name}"
+        for marker_id in printer.marker_ids.values():
+            self._entry_zone_registry[marker_id] = {
+                'model': printer.printer_model, 'pos': printer.pos,
+                'quat': printer.q, 'prefix': prefix, 'printer': printer,
+                'padding': padding}
         if not self.collision_scene_enabled:
             return False
         boxes = printer.printer_model.boxes_in_base(
-            printer.pos, printer.q, id_prefix=f"printer_{printer.name}")
+            printer.pos, printer.q, id_prefix=prefix)
         return self._publish_collision_boxes(self._pad_boxes(boxes, padding))
 
     @_timed
@@ -967,10 +1245,126 @@ class printerAutomation(ArucoDetectionViewer):
         # pose_from_marker returns extrinsic xyz euler (Simulated3DPrinter's
         # convention); boxes_in_base wants the quaternion
         quat = R.from_euler('xyz', np.asarray(orient, dtype=float)).as_quat()
+        prefix = f"printer_marker{marker_id}"
+        self._entry_zone_registry[marker_id] = {
+            'model': model, 'pos': np.asarray(pos, dtype=float),
+            'quat': [float(v) for v in quat], 'prefix': prefix,
+            'printer': None, 'padding': padding}
         boxes = model.boxes_in_base(
             np.asarray(pos, dtype=float), [float(v) for v in quat],
-            id_prefix=f"printer_marker{marker_id}")
+            id_prefix=prefix)
         return self._publish_collision_boxes(self._pad_boxes(boxes, padding))
+
+    @_timed
+    def set_entry_zone_collisions(self, marker_id, enabled):
+        """Entry zone: toggle collisions. Switches marker_id's printer's
+        ENTRY-ZONE boxes (the SUBSET flagged "entry_zone": true with
+        SHIFT+click in tools/definePrinterApproximateModel.py — distinct from
+        the global COLLISIONS switch, which covers everything) on/off in BOTH
+        places collisions live: the MoveIt planning scene (boxes removed /
+        re-published, visible in RViz's PlanningScene display) and Gazebo (the
+        spawned model respawns with those boxes recolored and their physics
+        dropped). The zone collides by default; a pickup sequence opens it on
+        the way in (waypoint entry {'entry_zone_collisions': 'off'}) and
+        closes it after withdrawing ({'entry_zone_collisions': 'on'}). True
+        when everything that applies succeeded; printers with no entry-zone
+        boxes are a successful no-op."""
+        entry = self._entry_zone_registry.get(marker_id)
+        if entry is None:
+            self.get_logger().warn(
+                f"set_entry_zone_collisions: marker {marker_id} has no "
+                "registered printer (spawn or add collision boxes first); "
+                "nothing to toggle.")
+            return False
+        model = entry['model']
+        if not model.entry_zone_indices():
+            self.get_logger().info(
+                f"set_entry_zone_collisions: model '{model.name}' has no "
+                "entry-zone boxes — nothing to do.")
+            return True
+
+        ok = True
+        if self.collision_scene_enabled:
+            boxes = model.boxes_in_base(
+                entry['pos'], entry['quat'], id_prefix=entry['prefix'],
+                subset='entry_zone')
+            if enabled:
+                ok = self._publish_collision_boxes(
+                    self._pad_boxes(boxes, entry['padding']))
+            else:
+                for box in boxes:
+                    self.moveit2.remove_collision_object(box['id'])
+                    if box['id'] in self._scene_object_ids:
+                        self._scene_object_ids.remove(box['id'])
+                self.get_logger().info(
+                    f"planning scene: removed {len(boxes)} entry-zone box(es) "
+                    f"of marker {marker_id} ({model.name}).")
+        if entry['printer'] is not None:
+            ok = entry['printer'].set_entry_zone_collisions(enabled) and ok
+        return ok
+
+    # ---- held build plate (Gazebo visual + attached planning-scene box) ----
+
+    HELD_PLATE_OBJECT_ID = "held_plate"
+
+    def attach_held_plate(self, printer_model, **kwargs):
+        """The plate the gripper just grabbed, in BOTH places it matters:
+        a Gazebo box that follows the grasp frame until detach_held_plate(),
+        and (collision_scene_enabled permitting) a MoveIt collision box
+        ATTACHED to that same frame — the planner then carries the plate's
+        volume through every plan, with the gripper links as touch_links so
+        the grasp itself doesn't read as a collision. Size and the 6DOF grasp
+        offset come from the printer model's JSON via held_plate.plate_spec;
+        kwargs (size/offset_pos/offset_rpy/grasp_frame/rgba/...) override it.
+        Returns the HeldPlateVisual, or None if the Gazebo spawn failed (the
+        planning box is then not published either)."""
+        from .held_plate import HeldPlateVisual
+        self.detach_held_plate()
+        plate = HeldPlateVisual(node=self, printer_model=printer_model, **kwargs)
+        if not plate.attach():
+            self.get_logger().error("attach_held_plate: spawn failed")
+            return None
+        self._held_plate = plate
+        if self.collision_scene_enabled:
+            link = plate.grasp_frame
+            position = np.asarray(plate.offset_pos, dtype=float)
+            R_off = R.from_euler('XYZ', plate.offset_rpy)
+            # a SYNTHETIC TCP (AR4's grasp_tcp) is a TF frame, not a URDF
+            # link, and MoveIt can only attach to links — compose the
+            # tcp_offset in and attach to the flange instead
+            tcp = self.robot_config.get('tcp_offset')
+            if tcp is not None and link == self.grasp_frame_name:
+                link = self.end_effector_name
+                R_tcp = R.from_euler('XYZ', tcp['rpy'])
+                position = np.asarray(tcp['pos'], dtype=float) + R_tcp.apply(position)
+                R_off = R_tcp * R_off
+            quat = R_off.as_quat()
+            self.moveit2.attach_collision_box(
+                id=self.HELD_PLATE_OBJECT_ID, size=plate.size,
+                link_name=link,
+                position=[float(v) for v in position],
+                quat_xyzw=[float(v) for v in quat],
+                touch_links=list(self.robot_config.get('gripper_touch_links', [])))
+            self.get_logger().info(
+                f"held plate attached to planning scene on '{link}'")
+        else:
+            self.get_logger().info(
+                "held plate: collision_scene_enabled is False — visual only, "
+                "the planner does not know about the plate")
+        return plate
+
+    def detach_held_plate(self):
+        """Remove the held-plate visual and its attached planning-scene box,
+        if one is up."""
+        plate = getattr(self, '_held_plate', None)
+        if plate is not None:
+            plate.detach()
+            self._held_plate = None
+            if self.collision_scene_enabled:
+                # detach re-inserts the box as a world object at its last
+                # pose; the remove then deletes that leftover
+                self.moveit2.detach_collision_object(self.HELD_PLATE_OBJECT_ID)
+                self.moveit2.remove_collision_object(self.HELD_PLATE_OBJECT_ID)
 
     @_timed
     def clear_collision_scene(self):
@@ -993,6 +1387,11 @@ class printerAutomation(ArucoDetectionViewer):
         run are still in it, and still planned against, even though the current
         run added nothing: not adding is not the same as removing. Ask move_group
         what it actually holds rather than trusting our own id list."""
+        # objects a crashed run left ATTACHED to the robot (e.g. a held plate)
+        # don't show up as world objects — detach first, which re-inserts them
+        # into the world where the sweep below can see and remove them
+        self.moveit2.detach_all_collision_objects()
+        time.sleep(0.2)
         names = self._scene_object_names()
         if names is None:
             self.get_logger().warn(
@@ -1225,9 +1624,28 @@ class printerAutomation(ArucoDetectionViewer):
         commanded position at all.
         """
         cfg = self._gripper_cfg
-        move_time = float(cfg.get('move_time', 2.0))
         joint_names = list(cfg['gripper_joint_names'])
         targets = [float(p) for p in positions]
+
+        # Trajectory time = travel / (joint max velocity * the robot's speed
+        # scale) — the gripper moves at the same scaled speed as the arm
+        # (moveit2.max_velocity, the runner scripts' speed_scale), instead of
+        # a fixed several-second sweep. cfg 'move_time' remains as an explicit
+        # override for controllers that need one.
+        if 'move_time' in cfg:
+            move_time = float(cfg['move_time'])
+        else:
+            scale = float(getattr(self.moveit2, 'max_velocity', 1.0) or 1.0)
+            scale = min(max(scale, 0.05), 1.0)
+            vmax = float(cfg.get('max_velocity', 2.0))
+            current = self.joint_state_by_name.get(joint_names[0])
+            if current is None:
+                # no joint state yet: assume the full open<->close sweep
+                travel = abs(float(cfg['closed_gripper_joint_positions'][0])
+                             - float(cfg['open_gripper_joint_positions'][0]))
+            else:
+                travel = abs(targets[0] - float(current))
+            move_time = max(travel / (vmax * scale), 0.2)
 
         deadline = time.time() + 5.0
         while self._gripper_traj_pub.get_subscription_count() == 0 and time.time() < deadline:
@@ -1283,33 +1701,95 @@ class printerAutomation(ArucoDetectionViewer):
             f"{time.time()-start:.1f}s (last {last}, target {targets[0]:.4f}).")
         return False
 
-    def open_gripper(self):
+    def gripper_width_to_fraction(self, width):
+        """Convert a physical jaw OPENING (m, between the fingertips) into the
+        travel fraction set_gripper takes, using the robot's open_width /
+        closed_width calibration (robot_config gripper section) and a linear
+        interpolation between them. Robot-independent: the same width command
+        grabs the same object on any configured arm. Clamped to the gripper's
+        range with a warning; None if this robot has no width calibration."""
+        cfg = self._gripper_cfg or {}
+        open_w = cfg.get('open_width')
+        closed_w = cfg.get('closed_width', 0.0)
+        if open_w is None or float(open_w) == float(closed_w):
+            self.get_logger().error(
+                "gripper_width_to_fraction: no open_width/closed_width "
+                f"calibration for robot '{self.robot}' — width commands "
+                "unavailable; add them to robot_config.")
+            return None
+        w = float(width)
+        f = (float(open_w) - w) / (float(open_w) - float(closed_w))
+        if f < 0.0 or f > 1.0:
+            self.get_logger().warn(
+                f"gripper width {w*1000:.1f} mm is outside this gripper's "
+                f"range ({float(closed_w)*1000:.1f}..{float(open_w)*1000:.1f} "
+                "mm) — clamping.")
+        return min(max(f, 0.0), 1.0)
+
+    def set_gripper(self, fraction=None, width=None):
+        """Move the gripper to an opening, given EITHER as a fraction of
+        travel (0.0 = fully open, 1.0 = fully closed) OR as a physical jaw
+        opening `width` in meters (converted per robot via
+        gripper_width_to_fraction, so the same width works across arms).
+        Joint targets are interpolated per joint between
+        open_gripper_joint_positions and closed_gripper_joint_positions; on
+        the joint_trajectory kind the move runs at the joint's max velocity
+        times the robot's speed scale (see _command_gripper_trajectory). The
+        lite6's service-driven hardware gripper is binary — anything past
+        half travel closes, with a log note. All gripper commands
+        (open/close included) route through here."""
         if self.gripper_disabled:
-            self.get_logger().info("Gripper disabled — skipping open.")
+            self.get_logger().info("Gripper disabled — skipping gripper command.")
             return
-        self.get_logger().info("Opening gripper...")
+        if (fraction is None) == (width is None):
+            self.get_logger().error(
+                "set_gripper: pass exactly one of fraction= or width=.")
+            return
+        if width is not None:
+            fraction = self.gripper_width_to_fraction(width)
+            if fraction is None:
+                return
+            self.get_logger().info(
+                f"Gripper width {float(width)*1000:.1f} mm -> "
+                f"fraction {fraction:.2f}.")
+        f = min(max(float(fraction), 0.0), 1.0)
+        label = f"set({f:.2f})"
+        self.get_logger().info(f"Gripper -> {f:.2f} (0=open, 1=closed)...")
         if self._gripper_kind == 'lite6_service':
-            self._call_gripper_service(self._gripper_open_client, "open")
+            if 0.0 < f < 1.0:
+                self.get_logger().info(
+                    "lite6 gripper is open/close only — "
+                    f"{f:.2f} thresholded to {'close' if f >= 0.5 else 'open'}.")
+            if f >= 0.5:
+                self._call_gripper_service(self._gripper_close_client, "close")
+            else:
+                self._call_gripper_service(self._gripper_open_client, "open")
         elif self._gripper_kind == 'joint_trajectory':
-            self._command_gripper_trajectory(
-                self._gripper_cfg['open_gripper_joint_positions'], "open")
+            cfg = self._gripper_cfg
+            targets = [float(o) + f * (float(c) - float(o))
+                       for o, c in zip(cfg['open_gripper_joint_positions'],
+                                       cfg['closed_gripper_joint_positions'])]
+            self._command_gripper_trajectory(targets, label)
         else:
-            self.gripper.open()
-        self._gripper_state = 'open'
+            if f <= 0.0:
+                self.gripper.open()
+            elif f >= 1.0:
+                self.gripper.close()
+            else:
+                cfg = self._gripper_cfg
+                target = (float(cfg['open_gripper_joint_positions'][0])
+                          + f * (float(cfg['closed_gripper_joint_positions'][0])
+                                 - float(cfg['open_gripper_joint_positions'][0])))
+                self.gripper.move_to_position(target)
+        self._gripper_state = ('open' if f <= 0.02
+                               else 'closed' if f >= 0.98 else 'partial')
+        self._gripper_fraction = f
+
+    def open_gripper(self):
+        self.set_gripper(0.0)
 
     def close_gripper(self):
-        if self.gripper_disabled:
-            self.get_logger().info("Gripper disabled — skipping close.")
-            return
-        self.get_logger().info("Closing gripper...")
-        if self._gripper_kind == 'lite6_service':
-            self._call_gripper_service(self._gripper_close_client, "close")
-        elif self._gripper_kind == 'joint_trajectory':
-            self._command_gripper_trajectory(
-                self._gripper_cfg['closed_gripper_joint_positions'], "close")
-        else:
-            self.gripper.close()
-        self._gripper_state = 'closed'
+        self.set_gripper(1.0)
 
     def close_gripper_for_scan(self):
         """Close the gripper before a scan so the open jaws stay out of the
@@ -1331,20 +1811,30 @@ class printerAutomation(ArucoDetectionViewer):
             return None
         if self._gripper_state == 'closed':
             return None                 # already out of the camera's way
-        previous_state = self._gripper_state    # None (untouched) or 'open'
+        if self._gripper_state is None:
+            # untouched this session: close for the scan, nothing to restore
+            self.get_logger().info(
+                "Closing gripper to clear the camera's view for scanning.")
+            self.close_gripper()
+            return None
+        # 'open' or 'partial': remember the fraction so the exact opening
+        # comes back after the observation
+        previous_fraction = self._gripper_fraction
         self.get_logger().info("Closing gripper to clear the camera's view for scanning.")
         self.close_gripper()
-        return previous_state
+        return previous_fraction
 
-    def restore_gripper_after_scan(self, previous_state):
-        """Reopen the gripper if close_gripper_for_scan() closed one a caller had
-        deliberately opened. A gripper that was merely untouched stays closed —
-        that is the cheap path, and it keeps the jaws clear for the next scan."""
-        if previous_state != 'open' or self.gripper_disabled:
+    def restore_gripper_after_scan(self, previous_fraction):
+        """Put back the opening close_gripper_for_scan() closed over, if the
+        caller had deliberately set one (fully open or a partial fraction). A
+        gripper that was merely untouched stays closed — that is the cheap
+        path, and it keeps the jaws clear for the next scan."""
+        if previous_fraction is None or self.gripper_disabled:
             return
         self.get_logger().info(
-            "Reopening gripper: it was open before the scan closed it.")
-        self.open_gripper()
+            f"Restoring gripper to {previous_fraction:.2f}: it was set there "
+            "before the scan closed it.")
+        self.set_gripper(previous_fraction)
 
     # ---- Marker updates ----
     # Default-deny: every marker is pinned at all times, except inside an
@@ -1427,9 +1917,10 @@ class printerAutomation(ArucoDetectionViewer):
             return None, None
         offset_pos = np.array([0.0, 0.0, viewing_distance])
         # the camera frame (from TF, not the wrist) lands at the offset — the
-        # EEF is backed off by the fixed camera mount offset automatically
+        # EEF is backed off by the fixed camera mount offset, and oriented by
+        # the canonical grasp pose (TF-derived; offsetOri only as fallback)
         return self._camera_view_pose(
-            entry['positionInBase'], entry['eulerInBase'], offset_pos, self.offsetOri,
+            entry['positionInBase'], entry['eulerInBase'], offset_pos,
         )
 
     def _approach_viewing_pose(self, marker_id, viewing_distance):

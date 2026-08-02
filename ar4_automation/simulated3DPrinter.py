@@ -31,146 +31,29 @@ import rclpy
 from rclpy.node import Node
 import tf_transformations
 from geometry_msgs.msg import Point, Quaternion
-from ros_gz_interfaces.srv import SpawnEntity
+from ros_gz_interfaces.msg import Entity
+from ros_gz_interfaces.srv import SetEntityPose, SpawnEntity
 
 from .printer_model import PrinterModel
 
 
-class Simulated3DPrinter:
-    """A printer model spawned into Gazebo at a known base_link pose.
+class GzEntityClient:
+    """Persistent gz-service plumbing shared by everything that puts models
+    into Gazebo: spawn/delete entities and move them with set_pose, all through
+    long-lived ros_gz_bridge service bridges instead of a fresh
+    `ros2 run ros_gz_sim create` executable per call.
 
-    printer_model: name in models/printers/ (or a PrinterModel).
-    marker_ids: which ArUco ID each mount wears, {mount_name: id} — e.g.
-        {'door': 2}. A bare int is shorthand for the default mount. Mounts left
-        out of the dict are not drawn (no texture to give them).
-    """
+    Simulated3DPrinter spawns through this; HeldPlateVisual (held_plate.py)
+    spawns AND re-poses through it every follow tick."""
 
-    # models/aruco_marker/ (marker textures) lives at the repo root
-    DEFAULT_MODEL_DIR = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-        'models', 'aruco_marker', '')
-
-    DEFAULT_PRINTER_MODEL = 'a1_mini'
-    DEFAULT_MOUNT = 'door'
-    MARKER_TEXTURE = 'materials/textures/marker6x6_{}.png'
-
-    def __init__(
-        self,
-        node=None,
-        pos=(0.6, 0.0, 0.2),
-        orient=(0.0, 0.0, np.pi),
-        printer_model=None,
-        marker_ids=None,
-        marker_size=None,
-        marker_texture=None,
-        model_dir=None,
-        use_bad_frame=True,
-        world_name='default',
-        name=None,
-        collide=None,
-    ):
-        self._owns_node = node is None
-        self.node = node if node else Node('simulated_printer')
-
-        # Gazebo solidity. The model is <static>, so its boxes never move, but
-        # they are real collision geometry: the arm cannot pass through them, it
-        # STALLS against them — the joints fight a wall they can't push, the
-        # trajectory falls behind, and the controller aborts. That looks nothing
-        # like a planner refusing a goal, so a MoveIt-only switch is not enough
-        # to get the arm out of a printer's way.
-        # None = follow the node's collision_scene_enabled, so the runner
-        # scripts' COLLISIONS var turns off the planning scene AND the physics
-        # together. False spawns visual-only boxes (see-through in Gazebo);
-        # <static> means nothing falls as a result. Marker plates are visuals
-        # with no <collision> either way, so they never block anything.
-        self.collide = (bool(getattr(self.node, 'collision_scene_enabled', True))
-                        if collide is None else bool(collide))
-
-        pos = np.array(pos, dtype=float)
-        orient = np.array(orient, dtype=float)
-
-        # good frame -> bad frame (base_link/world). Only the frame rotation,
-        # not the EEF offset angles that to_bad_frame adds.
-        if use_bad_frame and hasattr(self.node, 'frameRotationAngles'):
-            from scipy.spatial.transform import Rotation as R_scipy
-            R_BF_GF = R_scipy.from_euler("XYZ", self.node.frameRotationAngles, degrees=False)
-            R_GF_BF = R_BF_GF.inv()
-            pos = R_GF_BF.apply(pos)
-            R_orient = R_scipy.from_euler("XYZ", orient, degrees=False)
-            orient = (R_GF_BF * R_orient).as_euler("XYZ", degrees=False)
-
-        self.pos = np.array(pos, dtype=float)
-        self.orient = np.array(orient, dtype=float)
-
-        model = printer_model if printer_model is not None else self.DEFAULT_PRINTER_MODEL
-        self.printer_model = (model if isinstance(model, PrinterModel)
-                              else PrinterModel.load(model))
-
-        self.width = self.printer_model.width
-        self.depth = self.printer_model.depth
-        self.height = self.printer_model.height
-
-        self.marker_ids = self._normalize_marker_ids(marker_ids)
-        self.marker_size = marker_size
-        self.marker_texture = marker_texture or self.MARKER_TEXTURE
-        self.model_dir = model_dir or self.DEFAULT_MODEL_DIR
+    def __init__(self, node, world_name='default'):
+        self.node = node
         self.world_name = world_name
-
-        # entity name: model + the IDs it wears, so two printers of the same
-        # model don't overwrite each other in the world
-        ids = '_'.join(str(v) for _, v in sorted(self.marker_ids.items()))
-        self.name = name or f"printer_{self.printer_model.name}" + (f"_{ids}" if ids else "")
-
-        # spawn orientation as tf 'sxyz' (extrinsic xyz) — the same quaternion
-        # marker_pose_in_base() reasons with, so an estimate can't disagree with
-        # where Gazebo actually put the printer
-        self.q = [float(x) for x in tf_transformations.quaternion_from_euler(
-            float(self.orient[0]), float(self.orient[1]), float(self.orient[2]))]
-
         self.spawn_client = None
+        self.pose_client = None
         self._bridge_proc = None
+        self._pose_bridge_proc = None
         self.spawned_entities = []
-
-    # ---- construction ----
-
-    @classmethod
-    def from_marker(cls, marker_pos, marker_euler, printer_model,
-                    mount=None, **kwargs):
-        """Place a printer so its `mount` lands on an observed marker pose.
-
-        marker_pos/marker_euler are in base_link, in ArucoDetector's frames
-        (euler = scipy intrinsic 'XYZ') — i.e. straight out of
-        marker_sources.load_marker_poses(). The pose already IS in the bad
-        frame, so no frame rotation is applied to it.
-
-        Raises ValueError if the model has no such mount (place one with
-        tools/view_printer_model.py).
-        """
-        model = (printer_model if isinstance(printer_model, PrinterModel)
-                 else PrinterModel.load(printer_model))
-        mount = mount or cls.DEFAULT_MOUNT
-        derived = model.pose_from_marker(mount, marker_pos, marker_euler)
-        if derived is None:
-            raise ValueError(
-                f"printer model '{model.name}' has no '{mount}' mount — place one "
-                f"with tools/view_printer_model.py")
-        pos, orient = derived
-        kwargs.setdefault('use_bad_frame', False)
-        return cls(pos=pos, orient=orient, printer_model=model, **kwargs)
-
-    def _normalize_marker_ids(self, marker_ids):
-        """{mount_name: aruco_id}, accepting a bare int for the default mount."""
-        if marker_ids is None:
-            return {}
-        if isinstance(marker_ids, (int, np.integer)):
-            mount = (self.DEFAULT_MOUNT
-                     if self.printer_model.get_marker(self.DEFAULT_MOUNT)
-                     else (self.printer_model.markers[0]['name']
-                           if self.printer_model.markers else self.DEFAULT_MOUNT))
-            return {mount: int(marker_ids)}
-        return {str(k): int(v) for k, v in marker_ids.items()}
-
-    # ---- gz plumbing ----
 
     def _setup_spawn_client(self):
         """Bring up ONE persistent ros_gz_bridge for the create service, plus its
@@ -189,9 +72,13 @@ class Simulated3DPrinter:
             self.node.get_logger().info('gz create service available (reusing bridge)')
             return
 
+        # set_pose rides along on the same bridge, so a HeldPlateVisual in the
+        # same session finds it already bridged (it starts its own only when a
+        # reused older bridge lacks it)
         self._bridge_proc = subprocess.Popen(
             ['ros2', 'run', 'ros_gz_bridge', 'parameter_bridge',
              f'{create_srv}@ros_gz_interfaces/srv/SpawnEntity',
+             f'/world/{self.world_name}/set_pose@ros_gz_interfaces/srv/SetEntityPose',
              '--ros-args', '-r', f'__node:=gz_srv_bridge_{os.getpid()}'],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
@@ -202,6 +89,47 @@ class Simulated3DPrinter:
             self.node.get_logger().info('gz create service available')
         else:
             self.node.get_logger().warn('gz create service not available')
+
+    def _setup_pose_client(self):
+        """Client for /world/<world>/set_pose. Reuses a bridge that already
+        carries it (ours, or one _setup_spawn_client started); only when none
+        does is a dedicated pose bridge launched. Returns True when the service
+        is ready."""
+        set_srv = f'/world/{self.world_name}/set_pose'
+        if self.pose_client is None:
+            self.pose_client = self.node.create_client(SetEntityPose, set_srv)
+        if self.pose_client.wait_for_service(timeout_sec=2.0):
+            return True
+
+        self._pose_bridge_proc = subprocess.Popen(
+            ['ros2', 'run', 'ros_gz_bridge', 'parameter_bridge',
+             f'{set_srv}@ros_gz_interfaces/srv/SetEntityPose',
+             '--ros-args', '-r', f'__node:=gz_pose_bridge_{os.getpid()}'],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        atexit.register(self._pose_bridge_proc.terminate)
+        self.node.get_logger().info('Started ros_gz_bridge for the set_pose service')
+        if self.pose_client.wait_for_service(timeout_sec=10.0):
+            return True
+        self.node.get_logger().warn('gz set_pose service not available')
+        return False
+
+    def set_entity_pose_async(self, name, pos, quat_xyzw):
+        """Move a spawned model (world frame), fire-and-forget. Returns the
+        service future, or None when the set_pose client isn't ready — callers
+        poll future.done() to rate-limit instead of queueing calls."""
+        if self.pose_client is None or not self.pose_client.service_is_ready():
+            return None
+        req = SetEntityPose.Request()
+        req.entity.name = name
+        req.entity.type = Entity.MODEL
+        req.pose.position = Point(
+            x=float(pos[0]), y=float(pos[1]), z=float(pos[2]))
+        req.pose.orientation = Quaternion(
+            x=float(quat_xyzw[0]), y=float(quat_xyzw[1]),
+            z=float(quat_xyzw[2]), w=float(quat_xyzw[3]))
+        return self.pose_client.call_async(req)
 
     def _wait_future(self, future, timeout_sec=10.0):
         """Block until a service future completes, spinning the node only when
@@ -245,14 +173,6 @@ class Simulated3DPrinter:
             return True
         self.node.get_logger().warn(f'spawn of {name} reported failure')
         return False
-
-    def _abs_texture(self, tex):
-        """Absolute path for a texture referenced in an inline SDF (relative
-        paths only resolve when the SDF is a file inside model_dir; inline SDF
-        strings have no base dir)."""
-        if not tex or os.path.isabs(tex):
-            return tex
-        return os.path.join(self.model_dir, tex)
 
     def _entity_exists(self, name):
         """True if a model of this name is in the world right now.
@@ -307,6 +227,169 @@ class Simulated3DPrinter:
             f'{name} still present {wait_timeout}s after remove; spawning anyway '
             f'(it may be deleted again by the pending removal)')
 
+    def _terminate_bridges(self):
+        for proc in (self._bridge_proc, self._pose_bridge_proc):
+            if proc:
+                proc.terminate()
+                proc.wait()
+        self._bridge_proc = None
+        self._pose_bridge_proc = None
+
+    def cleanup(self):
+        """Remove all spawned entities."""
+        for name in self.spawned_entities:
+            self._delete_entity(name)
+        self.spawned_entities.clear()
+
+
+class Simulated3DPrinter(GzEntityClient):
+    """A printer model spawned into Gazebo at a known base_link pose.
+
+    printer_model: name in models/printers/ (or a PrinterModel).
+    marker_ids: which ArUco ID each mount wears, {mount_name: id} — e.g.
+        {'door': 2}. A bare int is shorthand for the default mount. Mounts left
+        out of the dict are not drawn (no texture to give them).
+    """
+
+    # models/aruco_marker/ (marker textures) lives at the repo root
+    DEFAULT_MODEL_DIR = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        'models', 'aruco_marker', '')
+
+    DEFAULT_PRINTER_MODEL = 'a1_mini'
+    DEFAULT_MOUNT = 'door'
+    MARKER_TEXTURE = 'materials/textures/marker6x6_{}.png'
+
+    def __init__(
+        self,
+        node=None,
+        pos=(0.6, 0.0, 0.2),
+        orient=(0.0, 0.0, np.pi),
+        printer_model=None,
+        marker_ids=None,
+        marker_size=None,
+        marker_texture=None,
+        model_dir=None,
+        use_bad_frame=True,
+        world_name='default',
+        name=None,
+        collide=None,
+    ):
+        self._owns_node = node is None
+        super().__init__(node=node if node else Node('simulated_printer'),
+                         world_name=world_name)
+
+        # Gazebo solidity. The model is <static>, so its boxes never move, but
+        # they are real collision geometry: the arm cannot pass through them, it
+        # STALLS against them — the joints fight a wall they can't push, the
+        # trajectory falls behind, and the controller aborts. That looks nothing
+        # like a planner refusing a goal, so a MoveIt-only switch is not enough
+        # to get the arm out of a printer's way.
+        # None = follow the node's collision_scene_enabled, so the runner
+        # scripts' COLLISIONS var turns off the planning scene AND the physics
+        # together. False spawns visual-only boxes (see-through in Gazebo);
+        # <static> means nothing falls as a result. Marker plates are visuals
+        # with no <collision> either way, so they never block anything.
+        self.collide = (bool(getattr(self.node, 'collision_scene_enabled', True))
+                        if collide is None else bool(collide))
+        # runtime state of the model's ENTRY-ZONE boxes ("entry_zone": true
+        # in the JSON, flagged via tools/definePrinterApproximateModel.py):
+        # True = zone closed, those boxes collide like the rest; False = a
+        # pickup sequence has opened the zone (recolored, no physics).
+        # Flipped by set_entry_zone_collisions.
+        self.entry_zone_collide = True
+
+        pos = np.array(pos, dtype=float)
+        orient = np.array(orient, dtype=float)
+
+        # good frame -> bad frame (base_link/world). Only the frame rotation,
+        # not the EEF offset angles that to_bad_frame adds.
+        if use_bad_frame and hasattr(self.node, 'frameRotationAngles'):
+            from scipy.spatial.transform import Rotation as R_scipy
+            R_BF_GF = R_scipy.from_euler("XYZ", self.node.frameRotationAngles, degrees=False)
+            R_GF_BF = R_BF_GF.inv()
+            pos = R_GF_BF.apply(pos)
+            R_orient = R_scipy.from_euler("XYZ", orient, degrees=False)
+            orient = (R_GF_BF * R_orient).as_euler("XYZ", degrees=False)
+
+        self.pos = np.array(pos, dtype=float)
+        self.orient = np.array(orient, dtype=float)
+
+        model = printer_model if printer_model is not None else self.DEFAULT_PRINTER_MODEL
+        self.printer_model = (model if isinstance(model, PrinterModel)
+                              else PrinterModel.load(model))
+
+        self.width = self.printer_model.width
+        self.depth = self.printer_model.depth
+        self.height = self.printer_model.height
+
+        self.marker_ids = self._normalize_marker_ids(marker_ids)
+        self.marker_size = marker_size
+        self.marker_texture = marker_texture or self.MARKER_TEXTURE
+        self.model_dir = model_dir or self.DEFAULT_MODEL_DIR
+
+        # entity name: model + the IDs it wears, so two printers of the same
+        # model don't overwrite each other in the world
+        ids = '_'.join(str(v) for _, v in sorted(self.marker_ids.items()))
+        self.name = name or f"printer_{self.printer_model.name}" + (f"_{ids}" if ids else "")
+
+        # spawn orientation as tf 'sxyz' (extrinsic xyz) — the same quaternion
+        # marker_pose_in_base() reasons with, so an estimate can't disagree with
+        # where Gazebo actually put the printer
+        self.q = [float(x) for x in tf_transformations.quaternion_from_euler(
+            float(self.orient[0]), float(self.orient[1]), float(self.orient[2]))]
+
+    # ---- construction ----
+
+    @classmethod
+    def from_marker(cls, marker_pos, marker_euler, printer_model,
+                    mount=None, **kwargs):
+        """Place a printer so its `mount` lands on an observed marker pose.
+
+        marker_pos/marker_euler are in base_link, in ArucoDetector's frames
+        (euler = scipy intrinsic 'XYZ') — i.e. straight out of
+        marker_sources.load_marker_poses(). The pose already IS in the bad
+        frame, so no frame rotation is applied to it.
+
+        Raises ValueError if the model has no such mount (place one with
+        tools/view_printer_model.py).
+        """
+        model = (printer_model if isinstance(printer_model, PrinterModel)
+                 else PrinterModel.load(printer_model))
+        mount = mount or cls.DEFAULT_MOUNT
+        derived = model.pose_from_marker(mount, marker_pos, marker_euler)
+        if derived is None:
+            raise ValueError(
+                f"printer model '{model.name}' has no '{mount}' mount — place one "
+                f"with tools/view_printer_model.py")
+        pos, orient = derived
+        kwargs.setdefault('use_bad_frame', False)
+        return cls(pos=pos, orient=orient, printer_model=model, **kwargs)
+
+    def _normalize_marker_ids(self, marker_ids):
+        """{mount_name: aruco_id}, accepting a bare int for the default mount."""
+        if marker_ids is None:
+            return {}
+        if isinstance(marker_ids, (int, np.integer)):
+            mount = (self.DEFAULT_MOUNT
+                     if self.printer_model.get_marker(self.DEFAULT_MOUNT)
+                     else (self.printer_model.markers[0]['name']
+                           if self.printer_model.markers else self.DEFAULT_MOUNT))
+            return {mount: int(marker_ids)}
+        return {str(k): int(v) for k, v in marker_ids.items()}
+
+    # ---- gz plumbing shared with GzEntityClient; only the texture-path
+    # helper (needs model_dir) stays here ----
+
+    def _abs_texture(self, tex):
+        """Absolute path for a texture referenced in an inline SDF (relative
+        paths only resolve when the SDF is a file inside model_dir; inline SDF
+        strings have no base dir)."""
+        if not tex or os.path.isabs(tex):
+            return tex
+        return os.path.join(self.model_dir, tex)
+
+
     # ---- SDF ----
 
     def _marker_texture_path(self, mount_name):
@@ -319,7 +402,9 @@ class Simulated3DPrinter:
     def _generate_sdf(self, model_name):
         """One static SDF model: the printer's boxes plus a textured plate for
         every mount that was given an ArUco ID."""
-        visuals = self.printer_model.to_sdf_links(include_collision=self.collide)
+        visuals = self.printer_model.to_sdf_links(
+            include_collision=self.collide,
+            entry_zone_collide=self.entry_zone_collide)
 
         for mk in self.printer_model.markers:
             texture = self._marker_texture_path(mk.get('name'))
@@ -376,14 +461,44 @@ class Simulated3DPrinter:
         self._delete_entity(name)
         ok = self._spawn_entity(self._generate_sdf(name), name, self.pos, self.orient)
         if ok:
-            self.spawned_entities.append(name)
+            if name not in self.spawned_entities:
+                self.spawned_entities.append(name)
+            n_boxes = len(self.printer_model.boxes)
+            n_off = sum(1 for b in self.printer_model.boxes
+                        if not b.get('collide', True))
+            if self.collide:
+                solidity = (f"solid, {n_off} flagged visual-only" if n_off
+                            else "solid")
+            else:
+                solidity = "VISUAL-ONLY, arm passes through"
             self.node.get_logger().info(
                 f"Spawned {name}: {self.printer_model.name}, "
-                f"{len(self.printer_model.boxes)} boxes "
-                f"({'solid' if self.collide else 'VISUAL-ONLY, arm passes through'}), "
+                f"{n_boxes} boxes ({solidity}), "
                 f"markers {self.marker_ids} "
                 f"at {[round(float(v), 4) for v in self.pos]} "
                 f"rpy {[round(float(v), 4) for v in self.orient]}")
+        return ok
+
+    def set_entry_zone_collisions(self, enabled):
+        """Toggle the collisions of the model's ENTRY-ZONE boxes in GAZEBO by
+        respawning the printer with those boxes' collision blocks (and their
+        color) flipped — a spawned model's geometry can't be edited in place.
+        Pose, markers, and every other box are identical across the respawn.
+        No-op when nothing changed or the model has no entry-zone boxes;
+        True on success (state-only, without a respawn, if not spawned yet)."""
+        enabled = bool(enabled)
+        if enabled == self.entry_zone_collide:
+            return True
+        if not self.printer_model.entry_zone_indices():
+            return True
+        self.entry_zone_collide = enabled
+        if self.name not in self.spawned_entities:
+            return True          # hardware run / not spawned: state only
+        ok = self.spawn(self.name)
+        if ok:
+            self.node.get_logger().info(
+                f"{self.name}: entry zone "
+                f"{'CLOSED (colliding again)' if enabled else 'OPEN (recolored, no physics)'}")
         return ok
 
     # ---- where its markers are ----
@@ -442,17 +557,9 @@ class Simulated3DPrinter:
     def shutdown(self):
         """Clean shutdown of the printer and all resources."""
         self.cleanup()
-        if self._bridge_proc:
-            self._bridge_proc.terminate()
-            self._bridge_proc.wait()
+        self._terminate_bridges()
         if self._owns_node:
             self.node.destroy_node()
-
-    def cleanup(self):
-        """Remove all spawned entities."""
-        for name in self.spawned_entities:
-            self._delete_entity(name)
-        self.spawned_entities.clear()
 
 
 def main():

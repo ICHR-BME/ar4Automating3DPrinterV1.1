@@ -42,7 +42,31 @@ ROBOT_CONFIGS = {
             'closed_gripper_joint_positions': [0.0145],
             'gripper_group_name': "ar_gripper",
             'gripper_command_action_name': "gripper_controller/gripper_cmd",
+            # jaw OPENING (m, between the fingertips) at the configured
+            # open/closed joint positions, for width-based commands
+            # (set_gripper(width=...)). Both jaws travel 0.0145 m
+            # (gripper_jaw1/2_joint), so the opening changes by ~0.029 m over
+            # the stroke — VERIFY the absolute open value with calipers.
+            'open_width': 0.029,
+            'closed_width': 0.0,
         },
+        # The AR4 URDF has no TCP frame past the jaws, so printerAutomation
+        # broadcasts a SYNTHETIC one ('grasp_tcp') from link_6 using
+        # tcp_offset, and the same grasp-frame math as the xarm robots then
+        # applies. rpy is DERIVED, not tuned: Rz(-90 deg) is exactly what makes
+        # the canonical GRASP_ORI_IN_MARKER reproduce the AR4's old hand-tuned
+        # offset_ori [0, pi, pi/2], so behavior is unchanged where the old
+        # numbers worked. pos is the jaw-tip guess (jaw joints sit ~0.036 m
+        # along link_6 Z, fingers extend past that) — VERIFY on hardware and
+        # adjust; it only shifts where 'grasp'-frame waypoints land, not the
+        # orientation.
+        'grasp_frame': 'grasp_tcp',
+        'tcp_offset': {'pos': [0.0, 0.0, 0.06],
+                       'rpy': [0.0, 0.0, -np.pi / 2]},
+        # links allowed to touch an attached (held) object without MoveIt
+        # flagging a collision — the jaws are clamped onto it by definition
+        'gripper_touch_links': ['gripper_base_link', 'gripper_jaw1_link',
+                                'gripper_jaw2_link', 'link_6'],
         # bad frame (base_link) -> good frame rotation, and the euler offset of
         # the neutral tool orientation (calibrated for the AR4)
         'frame_rotation_angles': np.array([0.0, 0.0, np.pi / 2]),
@@ -81,7 +105,17 @@ ROBOT_CONFIGS = {
             'kind': 'lite6_service',
             'open_service': '/ufactory/open_lite6_gripper',
             'close_service': '/ufactory/close_lite6_gripper',
+            # the hardware gripper is binary (open/close services only) —
+            # width/fraction commands are thresholded at half travel. Opening
+            # per the Lite 6 gripper spec (~16 mm) — VERIFY with calipers.
+            'open_width': 0.016,
+            'closed_width': 0.0,
         },
+        # stock gripper's fingertip frame (uflite_gripper.urdf.xacro puts
+        # link_tcp 0.0836 m past the gripper body) — grasped objects anchor here
+        'grasp_frame': 'link_tcp',
+        'gripper_touch_links': ['uflite_gripper_link', 'uflite_finger1',
+                                'uflite_finger2', 'link_tcp', 'link_eef'],
         # good frame == base frame for the lite6 (robot spawns at the world
         # origin with zero yaw, so no AR4-style 90 deg convention)
         'frame_rotation_angles': np.array([0.0, 0.0, 0.0]),
@@ -130,14 +164,36 @@ ROBOT_CONFIGS = {
             'gripper_joint_names': ["drive_joint"],
             'open_gripper_joint_positions': [0.05],
             'closed_gripper_joint_positions': [0.80],
-            # trajectory duration asked for, and how long to wait for the joint
-            # to get there. They differ a lot on purpose: measured in Gazebo, a
-            # full 0.05 -> 0.80 sweep takes ~15 s whatever time_from_start says,
-            # so the wait has to be generous or every command logs a false
-            # 'never settled'. A scan closes the gripper once per session.
-            'move_time': 4.0,
+            # No fixed 'move_time': the trajectory duration is computed as
+            # travel / (max_velocity * the robot's speed scale), so the
+            # gripper keeps pace with the arm instead of a fixed slow sweep
+            # (put 'move_time' back to pin a duration explicitly).
+            # max_velocity is drive_joint's URDF limit
+            # (xarm_gripper.urdf.xacro velocity="2").
+            'max_velocity': 2.0,
+            # how long to wait for the joint to actually get there. Generous
+            # on purpose: in Gazebo the joint can lag the commanded time
+            # badly, and the settle loop already exits early on arrival or
+            # stall — this only bounds the worst case.
             'settle_timeout': 25.0,
+            # jaw OPENING (m) at the configured open/closed joint positions,
+            # for width-based commands (set_gripper(width=...)). Derived from
+            # the xArm Gripper's 86 mm stroke over drive_joint 0..0.85 rad,
+            # assumed LINEAR: 0.05 rad -> ~81 mm, 0.80 rad -> ~5 mm. The real
+            # linkage is slightly nonlinear — VERIFY with calipers at a couple
+            # of widths and adjust.
+            'open_width': 0.081,
+            'closed_width': 0.005,
         },
+        # stock gripper's fingertip frame (xarm_gripper.urdf.xacro puts
+        # link_tcp 0.172 m past the flange) — grasped objects anchor here, NOT
+        # at link_eef, or they overlap the gripper body
+        'grasp_frame': 'link_tcp',
+        'gripper_touch_links': ['xarm_gripper_base_link',
+                                'left_outer_knuckle', 'left_finger',
+                                'left_inner_knuckle', 'right_outer_knuckle',
+                                'right_finger', 'right_inner_knuckle',
+                                'link_tcp', 'link_eef'],
         # good frame == base frame (robot spawns at the world origin, zero yaw)
         'frame_rotation_angles': np.array([0.0, 0.0, 0.0]),
         'frame_offset_angles': np.array([0.0, 0.0, 0.0]),

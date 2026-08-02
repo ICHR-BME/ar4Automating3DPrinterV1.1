@@ -42,7 +42,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Address, port and token live in robot_link.py, the file shared byte-for-byte
 # with the website computer, so the two ends can't drift.
-from robot_link import (AUTH_TOKEN, BIND_HOST, PROTOCOL_VERSION, ROBOT_HOST,
+from ar4Automating3DPrinter.tools.robot_link import (AUTH_TOKEN, BIND_HOST, PROTOCOL_VERSION, ROBOT_HOST,
                         ROBOT_PORT)
 
 # ---- config (edit these; no CLI args) ------------------------------------

@@ -1,310 +1,450 @@
 {
-  "name": "a1",
-  "source_mesh": "models/printers/Bambulab A1 printer, modified.stl",
-  "units_scale": 0.001,
-  "rotate_z_deg": 0.0,
-  "frame": "printer_center",
-  "footprint": {
-    "width": 0.46199999999999997,
-    "depth": 0.5072000122331083,
-    "height": 0.6048838806152343
-  },
-  "bed_size": [
-    0.256,
-    0.256
+ "name": "a1",
+ "procedures": {
+  "notes": [
+   "HOW THIS FILE STAYS ROBOT-INDEPENDENT: every entry is defined relative to",
+   "the printer's ArUco marker; all robot-specific geometry lives in TF and",
+   "robot_config, never here.",
+   "1) 'pos' entries are GRIPPER-TCP poses in the MARKER frame (frame=grasp).",
+   "   At runtime the flange target is back-solved through the eef->TCP",
+   "   transform from TF (robot_config 'grasp_frame', e.g. link_tcp), so the",
+   "   same numbers put the FINGERTIPS in the same place on any arm.",
+   "2) 'scan'/'move' entries position the CAMERA, not the wrist: the camera",
+   "   optical frame is placed at the viewing distance along the marker",
+   "   normal and the flange is back-solved through the eef->camera transform",
+   "   from TF (plus the calibrate_camera_offset correction). 'Scan at 0.15'",
+   "   therefore means the camera sits 0.15 m from the marker on every robot,",
+   "   wherever its camera is mounted.",
+   "3) The measured marker pose itself is corrected through the same camera",
+   "   TF, so different robots scanning the same marker resolve the same",
+   "   base-frame pose - the input to (1) is robot-agnostic too.",
+   "4) 'gripper_width' entries are physical jaw openings in METERS, mapped",
+   "   per robot via open_width/closed_width in robot_config; 'gripper'",
+   "   fractions (0=open..1=closed) and 'open'/'close' also work.",
+   "5) 'entry_zone_collisions' toggles only this printer's boxes flagged",
+   "   'entry_zone': true (the volumes the gripper may enter mid-procedure).",
+   "The original numbers were converted from the legacy lite6-tuned flange",
+   "lists by removing the lite6's 0.0836 m flange->TCP offset."
   ],
-  "boxes": [
-    {
-      "center": [
-        -0.0160782600752271,
-        0.1450000000130385,
-        0.03354194068908691
-      ],
-      "size": [
-        0.23763249607287376,
-        0.06679998779296875,
-        0.09420000076293945
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        0.039053914173605986,
-        -0.21127500532753765,
-        0.06919194030761718
-      ],
-      "size": [
-        0.1675492931720078,
-        0.09065000152587893,
-        0.47250000000000003
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        -0.06750025356363155,
-        -0.16862859052721538,
-        -0.23796398491908777
-      ],
-      "size": [
-        0.033998960787633814,
-        0.11394223585255346,
-        0.1348109627995809
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        0.15041964687195183,
-        -0.0901652102699886,
-        0.013355437037919818
-      ],
-      "size": [
-        0.06716070625609633,
-        0.33286959169313113,
-        0.08548302876947858
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        0.10984241413103998,
-        0.1443789977719595,
-        0.0548756049192697
-      ],
-      "size": [
-        0.026111234183904458,
-        0.10955798331081065,
-        0.13686732922330502
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        -0.10211660644598783,
-        -0.2121000060904771,
-        -0.07799211205150501
-      ],
-      "size": [
-        0.1267667871080243,
-        0.08900000000000002,
-        0.1009323635203587
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        -0.17132371144807618,
-        0.014375630364266784,
-        0.013085872640545062
-      ],
-      "size": [
-        0.08483455112893676,
-        0.3678129676420175,
-        0.05328786466585575
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        -0.18144910317406404,
-        0.1626772314590045,
-        0.08068075294541571
-      ],
-      "size": [
-        0.10510179365187189,
-        0.18715445068490072,
-        0.09382199853959677
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        -0.1021147777483897,
-        -0.2121000060904771,
-        0.17328773737056097
-      ],
-      "size": [
-        0.12677044450322056,
-        0.08900000000000002,
-        0.2613084058741125
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        0.13066818896635707,
-        -0.22410000609047712,
-        0.10901228574160142
-      ],
-      "size": [
-        0.027663622067285884,
-        0.059,
-        0.11763403545597503
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        0.1495392633536224,
-        -0.19632292114735256,
-        0.23292515759796947
-      ],
-      "size": [
-        0.06540293305138525,
-        0.12055416988624912,
-        0.14203356541929552
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        0.14530153528062237,
-        0.22128693914211212,
-        0.07364193964004517
-      ],
-      "size": [
-        0.0567969233352396,
-        0.07059167797033364,
-        0.08199999713897706
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        0.13067648495247416,
-        -0.22560000609047712,
-        -0.06778026304180321
-      ],
-      "size": [
-        0.027647030095051706,
-        0.062,
-        0.08855559330115925
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        -0.09094321708845565,
-        -0.19622501542733717,
-        -0.14947619123134848
-      ],
-      "size": [
-        0.10411356582308874,
-        0.06225001867372018,
-        0.0539959603433037
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        0.17545125796824032,
-        0.1311612333959997,
-        0.05703231546845825
-      ],
-      "size": [
-        0.11709748406351932,
-        0.12159671500529308,
-        0.14118075032168212
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    },
-    {
-      "center": [
-        -0.12187340660951039,
-        -0.2100919375640679,
-        0.0075563040676409135
-      ],
-      "size": [
-        0.16625318678097925,
-        0.09301613710497247,
-        0.08214646505405486
-      ],
-      "rpy": [
-        0.0,
-        0.0,
-        0.0
-      ]
-    }
+  "frame": "grasp",
+  "pickup": [
+   {
+    "description": "scan the marker before approaching",
+    "scan": 0.175
+   },
+   {
+    "description": "scan the marker before approaching",
+    "scan": 0.175
+   },
+   {
+    "description": "open gripper to 80 mm for the approach",
+    "gripper_width": 0.045
+   },
+   {
+    "description": "open the entry zone so the gripper can reach in",
+    "entry_zone_collisions": "off"
+   },
+   {
+    "description": "approach standoff in front of the handle",
+    "pos": [
+     0.0,
+     0.06,
+     0.0
+    ],
+    "angle_deg": 0.0
+   },
+   {
+    "description": "grab the handle",
+    "gripper": "close"
+   },
+   {
+    "description": "show the grasped build plate (gazebo visual + planning box)",
+    "held_plate": "attach"
+   },
+   {
+    "description": "approach standoff in front of the handle",
+    "pos": [
+     0.0,
+     0.16,
+     0.0
+    ],
+    "angle_deg": 0.0
+   },
+   {
+    "description": "open the entry zone so the gripper can reach in",
+    "entry_zone_collisions": "on"
+   }
   ],
-  "coverage": {
-    "num_boxes": 16,
-    "voxel_coverage": 1.0
-  },
-  "markers": [
-    {
-      "name": "door",
-      "size": 0.025,
-      "pos": [
-        -0.013103,
-        -0.21681,
-        0.306442
-      ],
-      "rpy": [
-        -1.570796,
-        1.570796,
-        0.0
-      ]
-    }
+  "place": [
+   {
+    "description": "lift / carry pose",
+    "pos": [
+     0.0,
+     0.13,
+     0.0184
+    ],
+    "angle_deg": null
+   },
+   {
+    "description": "descend back to the grasp pose",
+    "pos": [
+     0.0,
+     0.03,
+     0.0184
+    ],
+    "angle_deg": null
+   },
+   {
+    "description": "release the handle",
+    "gripper": "open"
+   },
+   {
+    "description": "plate released - remove the held-plate visual",
+    "held_plate": "detach"
+   },
+   {
+    "description": "withdraw to the approach standoff",
+    "pos": [
+     0.0,
+     0.03,
+     0.0664
+    ],
+    "angle_deg": null
+   },
+   {
+    "description": "gripper is clear - close the entry zone (collisions back on)",
+    "entry_zone_collisions": "on"
+   }
+  ],
+  "scrape": []
+ },
+ "source_mesh": "models/printers/Bambulab A1 printer, modified.stl",
+ "units_scale": 0.001,
+ "rotate_z_deg": 0.0,
+ "frame": "printer_center",
+ "footprint": {
+  "width": 0.46199999999999997,
+  "depth": 0.5072000122331083,
+  "height": 0.6048838806152343
+ },
+ "bed_size": [
+  0.256,
+  0.256
+ ],
+ "plate": {
+  "size": [
+   0.256,
+   0.256,
+   0.003
+  ],
+  "offset_pos": [
+   0.0,
+   0.0,
+   0.128
+  ],
+  "offset_rpy": [
+   1.570796,
+   0.0,
+   0.0
   ]
+ },
+ "boxes": [
+  {
+   "center": [
+    -0.0160782600752271,
+    0.1450000000130385,
+    0.03354194068908691
+   ],
+   "size": [
+    0.23763249607287376,
+    0.06679998779296875,
+    0.09420000076293945
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    0.039053914173605986,
+    -0.21127500532753765,
+    0.06919194030761718
+   ],
+   "size": [
+    0.1675492931720078,
+    0.09065000152587893,
+    0.47250000000000003
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "entry_zone": true
+  },
+  {
+   "center": [
+    -0.06750025356363155,
+    -0.16862859052721538,
+    -0.23796398491908777
+   ],
+   "size": [
+    0.033998960787633814,
+    0.11394223585255346,
+    0.1348109627995809
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "entry_zone": true
+  },
+  {
+   "center": [
+    0.15041964687195183,
+    -0.0901652102699886,
+    0.013355437037919818
+   ],
+   "size": [
+    0.06716070625609633,
+    0.33286959169313113,
+    0.08548302876947858
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    0.10984241413103998,
+    0.1443789977719595,
+    0.0548756049192697
+   ],
+   "size": [
+    0.026111234183904458,
+    0.10955798331081065,
+    0.13686732922330502
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    -0.10211660644598783,
+    -0.2121000060904771,
+    -0.07799211205150501
+   ],
+   "size": [
+    0.1267667871080243,
+    0.08900000000000002,
+    0.1009323635203587
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "entry_zone": true
+  },
+  {
+   "center": [
+    -0.17132371144807618,
+    0.014375630364266784,
+    0.013085872640545062
+   ],
+   "size": [
+    0.08483455112893676,
+    0.3678129676420175,
+    0.05328786466585575
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    -0.18144910317406404,
+    0.1626772314590045,
+    0.08068075294541571
+   ],
+   "size": [
+    0.10510179365187189,
+    0.18715445068490072,
+    0.09382199853959677
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    -0.1021147777483897,
+    -0.2121000060904771,
+    0.17328773737056097
+   ],
+   "size": [
+    0.12677044450322056,
+    0.08900000000000002,
+    0.2613084058741125
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "entry_zone": true
+  },
+  {
+   "center": [
+    0.13066818896635707,
+    -0.22410000609047712,
+    0.10901228574160142
+   ],
+   "size": [
+    0.027663622067285884,
+    0.059,
+    0.11763403545597503
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    0.1495392633536224,
+    -0.19632292114735256,
+    0.23292515759796947
+   ],
+   "size": [
+    0.06540293305138525,
+    0.12055416988624912,
+    0.14203356541929552
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    0.14530153528062237,
+    0.22128693914211212,
+    0.07364193964004517
+   ],
+   "size": [
+    0.0567969233352396,
+    0.07059167797033364,
+    0.08199999713897706
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    0.13067648495247416,
+    -0.22560000609047712,
+    -0.06778026304180321
+   ],
+   "size": [
+    0.027647030095051706,
+    0.062,
+    0.08855559330115925
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    -0.09094321708845565,
+    -0.19622501542733717,
+    -0.14947619123134848
+   ],
+   "size": [
+    0.10411356582308874,
+    0.06225001867372018,
+    0.0539959603433037
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ],
+   "entry_zone": true
+  },
+  {
+   "center": [
+    0.17545125796824032,
+    0.1311612333959997,
+    0.05703231546845825
+   ],
+   "size": [
+    0.11709748406351932,
+    0.12159671500529308,
+    0.14118075032168212
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    -0.12187340660951039,
+    -0.2100919375640679,
+    0.0075563040676409135
+   ],
+   "size": [
+    0.16625318678097925,
+    0.09301613710497247,
+    0.08214646505405486
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  }
+ ],
+ "coverage": {
+  "num_boxes": 16,
+  "voxel_coverage": 1.0
+ },
+ "markers": [
+  {
+   "name": "door",
+   "size": 0.025,
+   "pos": [
+    -0.013103,
+    -0.21681,
+    0.306442
+   ],
+   "rpy": [
+    -1.570796,
+    1.570796,
+    0.0
+   ]
+  }
+ ]
 }

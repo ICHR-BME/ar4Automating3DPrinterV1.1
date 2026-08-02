@@ -80,10 +80,19 @@ SIM_PRINTER_SPECS = {
     # xArm 6: same door-facing conventions as the lite6, pushed out for the
     # longer (~0.7 m) reach. Starting point — re-probe reachability of each
     # marker's far viewing pose on the first sim runs and nudge as needed.
+    # Full-size A1 printers (not the mini): the xArm 6 is the only arm with
+    # the reach for them, so the model is pinned per spec here rather than
+    # via DEFAULT_SIM_PRINTER_MODEL (ar4/lite6 layouts stay a1_mini).
+    # pos z = 0.30 puts the A1's base (height 0.605, so half-height ~0.302)
+    # on the floor; its door marker then sits ~0.61 m up — re-probe the far
+    # viewing poses for reachability on the first runs.
     'xarm6': [
-            {"marker_id": 0, "pos": [0.20, -0.22, 0.15], "orient": [0.0, 0.0, math.pi]},
-            {"marker_id": 1, "pos": [0.30, 0.35, 0.10], "orient": [0.0, 0.0, 0*math.pi]},
-            {"marker_id": 2, "pos": [0.70, 0.10, 0.20], "orient": [0.0, 0.0, 3/2*math.pi]},
+            {"marker_id": 0, "pos": [0.20, -0.22, 0.30], "orient": [0.0, 0.0, math.pi],
+             "printer_model": "a1"},
+            {"marker_id": 1, "pos": [0.30, 0.35, 0.30], "orient": [0.0, 0.0, 0*math.pi],
+             "printer_model": "a1"},
+            {"marker_id": 2, "pos": [0.70, 0.10, 0.30], "orient": [0.0, 0.0, 3/2*math.pi],
+             "printer_model": "a1"},
         ],
 }
 
@@ -288,6 +297,8 @@ def spawn_sim_printers(node, specs):
         printer.register_marker_estimates(node)
         # same boxes Gazebo just spawned, now in the planning scene
         node.add_printer_collision_boxes(printer)
+        # this marker's waypoints come from this printer model's JSON
+        node.marker_offset_config[p["marker_id"]] = printer.printer_model.name
         printers.append(printer)
     return printers
 
@@ -343,6 +354,8 @@ def spawn_printers_from_markers(node, specs, source=SCAN, require_detected=True,
         if register:
             printer.register_marker_estimates(node)
         node.add_printer_collision_boxes(printer)
+        # this marker's waypoints come from this printer model's JSON
+        node.marker_offset_config[marker_id] = printer.printer_model.name
         printers.append(printer)
     return printers
 
@@ -411,6 +424,8 @@ def restore_saved_printers(node):
             node.register_estimated_marker(
                 marker_id=p["marker_id"], bad_pos=bad_pos, bad_euler=bad_euler
             )
+        # this marker's waypoints come from this printer model's JSON
+        node.marker_offset_config[p["marker_id"]] = printer.printer_model.name
 
 
 # hand-taught estimates written by teachMarkersByHand.py

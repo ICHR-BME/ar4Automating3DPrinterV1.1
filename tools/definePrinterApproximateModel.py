@@ -13,6 +13,18 @@ where it would actually sit: texture on the outward face only, plain gray
 backing, plus an axis triad so you can confirm it faces the right way before
 saving. The pose is written to the JSON's "markers" list.
 
+The same window also edits the printer's ENTRY ZONE: SHIFT+click a box to add
+it to / remove it from the zone (amber wireframe). Zone boxes get
+"entry_zone": true in the JSON's box entry. They collide NORMALLY by default —
+the zone is the SUBSET of boxes whose collisions a pickup sequence toggles off
+while the gripper reaches into the printer (waypoint entry
+{'entry_zone_collisions': 'off'}) and back on after withdrawing
+({'entry_zone_collisions': 'on'}, printerAutomation.set_entry_zone_collisions;
+the global COLLISIONS switch is separate and covers everything). While open
+they recolor in Gazebo and their boxes leave the MoveIt planning scene
+(visible in RViz); closing the zone restores both. Flag e.g. the door opening
+or the bed area the gripper must enter.
+
 This works because the box frame IS the printer-local frame (origin at the mesh
 AABB center, +Z up) — the same frame Simulated3DPrinter places markers in. A
 marker measured on the real robot can't give this: teachMarkersByHand.py finds
@@ -40,6 +52,16 @@ BOX_COLORS = [
     [0.95, 0.60, 0.05], [0.70, 0.20, 0.85], [0.05, 0.75, 0.75],
     [0.85, 0.35, 0.55], [0.55, 0.55, 0.10],
 ]
+# boxes in the ENTRY ZONE ("entry_zone": true) — amber, matching the color
+# Gazebo shows while a sequence has the zone open (collisions off)
+ENTRY_ZONE_BOX_COLOR = [0.95, 0.75, 0.10]
+
+
+def box_color(i, box):
+    """Wireframe color for box i: amber when in the entry zone, else its
+    cycle color."""
+    return (ENTRY_ZONE_BOX_COLOR if box.get('entry_zone')
+            else BOX_COLORS[i % len(BOX_COLORS)])
 
 
 def load_source_mesh(mesh_path, units_scale, rotate_z_deg):
@@ -113,7 +135,7 @@ def build_geometries(name, solid_boxes=False):
 
     geoms = [o3m] if o3m is not None else []
     for i, box in enumerate(model['boxes']):
-        color = BOX_COLORS[i % len(BOX_COLORS)]
+        color = box_color(i, box)
         c = np.asarray(box['center'], dtype=float)
         s = np.asarray(box['size'], dtype=float)
         R = o3d.geometry.get_rotation_matrix_from_xyz(box.get('rpy', [0, 0, 0]))
@@ -138,16 +160,19 @@ def build_geometries(name, solid_boxes=False):
 
 def snap_to_box_face(point, boxes):
     """Nearest point on the surface of the box model, with that face's outward
-    normal. Both are returned in the printer-local frame.
+    normal and the index of the box it belongs to — all in the printer-local
+    frame: (face_point, normal, box_index).
 
     Clicking anywhere near the printer — on the mesh, on a wireframe edge, on a
     box fill — resolves to a flat spot on the collision boxes, which is where a
-    marker has to live for the spawned SDF to match what you see here."""
+    marker has to live for the spawned SDF to match what you see here. The
+    index is what SHIFT+click entry-zone flagging uses to know which box was
+    hit."""
     from scipy.spatial.transform import Rotation as R
 
     p = np.asarray(point, dtype=float)
     best = None
-    for box in boxes:
+    for bi, box in enumerate(boxes):
         c = np.asarray(box['center'], dtype=float)
         half = np.asarray(box['size'], dtype=float) / 2.0
         rot = R.from_euler('xyz', box.get('rpy', [0.0, 0.0, 0.0]))
@@ -175,9 +200,9 @@ def snap_to_box_face(point, boxes):
         face_world = rot.apply(face_local) + c
         d = float(np.linalg.norm(face_world - p))
         if best is None or d < best[0]:
-            best = (d, face_world, rot.apply(n_local))
+            best = (d, face_world, rot.apply(n_local), bi)
 
-    return best[1], best[2]
+    return best[1], best[2], best[3]
 
 
 def marker_pose_from_face(point, normal, surface_offset):
@@ -295,9 +320,29 @@ def write_marker(json_path, name, size, pos, rpy):
     return entry
 
 
+def write_box_flags(json_path, boxes):
+    """Persist each box's entry-zone flag to the JSON, leaving everything else
+    untouched. The flag is stored ONLY when True ("entry_zone": true) so
+    untouched files keep their exact old shape; un-flagging a box removes the
+    key again."""
+    with open(json_path, 'r') as f:
+        data = json.load(f)
+    flagged = 0
+    for entry, box in zip(data['boxes'], boxes):
+        if box.get('entry_zone'):
+            entry['entry_zone'] = True
+            flagged += 1
+        else:
+            entry.pop('entry_zone', None)
+    with open(json_path, 'w') as f:
+        json.dump(data, f, indent=2)
+    return flagged
+
+
 def run_marker_placement(printer, model, geoms, json_path, marker_name,
                          marker_size, texture_path, surface_offset):
-    """Viewer + CTRL+click marker placement, on open3d's GUI renderer.
+    """Viewer + CTRL+click marker placement + SHIFT+click entry-zone editing,
+    on open3d's GUI renderer.
 
     Picking is depth-buffer based: the clicked pixel's depth is unprojected back
     into the scene, which works against the solid mesh and box fills alike (the
@@ -312,7 +357,8 @@ def run_marker_placement(printer, model, geoms, json_path, marker_name,
     app = gui.Application.instance
     app.initialize()
     window = app.create_window(
-        f"{printer}: CTRL+click to place '{marker_name}'", 1280, 900)
+        f"{printer}: CTRL+click places '{marker_name}', "
+        f"SHIFT+click edits the entry zone", 1280, 900)
 
     widget = gui.SceneWidget()
     widget.scene = rendering.Open3DScene(window.renderer)
@@ -324,15 +370,31 @@ def run_marker_placement(printer, model, geoms, json_path, marker_name,
     line.shader = 'unlitLine'
     line.line_width = 2.0
 
+    # boxes are added by BOX index (not geoms index) so a SHIFT+click can
+    # re-color exactly the box it toggled; the OBBs in geoms are skipped in
+    # favor of these
+    def add_box_lineset(bi):
+        nm = f"box_{bi}"
+        if widget.scene.has_geometry(nm):
+            widget.scene.remove_geometry(nm)
+        box = boxes[bi]
+        c = np.asarray(box['center'], dtype=float)
+        s = np.asarray(box['size'], dtype=float)
+        Rm = o3d.geometry.get_rotation_matrix_from_xyz(box.get('rpy', [0, 0, 0]))
+        obb = o3d.geometry.OrientedBoundingBox(c, Rm, s)
+        ls = o3d.geometry.LineSet.create_from_oriented_bounding_box(obb)
+        ls.paint_uniform_color(box_color(bi, box))
+        widget.scene.add_geometry(nm, ls, line)
+
     for i, g in enumerate(geoms):
         if isinstance(g, o3d.geometry.OrientedBoundingBox):
-            ls = o3d.geometry.LineSet.create_from_oriented_bounding_box(g)
-            ls.paint_uniform_color(g.color)
-            widget.scene.add_geometry(f"box_{i}", ls, line)
+            continue
         elif isinstance(g, o3d.geometry.LineSet):
             widget.scene.add_geometry(f"lines_{i}", g, line)
         else:
             widget.scene.add_geometry(f"mesh_{i}", g, lit)
+    for bi in range(len(boxes)):
+        add_box_lineset(bi)
 
     # markers already saved in the JSON, so re-running shows what you placed
     # last time and a CTRL+click just moves it
@@ -346,7 +408,7 @@ def run_marker_placement(printer, model, geoms, json_path, marker_name,
     bounds = widget.scene.bounding_box
     widget.setup_camera(60.0, bounds, bounds.get_center())
 
-    # ---- side panel: live pose readout + save
+    # ---- side panel: live pose readout + saves
     em = window.theme.font_size
     panel = gui.Vert(0.5 * em, gui.Margins(0.5 * em, 0.5 * em, 0.5 * em, 0.5 * em))
     info = gui.Label("CTRL+click the printer to place the marker.\n"
@@ -357,6 +419,23 @@ def run_marker_placement(printer, model, geoms, json_path, marker_name,
     save_btn = gui.Button(f"Save '{marker_name}' to {os.path.basename(json_path)}")
     save_btn.enabled = False
     panel.add_child(save_btn)
+
+    def flags_summary():
+        flagged = [i for i, b in enumerate(boxes) if b.get('entry_zone')]
+        return ("SHIFT+click a box to add/remove it from\n"
+                "the ENTRY ZONE. Amber wireframe = zone box:\n"
+                "a pickup sequence toggles its collisions\n"
+                "off while reaching in ({'entry_zone_\n"
+                "collisions': 'off'/'on'} waypoints); it\n"
+                "collides normally the rest of the time.\n\n"
+                + (f"entry-zone boxes: {flagged}" if flagged
+                   else "entry zone is empty"))
+
+    flags_info = gui.Label(flags_summary())
+    panel.add_child(flags_info)
+    flags_btn = gui.Button(f"Save entry zone to {os.path.basename(json_path)}")
+    flags_btn.enabled = False
+    panel.add_child(flags_btn)
     window.add_child(widget)
     window.add_child(panel)
 
@@ -367,8 +446,18 @@ def run_marker_placement(printer, model, geoms, json_path, marker_name,
         panel.frame = gui.Rect(r.get_right() - pw, r.y, pw, r.height)
     window.set_on_layout(on_layout)
 
+    def toggle_box(world_pt):
+        _pt, _n, bi = snap_to_box_face(world_pt, boxes)
+        flagged = not boxes[bi].get('entry_zone')
+        boxes[bi]['entry_zone'] = flagged
+        add_box_lineset(bi)
+        flags_info.text = flags_summary()
+        flags_btn.enabled = True
+        print(f"  box {bi}: {'in the ENTRY ZONE' if flagged else 'always-colliding'}")
+        window.set_needs_layout()
+
     def show_marker(world_pt):
-        face_pt, normal = snap_to_box_face(world_pt, boxes)
+        face_pt, normal, _bi = snap_to_box_face(world_pt, boxes)
         pos, rpy = marker_pose_from_face(face_pt, normal, surface_offset)
         state['pos'], state['rpy'] = pos, rpy
 
@@ -390,8 +479,13 @@ def run_marker_placement(printer, model, geoms, json_path, marker_name,
         window.set_needs_layout()
 
     def on_mouse(event):
-        if not (event.type == gui.MouseEvent.Type.BUTTON_DOWN
-                and event.is_modifier_down(gui.KeyModifier.CTRL)):
+        if event.type != gui.MouseEvent.Type.BUTTON_DOWN:
+            return gui.Widget.EventCallbackResult.IGNORED
+        if event.is_modifier_down(gui.KeyModifier.CTRL):
+            handler = show_marker          # place/move the marker
+        elif event.is_modifier_down(gui.KeyModifier.SHIFT):
+            handler = toggle_box           # flip the clicked box's collision
+        else:
             return gui.Widget.EventCallbackResult.IGNORED
 
         def depth_callback(depth_image):
@@ -402,7 +496,7 @@ def run_marker_placement(printer, model, geoms, json_path, marker_name,
                 return
             world = widget.scene.camera.unproject(
                 x, y, depth, widget.frame.width, widget.frame.height)
-            app.post_to_main_thread(window, lambda: show_marker(world))
+            app.post_to_main_thread(window, lambda: handler(world))
 
         widget.scene.scene.render_to_depth_image(depth_callback)
         return gui.Widget.EventCallbackResult.HANDLED
@@ -419,19 +513,32 @@ def run_marker_placement(printer, model, geoms, json_path, marker_name,
         window.set_needs_layout()
     save_btn.set_on_clicked(on_save)
 
+    def on_save_flags():
+        flagged = write_box_flags(json_path, boxes)
+        flags_info.text = (flags_summary()
+                           + f"\n\nsaved: {flagged} entry-zone box(es)")
+        print(f"  wrote entry-zone flags ({flagged} boxes) -> {json_path}")
+        window.set_needs_layout()
+    flags_btn.set_on_clicked(on_save_flags)
+
     app.run()
 
 
 def main():
     # ================= CONFIG (edit these; no command-line args) =============
-    PRINTER = 'a1_mini'          # which model to view: 'a1' or 'a1_mini'
+    PRINTER = 'a1'          # which model to view: 'a1' or 'a1_mini'
     # (a1_mini's source is a .stp, which needs trimesh+cascadio; without them
     # the viewer still opens, just with the boxes and no mesh underlay)
     SOLID_BOXES = False     # True adds translucent-colored box fills
     SCREENSHOT = None       # set to a PNG path to render headlessly; None = window
     CHECK_ONLY = False      # True = build geometries + print stats, no window
 
-    PLACE_MARKER = True     # True = CTRL+click places a marker (needs a window)
+    PLACE_MARKER = True     # True = interactive editor window: CTRL+click
+    # places the marker, SHIFT+click adds/removes the clicked box from the
+    # ENTRY ZONE ("entry_zone": true in the JSON): colliding by default, but a
+    # pickup sequence toggles the zone's collisions off/on mid-run
+    # ({'entry_zone_collisions': ...} waypoint entries) — recolored in Gazebo,
+    # removed/re-added in RViz
     MARKER_NAME = 'door'    # entry in the JSON's "markers"; re-placing replaces it
     MARKER_SIZE = 0.025      # marker edge length (m); stored per mount in the JSON
     MARKER_TEXTURE = 'materials/textures/marker6x6_0.png'   # preview art only:
@@ -441,7 +548,11 @@ def main():
     # ========================================================================
 
     import open3d as o3d
-    model, geoms = build_geometries(PRINTER, solid_boxes=SOLID_BOXES)
+    interactive = PLACE_MARKER and not SCREENSHOT and not CHECK_ONLY
+    # the interactive editor recolors box wireframes as they're toggled; solid
+    # fills can't be updated in place, so they're dropped there
+    model, geoms = build_geometries(
+        PRINTER, solid_boxes=SOLID_BOXES and not interactive)
 
     cov = model.get('coverage', {})
     print(f"[{PRINTER}] {cov.get('num_boxes','?')} boxes | "
@@ -455,7 +566,7 @@ def main():
         print(f"built {len(geoms)} geometries (mesh + {len(model['boxes'])} boxes + axes) OK")
         return 0
 
-    if PLACE_MARKER and not SCREENSHOT:
+    if interactive:
         json_path = os.path.join(PRINTERS_DIR, f'{PRINTER}.json')
         texture_path = os.path.join(
             REPO_ROOT, 'models', 'aruco_marker', MARKER_TEXTURE)

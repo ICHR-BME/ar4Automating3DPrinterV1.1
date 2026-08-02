@@ -27,11 +27,26 @@ DEFAULT_PRINTERS_DIR = os.path.join(
 
 class PrinterModel:
     def __init__(self, name, footprint, boxes, bed_size=None, markers=None,
-                 meta=None):
+                 plate=None, procedures=None, meta=None):
         self.name = name
         self.footprint = footprint          # dict: width/depth/height (m)
         self.boxes = boxes                  # list of {center:[3], size:[3], rpy:[3]}
         self.bed_size = bed_size            # [w, d] (m) or None
+        # this printer's removable build plate, and how the arm holds it:
+        #   {size: [w, d, thickness], offset_pos: [3], offset_rpy: [3]}
+        # offset_* is the plate CENTER's 6DOF pose in the GRIPPER (eef) frame
+        # while grasped — see held_plate.plate_spec for defaults when absent.
+        self.plate = plate
+        # THE hand-programmed part of a printer: its pickup/place/scrape
+        # waypoint lists, in the marker's local frame —
+        #   {'frame': 'grasp', 'pickup': [...], 'place': [...], 'scrape': [...]}
+        # 'frame': 'grasp' means every 'pos' entry is the pose of the gripper
+        # TCP (robot_config 'grasp_frame'), so the SAME list runs on any arm;
+        # the robot-specific flange offset is back-solved from TF at runtime
+        # (printerAutomation._move_to_marker_offset). Entry kinds are the ones
+        # documented at printerAutomation.offset_configs. NB 'traj' entries
+        # replay recorded JOINT paths and are inherently robot-specific.
+        self.procedures = procedures
         # ArUco mount poses in the printer-local frame, placed by CTRL+clicking
         # the box model in tools/view_printer_model.py:
         #   [{name, size, pos:[3], rpy:[3]}, ...]
@@ -62,6 +77,8 @@ class PrinterModel:
             boxes=d['boxes'],
             bed_size=d.get('bed_size'),
             markers=d.get('markers'),
+            plate=d.get('plate'),
+            procedures=d.get('procedures'),
             meta={k: d[k] for k in ('source_mesh', 'coverage', 'frame') if k in d},
         )
 
@@ -81,28 +98,49 @@ class PrinterModel:
 
     # ---- Gazebo (now) ----
 
-    def to_sdf_links(self, include_collision=True, rgba=(0.5, 0.5, 0.5, 1.0)):
+    def entry_zone_indices(self):
+        """Indices of boxes flagged "entry_zone": true in the JSON (marked with
+        SHIFT+click in tools/definePrinterApproximateModel.py) — the ENTRY
+        ZONE: the subset of boxes whose collisions a pickup sequence toggles
+        off while the gripper is inside the printer and back on afterwards.
+        Distinct from the global COLLISIONS switch, which covers everything."""
+        return [i for i, b in enumerate(self.boxes) if b.get('entry_zone')]
+
+    def to_sdf_links(self, include_collision=True, rgba=(0.5, 0.5, 0.5, 1.0),
+                     entry_zone_collide=True,
+                     entry_zone_open_rgba=(0.85, 0.65, 0.15, 0.6)):
         """SDF <visual> (and optional <collision>) blocks for every box, to be
         embedded inside a single <link>. Inline box geometry — no mesh files, so
-        nothing depends on GZ_SIM_RESOURCE_PATH at spawn time."""
+        nothing depends on GZ_SIM_RESOURCE_PATH at spawn time.
+
+        entry_zone_collide is the RUNTIME state of the ENTRY-ZONE boxes
+        ("entry_zone": true): True (default) renders them like every other
+        box, colliding; False (zone open) drops their <collision> blocks and
+        recolors them entry_zone_open_rgba, so Gazebo shows exactly which
+        volumes the arm is currently allowed inside.
+        Simulated3DPrinter.set_entry_zone_collisions respawns the model with
+        this flipped as the pickup sequence progresses."""
         r, g, b, a = rgba
+        tr, tg, tb, ta = entry_zone_open_rgba
         out = ""
         for i, box in enumerate(self.boxes):
+            solid = entry_zone_collide or not box.get('entry_zone')
             cx, cy, cz = box['center']
             sx, sy, sz = box['size']
             rr, pp, yy = box.get('rpy', [0.0, 0.0, 0.0])
             pose = f"{cx} {cy} {cz} {rr} {pp} {yy}"
             geom = f"<box><size>{sx} {sy} {sz}</size></box>"
+            cr, cg, cb, ca = (r, g, b, a) if solid else (tr, tg, tb, ta)
             out += f"""
       <visual name="body_box_{i}">
         <pose>{pose}</pose>
         <geometry>{geom}</geometry>
         <material>
-          <ambient>{r} {g} {b} {a}</ambient>
-          <diffuse>{r} {g} {b} {a}</diffuse>
+          <ambient>{cr} {cg} {cb} {ca}</ambient>
+          <diffuse>{cr} {cg} {cb} {ca}</diffuse>
         </material>
       </visual>"""
-            if include_collision:
+            if include_collision and solid:
                 out += f"""
       <collision name="body_box_{i}_collision">
         <pose>{pose}</pose>
@@ -165,22 +203,33 @@ class PrinterModel:
 
     # ---- MoveIt planning scene (deferred; the forward-compat seam) ----
 
-    def boxes_in_base(self, pos, quat_xyzw, id_prefix="printer"):
-        """Transform every local box into the base frame given the printer's
+    def boxes_in_base(self, pos, quat_xyzw, id_prefix="printer", subset='all'):
+        """Transform local boxes into the base frame given the printer's
         world/base pose. Returns dicts ready for
         MoveIt2.add_collision_box(id=.., size=.., position=.., quat_xyzw=..):
             [{'id', 'size', 'position', 'quat_xyzw'}, ...]
 
-        Not called yet — this is the drop-in point for collision avoidance. Each
-        box's base orientation is the printer orientation composed with the box's
-        local rpy; its base position is the printer pose applied to the local
-        center."""
+        subset selects which boxes: 'all' (default — the initial planning
+        scene, entry-zone boxes included since they collide by default),
+        'entry_zone' (just that runtime-switchable subset, for
+        set_entry_zone_collisions to remove/re-add mid-sequence), or 'static'
+        (everything else). Ids are numbered by JSON index regardless of
+        subset, so the same box always maps to the same scene object.
+
+        Each box's base orientation is the printer orientation composed with the
+        box's local rpy; its base position is the printer pose applied to the
+        local center."""
         from scipy.spatial.transform import Rotation as R
 
         R_pb = R.from_quat(list(quat_xyzw))     # printer -> base
         pos = np.asarray(pos, dtype=float)
         result = []
         for i, box in enumerate(self.boxes):
+            in_zone = bool(box.get('entry_zone'))
+            if subset == 'entry_zone' and not in_zone:
+                continue
+            if subset == 'static' and in_zone:
+                continue
             c = np.asarray(box['center'], dtype=float)
             rpy = box.get('rpy', [0.0, 0.0, 0.0])
             base_pos = pos + R_pb.apply(c)

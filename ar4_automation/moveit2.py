@@ -1779,6 +1779,55 @@ class MoveIt2:
 
         self.__attached_collision_object_publisher.publish(msg)
 
+    def attach_collision_box(
+        self,
+        id: str,
+        size: Tuple[float, float, float],
+        link_name: Optional[str] = None,
+        position: Tuple[float, float, float] = (0.0, 0.0, 0.0),
+        quat_xyzw: Tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
+        touch_links: List[str] = [],
+        weight: float = 0.0,
+    ):
+        """
+        Add AND attach a box to the robot in ONE AttachedCollisionObject
+        message, its pose given in `link_name`'s frame so it rides along with
+        that link. Unlike add_collision_box + attach_collision_object this
+        cannot race (two topics, no ordering guarantee), and move_group keeps
+        the box at the fixed link-relative pose instead of a world snapshot.
+        """
+
+        if link_name is None:
+            link_name = self.__end_effector_name
+
+        pose = Pose()
+        pose.position = Point(
+            x=float(position[0]), y=float(position[1]), z=float(position[2])
+        )
+        pose.orientation = Quaternion(
+            x=float(quat_xyzw[0]),
+            y=float(quat_xyzw[1]),
+            z=float(quat_xyzw[2]),
+            w=float(quat_xyzw[3]),
+        )
+
+        obj = CollisionObject(id=id, operation=CollisionObject.ADD)
+        obj.header.frame_id = link_name
+        obj.header.stamp = self._node.get_clock().now().to_msg()
+        obj.primitives.append(
+            SolidPrimitive(
+                type=SolidPrimitive.BOX, dimensions=[float(s) for s in size]
+            )
+        )
+        obj.primitive_poses.append(pose)
+
+        msg = AttachedCollisionObject(object=obj)
+        msg.link_name = link_name
+        msg.touch_links = touch_links
+        msg.weight = weight
+
+        self.__attached_collision_object_publisher.publish(msg)
+
     def detach_collision_object(self, id: int):
         """
         Detach collision object from the robot.
