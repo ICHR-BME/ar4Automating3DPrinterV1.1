@@ -38,6 +38,11 @@ _MOVEIT_ERR = {
 	-18: "INVALID_LINK_NAME", -19: "INVALID_OBJECT_NAME",
 	-21: "FRAME_TRANSFORM_FAILURE", -22: "COLLISION_CHECKING_UNAVAILABLE",
 	-23: "ROBOT_STATE_STALE", -24: "SENSOR_INFO_STALE", -25: "COMMUNICATION_FAILURE",
+	# -26: a start joint is outside its URDF bounds (gz settles joints resting
+	# against a stop epsilon past the limit). runner_common.enable_start_state_fix
+	# sets move_group's ompl.fix_start_state=true so these get clamped instead.
+	-26: "START_STATE_INVALID", -27: "GOAL_STATE_INVALID",
+	-28: "UNRECOGNIZED_GOAL_TYPE", -29: "CRASH", -30: "ABORT",
 	-31: "NO_IK_SOLUTION",
 }
 

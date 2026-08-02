@@ -25,8 +25,9 @@ STEP/STP are supported via cascadio (OpenCASCADE tessellation). PRT (Creo) and
 SLDPRT (SolidWorks) are proprietary and NOT supported — export/convert to STEP
 or STL first.
 
-Configure the run by editing the CONFIG block in main() (no command-line args):
-choose the printer, mesh path, and the voxel tightness knobs, then:
+Configure the run by editing the CONFIG block at the TOP of this file (no
+command-line args): choose the printer, mesh path, and the tightness knobs
+(COACD_THRESHOLD / REMESH_MM / DILATE — see the comments there), then:
     python3 tools/printer_mesh_to_boxes.py
 """
 
@@ -47,6 +48,49 @@ KNOWN_DIMS = {
     'a1':      {'footprint': (0.385, 0.410, 0.458), 'bed': (0.256, 0.256)},
     'a1_mini': {'footprint': (0.347, 0.315, 0.365), 'bed': (0.180, 0.180)},
 }
+
+# ================= CONFIG (edit these; no command-line args) =================
+PRINTER = 'a1'        # output basename + KNOWN_DIMS key
+MESH = 'models/printers/Bambulab A1 printer, modified.stl'
+SCALE = 0.001         # mesh units -> meters (0.001 = mm; 1.0 if already m)
+ROTATE_Z_DEG = 0.0    # yaw the mesh so the operator/door side faces -Y
+
+# --- decomposition method ---
+# 'coacd' : approximate convex decomposition -> box per piece. Fewer, tighter
+#           boxes. Needs coacd+skimage.
+# 'voxel' : greedy voxel box cover (dep-light fallback).
+METHOD = 'coacd'
+# TIGHTNESS KNOBS (less empty space = more boxes):
+#   COACD_THRESHOLD  main dial: concavity tolerance; LOWER -> more, tighter
+#                    pieces (practical range 0.05..0.2; 0.05 = tightest)
+#   REMESH_MM        remesh resolution before CoACD; FINER (e.g. 3-4) keeps
+#                    small features distinct instead of merged into a
+#                    neighbor's box
+#   DILATE           safety margin (voxels) grown onto the material before
+#                    decomposition; 0 = no padding (boxes touch the surface)
+COACD_THRESHOLD = 0.02   # coacd's hard floor is 0.01; values below are clamped
+REMESH_MM = 3.0          # practical floor ~2-3 for a 0.5 m object: the occupancy
+                         # grid is (size/REMESH_MM)^3 cells, so 0.1 mm would need
+                         # ~1e11 cells and OOM — main() clamps to a safe minimum
+DILATE = 1               # conservative margin (voxels) for both methods
+# True: each convex piece gets its MIN-VOLUME ORIENTED box (rpy set) instead of
+# an axis-aligned one — diagonal members stop costing huge empty envelopes. The
+# whole pipeline honors rpy (SDF, planning boxes, viewer, marker snapping).
+# NB CROP_REMOVE carving assumes axis-aligned boxes: with oriented boxes crops
+# only filter the sampled points (a warning is printed).
+USE_ORIENTED_BOXES = False
+# voxel-method knobs (only used when METHOD='voxel'):
+VOXEL_MM = 1.0
+MIN_FILL = 1.0
+# -----------------------------------------------------------------------------
+# CROP_REMOVE: axis-aligned boxes [cx,cy,cz, sx,sy,sz] (meters, printer-center
+# frame) whose points are deleted BEFORE decomposition. Use to clear a lift
+# corridor / remove the low print head so the pickup can raise the plate up
+# the central bay, or to carve a stubborn oversized box region. Preview the
+# mesh frame with tools/definePrinterApproximateModel.py.
+CROP_REMOVE = []
+# =============================================================================
+
 
 DOWNLOAD_HINT = """\
 No mesh found. Download a STEP/STP or STL/OBJ/PLY (NOT PRT/SLDPRT) and save it as:
@@ -256,14 +300,23 @@ def _remesh_clean(pts, remesh_mm, dilate):
 
 
 def decompose_coacd(pts, remesh_mm=6.0, dilate=1, threshold=0.1, max_hulls=100,
-                    shrink_margin_mm=3.0):
+                    shrink_margin_mm=3.0, oriented=False):
     """Approximate-convex-decomposition box cover (CoACD). Remesh -> CoACD convex
-    pieces -> axis-aligned box per piece, then shrink each box to the real mesh
-    points inside it. Fewer, tighter boxes than the voxel greedy cover, still
-    plain AABBs (cheap collision, easy to crop). Returns (boxes, stats).
+    pieces -> one box per piece. Returns (boxes, stats).
+
+    Each box is fitted to ITS OWN piece's vertices — not to every sample point
+    that happens to fall inside its bounds, which used to keep boxes bloated
+    wherever unrelated geometry crossed them. The piece vertices sit on the
+    dilated remesh, i.e. ~(dilate + 0.5) * remesh_mm proud of the real surface,
+    so each box is shrunk by that overhang minus shrink_margin_mm of deliberate
+    safety padding.
+
+    oriented=True fits the min-volume ORIENTED box per piece (rpy set) instead
+    of an axis-aligned one — diagonal members stop costing fat envelopes.
     Needs: coacd, scikit-image (pip install --user --break-system-packages ...)."""
     import coacd
     import trimesh
+    from scipy.spatial.transform import Rotation as Rot
     coacd.set_log_level("error")
 
     clean = _remesh_clean(pts, remesh_mm, dilate)
@@ -272,25 +325,44 @@ def decompose_coacd(pts, remesh_mm=6.0, dilate=1, threshold=0.1, max_hulls=100,
         threshold=threshold, preprocess_mode="auto", max_convex_hull=max_hulls,
         merge=True)
 
-    margin = shrink_margin_mm / 1000.0
+    # the remesh sits AT LEAST dilate*remesh_mm proud of the true surface
+    # (marching cubes adds up to ~half a voxel more in places, but shrinking
+    # by that too was measured to cost ~4% coverage) — shrink by the certain
+    # part only, keeping the error direction conservative
+    overhang = dilate * remesh_mm
+    shrink = max(overhang - shrink_margin_mm, 0.0) / 1000.0
     boxes = []
     for v, f in parts:
-        b = trimesh.Trimesh(v, f).bounds        # AABB of the (conservative) piece
-        blo, bhi = np.array(b[0]), np.array(b[1])
-        inside = np.all((pts >= blo) & (pts <= bhi), axis=1)
-        if inside.sum() == 0:
-            continue                            # piece was pure dilation margin
-        q = pts[inside]                          # shrink to real material + margin
-        blo = q.min(axis=0) - margin
-        bhi = q.max(axis=0) + margin
-        boxes.append({
-            'center': [float(x) for x in (blo + bhi) / 2.0],
-            'size': [float(x) for x in (bhi - blo)],
-            'rpy': [0.0, 0.0, 0.0],
-        })
+        v = np.asarray(v, dtype=float)
+        if oriented:
+            T, extents = trimesh.bounds.oriented_bounds(
+                trimesh.Trimesh(v, f), angle_digits=2)
+            size = np.asarray(extents, dtype=float) - 2.0 * shrink
+            if np.any(size <= 0.002):
+                size = np.maximum(size, 0.002)
+            Tinv = np.linalg.inv(T)             # box frame -> mesh frame
+            rpy = Rot.from_matrix(Tinv[:3, :3]).as_euler('xyz')
+            boxes.append({
+                'center': [float(x) for x in Tinv[:3, 3]],
+                'size': [float(x) for x in size],
+                'rpy': [float(x) for x in rpy],
+            })
+        else:
+            blo = v.min(axis=0) + shrink
+            bhi = v.max(axis=0) - shrink
+            if np.any(bhi - blo <= 0.002):
+                mid = (blo + bhi) / 2.0
+                blo = np.minimum(blo, mid - 0.001)
+                bhi = np.maximum(bhi, mid + 0.001)
+            boxes.append({
+                'center': [float(x) for x in (blo + bhi) / 2.0],
+                'size': [float(x) for x in (bhi - blo)],
+                'rpy': [0.0, 0.0, 0.0],
+            })
 
     stats = {'num_boxes': len(boxes), 'method': 'coacd', 'threshold': threshold,
-             'remesh_mm': remesh_mm, 'dilate': dilate}
+             'remesh_mm': remesh_mm, 'dilate': dilate,
+             'oriented': bool(oriented)}
     return boxes, stats
 
 
@@ -369,13 +441,21 @@ def coverage_report(pts, verts, boxes):
     interval test. Using a separate validation sample (not the points the boxes
     were built from) makes the coverage number an honest check rather than
     trivially 100%."""
+    from scipy.spatial.transform import Rotation as Rot
+
     inside = np.zeros(len(pts), dtype=bool)
     # signed outside-distance per box; min across boxes = distance to the union
     out_dist = np.full(len(pts), np.inf)
     for b in boxes:
         c = np.array(b['center'])
         h = np.array(b['size']) / 2.0
-        d = np.abs(pts - c) - h                       # per-axis outside margin
+        rpy = b.get('rpy', [0.0, 0.0, 0.0])
+        if any(rpy):
+            # membership in the box's own frame (oriented boxes)
+            local = Rot.from_euler('xyz', rpy).inv().apply(pts - c)
+        else:
+            local = pts - c
+        d = np.abs(local) - h                         # per-axis outside margin
         inside |= np.all(d <= 0, axis=1)
         out_dist = np.minimum(out_dist, np.linalg.norm(np.clip(d, 0, None), axis=1))
 
@@ -416,11 +496,16 @@ def save_preview(verts, boxes, out_png, name):
     edges_idx = [(0, 1), (1, 3), (3, 2), (2, 0),
                  (4, 5), (5, 7), (7, 6), (6, 4),
                  (0, 4), (1, 5), (2, 6), (3, 7)]
+    from scipy.spatial.transform import Rotation as Rot
     for b in boxes:
         c = np.array(b['center'])
         h = np.array(b['size']) / 2.0
         corners = np.array([[sx, sy, sz] for sx in (-h[0], h[0])
-                            for sy in (-h[1], h[1]) for sz in (-h[2], h[2])]) + c
+                            for sy in (-h[1], h[1]) for sz in (-h[2], h[2])])
+        rpy = b.get('rpy', [0.0, 0.0, 0.0])
+        if any(rpy):
+            corners = Rot.from_euler('xyz', rpy).apply(corners)
+        corners = corners + c
         segs = [[corners[i], corners[j]] for i, j in edges_idx]
         ax.add_collection3d(Line3DCollection(segs, colors='red', linewidths=1.2))
 
@@ -439,36 +524,6 @@ def save_preview(verts, boxes, out_png, name):
 
 
 def main():
-    # ================= CONFIG (edit these; no command-line args) =============
-    PRINTER = 'a1_mini'   # output basename + KNOWN_DIMS key ('a1' or 'a1_mini')
-    MESH = 'models/printers/bambulab_a1_mini.stp'   # STEP/STL/OBJ (rel to repo or abs)
-    SCALE = 0.001         # mesh units -> meters (0.001 = mm; 1.0 if already m)
-    ROTATE_Z_DEG = 0.0    # yaw the mesh so the operator/door side faces -Y
-
-    # --- decomposition method ---
-    # 'coacd' : approximate convex decomposition -> box per piece. Fewer, tighter
-    #           boxes (a1_mini: ~18-30 boxes vs voxel's 44). Needs coacd+skimage.
-    # 'voxel' : greedy voxel box cover (dep-light fallback).
-    METHOD = 'coacd'
-    COACD_THRESHOLD = 0.12   # concavity: lower -> more/tighter pieces (0.05..0.2)
-    REMESH_MM = 6.0          # marching-cubes remesh resolution before CoACD
-    # voxel-method knobs (only used when METHOD='voxel'):
-    VOXEL_MM = 20.0
-    MIN_FILL = 1.0
-    DILATE = 1               # conservative margin (voxels) for both methods
-    # ------------------------------------------------------------------------
-    # CROP_REMOVE: axis-aligned boxes [cx,cy,cz, sx,sy,sz] (meters, printer-center
-    # frame) whose points are deleted BEFORE decomposition. Use to clear a lift
-    # corridor / remove the low print head so the pickup can raise the plate up
-    # the central bay. Preview the mesh frame with tools/view_printer_model.py.
-    CROP_REMOVE = []
-    # ------------------------------------------------------------------------
-    # A1 preset — the mesh was hand-edited to keep only the desired parts (gantry
-    # removed for the pickup model), so NO crop is needed:
-    #   PRINTER='a1'
-    #   MESH='models/printers/Bambulab A1 printer, modified.stl'
-    #   CROP_REMOVE=[]
-    # ========================================================================
 
     mesh_path = MESH if os.path.isabs(MESH) else os.path.join(REPO_ROOT, MESH)
     if not os.path.exists(mesh_path):
@@ -501,15 +556,37 @@ def main():
         print(f"  cropped {len(CROP_REMOVE)} region(s): removed {n0 - len(pts_build)} build pts")
 
     if METHOD == 'coacd':
-        boxes, stats = decompose_coacd(pts_build, remesh_mm=REMESH_MM, dilate=DILATE,
-                                       threshold=COACD_THRESHOLD)
+        # sanity-clamp the knobs: coacd's threshold floor is 0.01, and the
+        # remesh grid is (extent/REMESH_MM)^3 cells — too fine OOMs long
+        # before it helps. ~2e8 cells is a safe ceiling.
+        threshold = max(float(COACD_THRESHOLD), 0.01)
+        if threshold != COACD_THRESHOLD:
+            print(f"  ! COACD_THRESHOLD {COACD_THRESHOLD} below coacd's floor — "
+                  f"clamped to {threshold}")
+        dims_mm = dims * 1000.0
+        remesh = float(REMESH_MM)
+        min_remesh = float(np.ceil((np.prod(dims_mm) / 2e8) ** (1.0 / 3.0) * 10) / 10)
+        if remesh < min_remesh:
+            print(f"  ! REMESH_MM {remesh} would need "
+                  f"{np.prod(dims_mm) / remesh**3:.1e} grid cells — "
+                  f"clamped to {min_remesh} (~2e8 cells)")
+            remesh = min_remesh
+        if CROP_REMOVE and USE_ORIENTED_BOXES:
+            print("  ! CROP_REMOVE with USE_ORIENTED_BOXES: crops filter the "
+                  "sampled points only; oriented boxes are NOT carved and may "
+                  "still span a crop region")
+        boxes, stats = decompose_coacd(pts_build, remesh_mm=remesh, dilate=DILATE,
+                                       threshold=threshold,
+                                       oriented=USE_ORIENTED_BOXES)
     else:
         boxes, stats = decompose_boxes(pts_build, voxel_mm=VOXEL_MM, dilate=DILATE,
                                        min_fill=MIN_FILL)
 
     # carve the crop regions out of the FINAL boxes: point-cropping alone leaves
-    # boxes that span from below to above the gap, still covering it
-    if CROP_REMOVE:
+    # boxes that span from below to above the gap, still covering it.
+    # (skipped for oriented boxes — the carve math is axis-aligned; the
+    # warning above already told the user)
+    if CROP_REMOVE and not (METHOD == 'coacd' and USE_ORIENTED_BOXES):
         boxes = clip_boxes_to_crop(boxes, CROP_REMOVE)
         viol = crop_violations(boxes, CROP_REMOVE)
         stats['num_boxes'] = len(boxes)
@@ -540,6 +617,36 @@ def main():
 
     os.makedirs(PRINTERS_DIR, exist_ok=True)
     out_json = os.path.join(PRINTERS_DIR, f'{PRINTER}.json')
+
+    # MERGE with an existing JSON instead of clobbering it: the file also
+    # carries hand-authored sections this tool does not generate — procedures
+    # (the waypoint lists), markers (mount poses placed in the viewer), plate,
+    # notes. Only the mesh-derived keys are regenerated. Per-box entry_zone
+    # flags CANNOT survive (the new decomposition renumbers the boxes), so
+    # they are dropped with a warning — re-flag in
+    # tools/definePrinterApproximateModel.py.
+    if os.path.exists(out_json):
+        with open(out_json) as f:
+            old = json.load(f)
+        n_flags = sum(1 for b in old.get('boxes', []) if b.get('entry_zone'))
+        if n_flags:
+            print(f"  ! {n_flags} entry_zone flag(s) dropped — box indices "
+                  "changed; re-flag them in definePrinterApproximateModel.py")
+        preserved = {k: old[k] for k in ('procedures', 'markers', 'plate', 'notes')
+                     if k in old and old[k] is not None}
+        if preserved:
+            print(f"  preserved hand-authored sections: {sorted(preserved)}")
+        if 'markers' in preserved:
+            print("  ! marker mounts kept AS-IS — the mesh frame may have "
+                  "moved; verify them in the viewer")
+        # keep the reading order: name, procedures, generated keys, the rest
+        merged = {'name': model['name']}
+        if 'procedures' in preserved:
+            merged['procedures'] = preserved.pop('procedures')
+        merged.update({k: v for k, v in model.items() if k != 'name'})
+        merged.update(preserved)
+        model = merged
+
     with open(out_json, 'w') as f:
         json.dump(model, f, indent=2)
     print(f"  wrote {os.path.relpath(out_json, REPO_ROOT)}")

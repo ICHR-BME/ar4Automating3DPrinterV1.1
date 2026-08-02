@@ -86,11 +86,15 @@ SIM_PRINTER_SPECS = {
     # pos z = 0.30 puts the A1's base (height 0.605, so half-height ~0.302)
     # on the floor; its door marker then sits ~0.61 m up — re-probe the far
     # viewing poses for reachability on the first runs.
+    # Marker 1 is NOT a printer: it tags the scrape fixture
+    # (models/printers/scrape_fixture.json, boxed from models/
+    # scrapingModel.stl), which carries only a 'scrape' procedure.
+    # z = 0.25 = its half-height (0.50 m tall).
     'xarm6': [
             {"marker_id": 0, "pos": [0.20, -0.22, 0.30], "orient": [0.0, 0.0, math.pi],
              "printer_model": "a1"},
-            {"marker_id": 1, "pos": [0.30, 0.35, 0.30], "orient": [0.0, 0.0, 0*math.pi],
-             "printer_model": "a1"},
+            {"marker_id": 1, "pos": [0.30, 0.35, 0.25], "orient": [0.0, 0.0, 0*math.pi],
+             "printer_model": "scrape_fixture"},
             {"marker_id": 2, "pos": [0.70, 0.10, 0.30], "orient": [0.0, 0.0, 3/2*math.pi],
              "printer_model": "a1"},
         ],
@@ -165,6 +169,51 @@ GZ_FLOOR_SDF = """<?xml version="1.0"?>
     </link>
   </model>
 </sdf>"""
+
+
+# every model name our runs ever spawn into gazebo starts with one of these;
+# the default scene (ground_plane, the robot, sun/lights) never does
+GZ_MANAGED_PREFIXES = ('printer_', 'held_plate', 'floor_collision')
+
+
+def clear_gz_leftovers(node, world=GZ_WORLD):
+    """Remove models that PREVIOUS runs left in the gazebo world, so every run
+    starts from the launch script's default scene. Only models matching
+    GZ_MANAGED_PREFIXES are touched — printers (whatever model/marker they
+    wore), the held-plate visual, and the collision floor (respawned fresh by
+    add_gz_floor_collision on collisions=True runs); the robot and the world's
+    own entities are never candidates. Returns the number removed."""
+    try:
+        result = subprocess.run(['gz', 'model', '--list'],
+                                capture_output=True, text=True, timeout=5.0)
+    except (subprocess.SubprocessError, OSError):
+        result = None
+    if result is None or result.returncode != 0:
+        node.get_logger().warn(
+            "clear_gz_leftovers: could not list gz models — leftovers from "
+            "earlier runs (if any) are still in the world.")
+        return 0
+    names = [line.strip()[2:] for line in result.stdout.splitlines()
+             if line.strip().startswith('- ')]
+    doomed = [n for n in names if n.startswith(GZ_MANAGED_PREFIXES)]
+    removed = 0
+    for name in doomed:
+        try:
+            subprocess.run(
+                ['gz', 'service', '-s', f'/world/{world}/remove',
+                 '--reqtype', 'gz.msgs.Entity', '--reptype', 'gz.msgs.Boolean',
+                 '--timeout', '1000', '--req', f'name: "{name}" type: MODEL'],
+                capture_output=True, text=True, timeout=5.0)
+            removed += 1
+        except (subprocess.SubprocessError, OSError) as e:
+            node.get_logger().warn(f"clear_gz_leftovers: removing {name} failed: {e}")
+    if removed:
+        node.get_logger().info(
+            f"clear_gz_leftovers: removed {removed} model(s) from earlier "
+            f"runs: {', '.join(doomed)}")
+    else:
+        node.get_logger().info("clear_gz_leftovers: world already clean.")
+    return removed
 
 
 def add_gz_floor_collision(node, world=GZ_WORLD, name='floor_collision'):
@@ -258,17 +307,34 @@ def start_node(sim=False, robot='ar4', collisions=True, **overrides):
     node.collision_scene_enabled = bool(collisions)
     spin_in_background(node)
     wait_for_joint_states(node)
+    enable_start_state_fix(node)
+    if sim:
+        # start from the launch script's default scene: drop printers, the
+        # held plate and the collision floor that earlier runs left behind
+        # (BEFORE the floor respawn below, so a fresh floor isn't clobbered)
+        clear_gz_leftovers(node)
+    # ALWAYS start from a clean planning scene, collisions on or off:
+    # move_group belongs to the launch file and keeps its state between runs,
+    # so it still holds whatever earlier runs left — printer boxes at stale
+    # poses, ground objects from before the current tiling (an old full-cover
+    # 'ground_plane' slab would veto every below-z=0 plan regardless of the
+    # new cutouts), and worst of all a build plate a crashed run left ATTACHED
+    # to the gripper, which planning now honors (phantom plate). purge also
+    # detaches attached objects. Everything current is republished below /
+    # as printers spawn.
+    node.purge_collision_scene()
     if not collisions:
         node.get_logger().warn(
             "collisions=False: planning in an empty world (no ground plane, no "
             "printer boxes). Paths may pass through the floor or a printer.")
-        node.purge_collision_scene()
-    elif sim:
-        # The world's floor is visual-only; collisions=True makes it solid.
-        add_gz_floor_collision(node)
-    # move_group's world starts EMPTY — without this the planner happily sweeps
-    # the EEF through the floor (printer boxes go in as each printer is spawned)
-    node.add_ground_plane()
+    else:
+        if sim:
+            # The world's floor is visual-only; collisions=True makes it solid.
+            add_gz_floor_collision(node)
+        # move_group's world starts EMPTY — without this the planner happily
+        # sweeps the EEF through the floor (printer boxes go in as each
+        # printer is spawned)
+        node.add_ground_plane()
     return node
 
 
@@ -360,6 +426,34 @@ def spawn_printers_from_markers(node, specs, source=SCAN, require_detected=True,
     return printers
 
 
+def enable_start_state_fix(node):
+    """Tell move_group to CLAMP a start state that is marginally outside joint
+    bounds instead of rejecting every plan with START_STATE_INVALID (-26).
+
+    Needed because gz settles joints resting against their stops a few
+    nano-radians PAST the URDF limit (the launch scripts' GRIPPER PARK note
+    documents the drive_joint case; an aborted run can leave any arm joint
+    there — seen live: joint3 at 0.19198003 vs upper limit 0.19198). The
+    parameter lives on move_group under the pipeline namespace."""
+    try:
+        out = subprocess.run(
+            ['ros2', 'param', 'set', '/move_group', 'ompl.fix_start_state', 'true'],
+            capture_output=True, text=True, timeout=10)
+        ok = 'successful' in out.stdout.lower()
+    except (subprocess.SubprocessError, OSError):
+        ok = False
+    if ok:
+        node.get_logger().info(
+            'move_group ompl.fix_start_state=true (out-of-bounds start joints '
+            'are clamped, not rejected).')
+    else:
+        node.get_logger().warn(
+            'could not set ompl.fix_start_state on move_group — plans will '
+            'fail with START_STATE_INVALID whenever a joint rests against '
+            'its stop.')
+    return ok
+
+
 def spin_in_background(node):
     """Start a MultiThreadedExecutor for the node (and its stream) in a daemon thread."""
     executor = rclpy.executors.MultiThreadedExecutor()
@@ -404,11 +498,14 @@ def start_webcam_node(robot='ar4', collisions=True, **overrides):
     node.collision_scene_enabled = bool(collisions)
     spin_in_background(node)
     wait_for_joint_states(node)
+    enable_start_state_fix(node)
+    # always purge: move_group keeps boxes AND attached objects (a plate a
+    # crashed run left on the gripper) across runs — see start_node
+    node.purge_collision_scene()
     if not collisions:
         node.get_logger().warn(
             "collisions=False: planning in an empty world (no ground plane, no "
             "printer boxes). Paths may pass through the floor or a printer.")
-        node.purge_collision_scene()
     node.add_ground_plane()
     return node
 
@@ -487,7 +584,7 @@ def _print_menu():
     print("=" * 50)
     print("  1) Scan location for markers (manual pos/orient)")
     print("  2) Walk pickup waypoints (scan/gripper entries included)")
-    print("  3) Pickup plate (walk pickup list, record grasp for replay)")
+    print("  3) Pickup plate (walk the pickup list)")
     print("  4) Place plate at marker")
     print("  5) List detected markers")
     print("  6) Scan to marker (by ID, uses TF)")

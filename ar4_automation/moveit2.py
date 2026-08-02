@@ -234,6 +234,11 @@ class MoveIt2:
             callback_group=callback_group,
         )
         self.__cartesian_path_request = GetCartesianPath.Request()
+        # the message default is False, i.e. Cartesian (linear) plans would
+        # ignore ALL collisions — world boxes and the attached plate alike.
+        # Collision-checked by default; cartesian_avoid_collisions can turn it
+        # off explicitly if a deliberate-contact stroke ever needs that.
+        self.__cartesian_path_request.avoid_collisions = True
 
         # Create action client for trajectory execution
         self._execute_trajectory_action_client = ActionClient(
@@ -2264,7 +2269,14 @@ class MoveIt2:
         move_action_goal.request.workspace_parameters.max_corner.x = 1.0
         move_action_goal.request.workspace_parameters.max_corner.y = 1.0
         move_action_goal.request.workspace_parameters.max_corner.z = 1.0
-        # move_action_goal.request.start_state = "Set during request"
+        # start_state.joint_state is set during each request. is_diff=True is
+        # REQUIRED: a non-diff RobotState makes move_group rebuild the start
+        # state from this message alone, whose empty attached_collision_objects
+        # list silently STRIPS attached bodies (the held build plate) from
+        # collision checking — the arm then avoids obstacles but the plate
+        # passes through them. As a diff, the joint positions are applied on
+        # top of the monitored current state, attachments intact.
+        move_action_goal.request.start_state.is_diff = True
         move_action_goal.request.goal_constraints = [Constraints()]
         move_action_goal.request.path_constraints = Constraints()
         # move_action_goal.request.trajectory_constraints = "Ignored"
@@ -2402,7 +2414,7 @@ class MoveIt2:
 
     @property
     def cartesian_avoid_collisions(self) -> bool:
-        return self.__cartesian_path_request.request.avoid_collisions
+        return self.__cartesian_path_request.avoid_collisions
 
     @cartesian_avoid_collisions.setter
     def cartesian_avoid_collisions(self, value: bool):

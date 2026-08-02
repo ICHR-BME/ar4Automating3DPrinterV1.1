@@ -1,0 +1,18 @@
+timestamp,call_chain,duration_s
+2026-08-01T20:54:55.782754,add_printer_collision_boxes,0.0217
+2026-08-01T20:54:57.236099,add_printer_collision_boxes,0.0222
+2026-08-01T20:55:04.618638,scanMarkerApproach > scanToMarker,7.3569
+2026-08-01T20:55:10.779158,scanMarkerApproach > scanToMarker,4.16
+2026-08-01T20:55:15.136553,scanMarkerApproach > scanToMarker,3.3573
+2026-08-01T20:55:19.445524,scanMarkerApproach > scanToMarker,3.3086
+2026-08-01T20:55:23.507282,scanMarkerApproach > scanToMarker,3.0589
+2026-08-01T20:55:27.574239,scanMarkerApproach > scanToMarker,3.0668
+2026-08-01T20:55:28.575032,scanMarkerApproach,31.3133
+2026-08-01T20:55:34.802553,scanMarkerApproach > scanToMarker,6.2273
+2026-08-01T20:55:41.020079,scanMarkerApproach > scanToMarker,4.2174
+2026-08-01T20:55:45.480154,scanMarkerApproach > scanToMarker,3.4596
+2026-08-01T20:55:49.048934,scanMarkerApproach > scanToMarker,2.5686
+2026-08-01T20:55:52.637041,scanMarkerApproach > scanToMarker,2.588
+2026-08-01T20:55:56.222548,scanMarkerApproach > scanToMarker,2.5841
+2026-08-01T20:55:57.222639,scanMarkerApproach,28.6474
+2026-08-01T20:56:02.225738,startup,69.2855

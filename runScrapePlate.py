@@ -40,7 +40,7 @@ SPAWN_FROM_SCAN = 1
 # instead of stalling against them. Self-collisions and joint limits are ALWAYS
 # enforced. Use 0 to tell "the plan is in collision" apart from "the goal is
 # unreachable", not for a real run.
-COLLISIONS      = 0
+COLLISIONS      = 1
 # all motion and tilt angles come from the waypoint lists in
 # printerAutomation.__init__'s offset_configs
 

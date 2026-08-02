@@ -19,7 +19,7 @@ from scipy.spatial.transform import Rotation as R
 from geometry_msgs.msg import TransformStamped
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 import tf2_ros
-from .simulated3DPrinter import Simulated3DPrinter
+from .simulated3DPrinter import GzEntityClient, Simulated3DPrinter
 import time
 import threading
 
@@ -47,6 +47,37 @@ class MarkerNotVisibleError(RuntimeError):
 # is bit-identical; the AR4 reproduces its old offset_ori through the rotation
 # in its synthetic tcp_offset (see robot_config).
 GRASP_ORI_IN_MARKER = np.array([np.pi, 0.0, np.pi])
+
+
+def _subtract_rects(base, cutouts):
+    """Cover base minus cutouts with axis-aligned rectangles.
+
+    base/cutouts are (xmin, xmax, ymin, ymax). Each cutout splits every
+    covering rect it intersects into up to four surrounding rects, so any
+    NUMBER of cutouts at any positions works; the result never overlaps a
+    cutout and exactly covers the rest of base. This is how the ground
+    obstacle gets a free column over each sunken fixture."""
+    rects = [tuple(float(v) for v in base)]
+    for c in cutouts:
+        cx0, cx1, cy0, cy1 = (float(v) for v in c)
+        nxt = []
+        for r in rects:
+            rx0, rx1, ry0, ry1 = r
+            ix0, ix1 = max(rx0, cx0), min(rx1, cx1)
+            iy0, iy1 = max(ry0, cy0), min(ry1, cy1)
+            if ix0 >= ix1 or iy0 >= iy1:
+                nxt.append(r)               # no overlap
+                continue
+            if rx0 < ix0:
+                nxt.append((rx0, ix0, ry0, ry1))    # left strip
+            if ix1 < rx1:
+                nxt.append((ix1, rx1, ry0, ry1))    # right strip
+            if ry0 < iy0:
+                nxt.append((ix0, ix1, ry0, iy0))    # front strip
+            if iy1 < ry1:
+                nxt.append((ix0, ix1, iy1, ry1))    # back strip
+        rects = nxt
+    return rects
 
 
 def _timed(method):
@@ -162,8 +193,7 @@ class printerAutomation(ArucoDetectionViewer):
         #                                  distance — no step limit, no detection
         #   {'gripper': 'open'|'close'|f}  f = fraction of travel, 0.0 fully
         #                                  open .. 1.0 fully closed; >= 0.5
-        #                                  counts as a grasp and records
-        #                                  joints for the replay
+        #                                  counts as a grasp (settle pause)
         #   {'gripper_width': meters}      physical jaw opening instead of a
         #                                  fraction — mapped per robot via
         #                                  open_width/closed_width in
@@ -402,6 +432,16 @@ class printerAutomation(ArucoDetectionViewer):
         # 'prefix', 'printer' (Simulated3DPrinter or None on hw)}.
         # Filled by add_printer_collision_boxes[_from_marker].
         self._entry_zone_registry = {}
+        # ground cutouts: prefix -> (xmin, xmax, ymin, ymax) in base_link.
+        # One per registered object whose model declares 'ground_cutout' (the
+        # scrape fixture). Keyed by the object's scene prefix so a rescan of
+        # the same object MOVES its cutout instead of stacking a second one —
+        # dynamic poses, orientations, and count all work. add_ground_plane
+        # tiles the ground obstacle around all of them, and the gz collision
+        # floor is respawned with the same holes.
+        self._ground_cutouts = {}
+        self._ground_ids = []               # currently published ground boxes
+        self._gz_floor = None               # lazy GzEntityClient for the floor
 
         # LEGACY per-robot shims, kept only as fallbacks for markers still on
         # the in-code offset_configs lists and for the moments before TF is up:
@@ -477,10 +517,6 @@ class printerAutomation(ArucoDetectionViewer):
 
         # marker_id -> BambuPrinter, filled by register_bambu_printer()
         self._bambu_printers: dict = {}
-
-        # recorded pickup joints ({'marker','grasp','lift'}) so placePlate can
-        # replay them instead of using flip-prone pose IK
-        self._pickup_replay = None
 
         # Gripper interface (robots without one configured run gripper-disabled).
         # Three kinds: 'moveit_action' drives pymoveit2's GripperInterface (AR4);
@@ -1005,12 +1041,44 @@ class printerAutomation(ArucoDetectionViewer):
                 f"printer model with procedures nor an offset_configs key.")
         return None
 
+    def _apply_scene_entry(self, markerID, wp, label):
+        """Execute a NON-MOVE scene entry from a waypoint list:
+        {'held_plate': 'attach'|'detach'} (Gazebo box following the gripper +
+        MoveIt attached collision box, sized from the marker's printer model)
+        or {'entry_zone_collisions': 'off'|'on'} (toggle the printer's
+        entry-zone boxes). Never raises/aborts — failures warn and continue;
+        a later move that the stale state breaks fails on its own terms."""
+        if 'held_plate' in wp:
+            action = str(wp['held_plate']).lower()
+            if action == 'attach':
+                model = self.marker_offset_config.get(
+                    markerID, self.default_offset_config)
+                try:
+                    plate = self.attach_held_plate(model)
+                except Exception as e:
+                    plate = None
+                    self.get_logger().warn(
+                        f"{label}: could not attach the held plate for "
+                        f"model '{model}': {e}")
+                if plate is None:
+                    self.get_logger().warn(
+                        f"{label}: held plate not attached — continuing "
+                        "without it.")
+            else:
+                self.detach_held_plate()
+        if 'entry_zone_collisions' in wp:
+            enable = str(wp['entry_zone_collisions']).lower() == 'on'
+            if not self.set_entry_zone_collisions(markerID, enable):
+                self.get_logger().warn(
+                    f"{label}: could not switch marker {markerID}'s "
+                    f"entry-zone collisions {'on' if enable else 'off'} — "
+                    "continuing anyway; call set_entry_zone_collisions to "
+                    "fix up.")
+
     def _follow_waypoints(self, markerID, waypoints, caller, tolerant_last=False):
-        """Run the entries in order: moves, scans, gripper actions (a 'close'
-        records joints for the pickup replay), wrist rotations. False on first
-        failure, except tolerant_last lets a failed last position move (scrape
-        retract) just warn."""
-        self._walk_grasp_joints = None
+        """Run the entries in order: moves, scans, gripper actions, wrist
+        rotations, scene entries. False on first failure, except tolerant_last
+        lets a failed last position move (scrape retract) just warn."""
         # _get_waypoints_for_marker returns None when the procedure is missing or
         # empty; say which one rather than dying on len(None)
         if not waypoints:
@@ -1058,8 +1126,7 @@ class printerAutomation(ArucoDetectionViewer):
                 # 0.0 fully open .. 1.0 fully closed — or
                 # {'gripper_width': meters} — a physical jaw opening, mapped
                 # per robot so the same list works across arms. Closing
-                # motions (past half travel) are treated as grasps: joints
-                # are recorded for the pickup replay and the grip gets a
+                # motions (past half travel) count as grasps and get a
                 # settle pause.
                 if 'gripper_width' in wp:
                     fraction = self.gripper_width_to_fraction(wp['gripper_width'])
@@ -1074,7 +1141,7 @@ class printerAutomation(ArucoDetectionViewer):
                     if fraction is None:
                         fraction = min(max(float(g), 0.0), 1.0)
                 if fraction >= 0.5:
-                    self._walk_grasp_joints = self._current_arm_joints()
+                    # grasps get a settle pause before the next move
                     self.set_gripper(fraction)
                     time.sleep(3.0)
                 else:
@@ -1085,46 +1152,11 @@ class printerAutomation(ArucoDetectionViewer):
                 # retract); a failed rotation only warns — the walk continues
                 self._rotate_wrist(float(wp['rotate']))
                 continue
-            if 'held_plate' in wp:
-                # {'held_plate': 'attach'|'detach'} — show/remove the grasped
-                # build plate: the Gazebo box that follows the gripper plus
-                # (collisions permitting) the MoveIt attached collision box.
-                # Size and grasp offset come from this marker's printer model
-                # JSON ('plate' section). Failure only warns — the plate is a
-                # visualization/planning aid, not a motion.
-                action = str(wp['held_plate']).lower()
-                if action == 'attach':
-                    model = self.marker_offset_config.get(
-                        markerID, self.default_offset_config)
-                    try:
-                        plate = self.attach_held_plate(model)
-                    except Exception as e:
-                        plate = None
-                        self.get_logger().warn(
-                            f"{caller}: waypoint {i+1}/{n} could not attach the "
-                            f"held plate for model '{model}': {e}")
-                    if plate is None:
-                        self.get_logger().warn(
-                            f"{caller}: waypoint {i+1}/{n} held plate not "
-                            "attached — continuing without it.")
-                else:
-                    self.detach_held_plate()
-                continue
-
-            if 'entry_zone_collisions' in wp:
-                # toggle this marker's printer's entry-zone collisions: 'off'
-                # before reaching into the printer, 'on' after withdrawing.
-                # A failed switch NEVER aborts the walk — it only warns and
-                # continues; if the stale collision state then breaks a later
-                # move, that move fails on its own terms. Fix up manually with
-                # set_entry_zone_collisions if needed.
-                enable = str(wp['entry_zone_collisions']).lower() == 'on'
-                if not self.set_entry_zone_collisions(markerID, enable):
-                    self.get_logger().warn(
-                        f"{caller}: waypoint {i+1}/{n} could not switch "
-                        f"marker {markerID}'s entry-zone collisions "
-                        f"{'on' if enable else 'off'} — continuing anyway; "
-                        "call set_entry_zone_collisions to fix up.")
+            if 'held_plate' in wp or 'entry_zone_collisions' in wp:
+                # scene side-effect entries; shared with placePlate's joint
+                # replay (which substitutes only the MOVES of a list, never
+                # these). Failure only warns.
+                self._apply_scene_entry(markerID, wp, f"{caller}: waypoint {i+1}/{n}")
                 continue
             if 'traj' in wp:
                 # recorded rough path (joint space) guiding between phases
@@ -1174,23 +1206,115 @@ class printerAutomation(ArucoDetectionViewer):
     # error, not a warning.
 
     GROUND_OBJECT_ID = "ground_plane"
+    GZ_FLOOR_NAME = 'floor_collision'       # spawned by add_gz_floor_collision
 
     @_timed
     def add_ground_plane(self):
-        """Add the floor/table the arm is bolted to as one thin box under the
-        base. Sized/positioned from ground_size, ground_z and ground_clearance."""
+        """Add the floor/table the arm is bolted to, tiled AROUND the
+        registered ground cutouts. With no cutouts this is the classic single
+        thin box under the base (ground_size / ground_z / ground_clearance).
+        Each cutout (an object whose model declares 'ground_cutout', e.g. the
+        scrape fixture sunk below z=0) removes its column from the tiling: the
+        ground outside remains an obstacle, while the space over/inside the
+        object — including below z=0 — is free for path planning. Re-called
+        automatically whenever a cutout registers or moves; stale segments
+        from the previous tiling are removed first."""
         if not self.collision_scene_enabled:
             self.get_logger().info(
                 "add_ground_plane: collision_scene_enabled is False; skipped.")
             return False
         sx, sy, thickness = (float(v) for v in self.ground_size)
         top = float(self.ground_z) - float(self.ground_clearance)
-        return self._publish_collision_boxes([{
-            'id': self.GROUND_OBJECT_ID,
-            'size': [sx, sy, thickness],
-            'position': [0.0, 0.0, top - thickness / 2.0],
-            'quat_xyzw': [0.0, 0.0, 0.0, 1.0],
-        }])
+        base = (-sx / 2.0, sx / 2.0, -sy / 2.0, sy / 2.0)
+        rects = _subtract_rects(base, list(self._ground_cutouts.values()))
+        boxes = []
+        for i, (x0, x1, y0, y1) in enumerate(rects):
+            boxes.append({
+                'id': f"{self.GROUND_OBJECT_ID}_{i}",
+                'size': [x1 - x0, y1 - y0, thickness],
+                'position': [(x0 + x1) / 2.0, (y0 + y1) / 2.0,
+                             top - thickness / 2.0],
+                'quat_xyzw': [0.0, 0.0, 0.0, 1.0],
+            })
+        new_ids = {b['id'] for b in boxes}
+        # drop segments from the previous tiling (and the legacy single box)
+        for oid in list(self._ground_ids):
+            if oid not in new_ids:
+                self.moveit2.remove_collision_object(oid)
+                if oid in self._scene_object_ids:
+                    self._scene_object_ids.remove(oid)
+        self._ground_ids = sorted(new_ids)
+        if self._ground_cutouts:
+            self.get_logger().info(
+                f"ground plane: {len(boxes)} segment(s) around "
+                f"{len(self._ground_cutouts)} cutout(s).")
+        return self._publish_collision_boxes(boxes)
+
+    def _ground_cutout_rect(self, model, pos, quat_xyzw, margin=0.1):
+        """Axis-aligned base-frame rect over the object's footprint at its
+        CURRENT pose (any yaw — the rect bounds the rotated footprint), grown
+        by margin so the region directly outside its faces is reachable too."""
+        half_w, half_d = model.width / 2.0, model.depth / 2.0
+        R_pb = R.from_quat(list(quat_xyzw))
+        p = np.asarray(pos, dtype=float)
+        corners = [p + R_pb.apply([sx * half_w, sy * half_d, 0.0])
+                   for sx in (-1.0, 1.0) for sy in (-1.0, 1.0)]
+        xs = [c[0] for c in corners]
+        ys = [c[1] for c in corners]
+        m = float(margin)
+        return (min(xs) - m, max(xs) + m, min(ys) - m, max(ys) + m)
+
+    def _register_ground_cutout(self, prefix, model, pos, quat_xyzw):
+        """If the model wants a ground cutout, (re)place its hole at the
+        current pose and rebuild both grounds (MoveIt tiling + gz floor).
+        Keyed by scene prefix: re-registering the same object moves its hole."""
+        gc = getattr(model, 'ground_cutout', None)
+        if not gc:
+            return
+        margin = float(gc.get('margin', 0.1)) if isinstance(gc, dict) else 0.1
+        rect = self._ground_cutout_rect(model, pos, quat_xyzw, margin)
+        self._ground_cutouts[prefix] = rect
+        self.get_logger().info(
+            f"ground cutout for {prefix} ({model.name}): x [{rect[0]:+.3f}, "
+            f"{rect[1]:+.3f}], y [{rect[2]:+.3f}, {rect[3]:+.3f}] m")
+        if self.collision_scene_enabled:
+            self.add_ground_plane()
+        self._rebuild_gz_floor()
+
+    def _rebuild_gz_floor(self):
+        """Respawn the Gazebo collision floor with the registered cutouts, so
+        the physical floor matches the planning-scene tiling. No-op when the
+        floor was never spawned (collisions off, or a hardware run with no gz
+        world) — _entity_exists also answers None when gz is unreachable."""
+        if self._gz_floor is None:
+            self._gz_floor = GzEntityClient(self)
+        if self._gz_floor._entity_exists(self.GZ_FLOOR_NAME) is not True:
+            return
+        rects = _subtract_rects((-50.0, 50.0, -50.0, 50.0),
+                                list(self._ground_cutouts.values()))
+        blocks = ""
+        for i, (x0, x1, y0, y1) in enumerate(rects):
+            cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+            blocks += f"""
+      <collision name="floor_{i}">
+        <pose>{cx} {cy} -0.05 0 0 0</pose>
+        <geometry><box><size>{x1 - x0} {y1 - y0} 0.1</size></box></geometry>
+      </collision>"""
+        sdf = f"""<?xml version="1.0"?>
+<sdf version="1.8">
+  <model name="{self.GZ_FLOOR_NAME}">
+    <static>true</static>
+    <link name="link">{blocks}
+    </link>
+  </model>
+</sdf>"""
+        self._gz_floor._setup_spawn_client()
+        self._gz_floor._delete_entity(self.GZ_FLOOR_NAME)
+        if self._gz_floor._spawn_entity(sdf, self.GZ_FLOOR_NAME,
+                                        (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)):
+            self.get_logger().info(
+                f"gz floor respawned: {len(rects)} slab(s) around "
+                f"{len(self._ground_cutouts)} cutout(s).")
 
     @_timed
     def add_printer_collision_boxes(self, printer, padding=None):
@@ -1205,6 +1329,8 @@ class printerAutomation(ArucoDetectionViewer):
                 'model': printer.printer_model, 'pos': printer.pos,
                 'quat': printer.q, 'prefix': prefix, 'printer': printer,
                 'padding': padding}
+        self._register_ground_cutout(prefix, printer.printer_model,
+                                     printer.pos, printer.q)
         if not self.collision_scene_enabled:
             return False
         boxes = printer.printer_model.boxes_in_base(
@@ -1250,6 +1376,7 @@ class printerAutomation(ArucoDetectionViewer):
             'model': model, 'pos': np.asarray(pos, dtype=float),
             'quat': [float(v) for v in quat], 'prefix': prefix,
             'printer': None, 'padding': padding}
+        self._register_ground_cutout(prefix, model, pos, quat)
         boxes = model.boxes_in_base(
             np.asarray(pos, dtype=float), [float(v) for v in quat],
             id_prefix=prefix)
@@ -2180,55 +2307,20 @@ class printerAutomation(ArucoDetectionViewer):
         if not self.moveToMarker(markerID):
             self.get_logger().error(f"pickupPlate: moveToMarker failed for marker {markerID}.")
             return False
-        # keep grasp + carry joints so placePlate can replay them
-        grasp_joints = self._walk_grasp_joints
-        lift_joints = self._current_arm_joints()
-        if grasp_joints is not None and lift_joints is not None:
-            self._pickup_replay = {'marker': markerID, 'grasp': grasp_joints,
-                                   'lift': lift_joints}
-        else:
-            self._pickup_replay = None
         return True
 
     @_timed
     def placePlate(self, markerID=0):
-        """Walk the marker's place list. If the pickup here was recorded, the
-        moves before the release are replayed in joint space instead, pinning
-        J6 so pose IK can't flip the plate into a collision (plain
-        carry+descend only; longer descents are walked pose-based)."""
+        """Walk the marker's place list — the printer JSON's 'place' procedure
+        is the ONLY source of placement motion. (The old implicit
+        wrist-continuous joint replay of the recorded pickup is gone: it
+        silently substituted moves the waypoint list never declared, skipped
+        the list's scene entries, and with the held plate attached its goal
+        was in collision until the entry zone opened. If a placement needs a
+        pinned wrist, express it in the procedure itself.)"""
         place_waypoints = self._get_waypoints_for_marker(markerID, 'place')
         open_idx = next((i for i, wp in enumerate(place_waypoints)
                          if wp.get('gripper') == 'open'), None)
-        pre_release = place_waypoints if open_idx is None else place_waypoints[:open_idx]
-        replay = getattr(self, '_pickup_replay', None)
-        custom_descent = sum(1 for wp in pre_release if 'pos' in wp) > 2
-        if custom_descent and replay is not None:
-            self.get_logger().warn(
-                f"placePlate: custom placement descent configured for marker {markerID}; "
-                "using pose-based placement instead of the wrist-continuous joint replay."
-            )
-            replay = None
-        if replay is not None and replay.get('marker') == markerID:
-            self.get_logger().info(
-                f"placePlate: replaying recorded pickup joints for marker {markerID} (wrist-continuous)."
-            )
-            if not (self.move_to_configuration(replay['lift'])
-                    and self.move_to_configuration(replay['grasp'])):
-                # no pose-based fallback: IK could pick a flipped wrist and
-                # drop the plate at an angle. Abort still holding it.
-                self.get_logger().error(
-                    "placePlate: wrist-continuous joint replay failed; aborting WITHOUT placing "
-                    "to avoid an angled/flipped drop. Plate is still held — recover and re-run."
-                )
-                return False
-            self.open_gripper()
-            # Continue with the entries after the release (e.g. the withdraw).
-            if open_idx is not None and open_idx + 1 < len(place_waypoints):
-                return self._follow_waypoints(
-                    markerID, place_waypoints[open_idx + 1:], "placePlate"
-                )
-            return True
-
         if not self._follow_waypoints(markerID, place_waypoints, "placePlate"):
             return False
         if open_idx is None:

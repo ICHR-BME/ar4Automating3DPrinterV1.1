@@ -1,0 +1,6 @@
+timestamp,call_chain,duration_s
+2026-08-01T18:30:12.504930,purge_collision_scene,0.2288
+2026-08-01T18:30:12.514060,add_ground_plane,0.009
+2026-08-01T18:30:14.680113,add_printer_collision_boxes,0.0
+2026-08-01T18:30:16.044019,add_printer_collision_boxes,0.0
+2026-08-01T18:30:16.046967,scrapePlate,0.0029

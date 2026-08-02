@@ -11,7 +11,9 @@ CTRL+clicking it. The click is snapped to the nearest collision-box face, so the
 marker lands flat on the box model even if you clicked the mesh, and it is drawn
 where it would actually sit: texture on the outward face only, plain gray
 backing, plus an axis triad so you can confirm it faces the right way before
-saving. The pose is written to the JSON's "markers" list.
+saving. R / E spin the placed tag +/-90 degrees about its face normal (the
+in-plane orientation a click can't choose; re-clicking resets it upright).
+The pose is written to the JSON's "markers" list.
 
 The same window also edits the printer's ENTRY ZONE: SHIFT+click a box to add
 it to / remove it from the zone (amber wireframe). Zone boxes get
@@ -133,12 +135,17 @@ def build_geometries(name, solid_boxes=False):
     o3m = load_source_mesh(mesh_path, model.get('units_scale', 0.001),
                            model.get('rotate_z_deg', 0.0))
 
+    from scipy.spatial.transform import Rotation as Rot
+
     geoms = [o3m] if o3m is not None else []
     for i, box in enumerate(model['boxes']):
         color = box_color(i, box)
         c = np.asarray(box['center'], dtype=float)
         s = np.asarray(box['size'], dtype=float)
-        R = o3d.geometry.get_rotation_matrix_from_xyz(box.get('rpy', [0, 0, 0]))
+        # rpy is EXTRINSIC xyz (the SDF/scipy convention the whole pipeline
+        # uses) — NOT o3d's get_rotation_matrix_from_xyz, which is intrinsic
+        # and silently draws every rotated box wrong
+        R = Rot.from_euler('xyz', box.get('rpy', [0, 0, 0])).as_matrix()
         obb = o3d.geometry.OrientedBoundingBox(c, R, s)
         obb.color = color
         geoms.append(obb)
@@ -380,7 +387,9 @@ def run_marker_placement(printer, model, geoms, json_path, marker_name,
         box = boxes[bi]
         c = np.asarray(box['center'], dtype=float)
         s = np.asarray(box['size'], dtype=float)
-        Rm = o3d.geometry.get_rotation_matrix_from_xyz(box.get('rpy', [0, 0, 0]))
+        # extrinsic-xyz rpy, same convention note as build_geometries
+        from scipy.spatial.transform import Rotation as Rot
+        Rm = Rot.from_euler('xyz', box.get('rpy', [0, 0, 0])).as_matrix()
         obb = o3d.geometry.OrientedBoundingBox(c, Rm, s)
         ls = o3d.geometry.LineSet.create_from_oriented_bounding_box(obb)
         ls.paint_uniform_color(box_color(bi, box))
@@ -412,6 +421,7 @@ def run_marker_placement(printer, model, geoms, json_path, marker_name,
     em = window.theme.font_size
     panel = gui.Vert(0.5 * em, gui.Margins(0.5 * em, 0.5 * em, 0.5 * em, 0.5 * em))
     info = gui.Label("CTRL+click the printer to place the marker.\n"
+                     "R / E: spin the tag +/-90 deg in its face plane.\n"
                      "Red X = marker normal (points INTO the body).\n"
                      "Blue Z = marker up. Texture shows on the outward face.\n\n"
                      "no marker placed yet")
@@ -456,27 +466,59 @@ def run_marker_placement(printer, model, geoms, json_path, marker_name,
         print(f"  box {bi}: {'in the ENTRY ZONE' if flagged else 'always-colliding'}")
         window.set_needs_layout()
 
-    def show_marker(world_pt):
-        face_pt, normal, _bi = snap_to_box_face(world_pt, boxes)
-        pos, rpy = marker_pose_from_face(face_pt, normal, surface_offset)
-        state['pos'], state['rpy'] = pos, rpy
-
+    def redraw_marker(extra=""):
+        """Draw the marker at state's pose and refresh the readout/save."""
+        pos, rpy = state['pos'], state['rpy']
         for nm in ('marker_0', 'marker_1', 'marker_2'):
             if widget.scene.has_geometry(nm):
                 widget.scene.remove_geometry(nm)
         for j, (geom, mat) in enumerate(
                 marker_geometries(pos, rpy, marker_size, texture_path)):
             widget.scene.add_geometry(f"marker_{j}", geom, mat)
-
         info.text = (f"CTRL+click to move the marker.\n"
-                     f"Red X = normal (into body), Blue Z = up.\n\n"
-                     f"face normal: [{normal[0]:+.2f} {normal[1]:+.2f} {normal[2]:+.2f}]\n"
-                     f"pos: [{pos[0]:+.4f} {pos[1]:+.4f} {pos[2]:+.4f}]\n"
+                     f"R / E: spin the tag +/-90 deg in its face plane.\n"
+                     f"Red X = normal (into body), Blue Z = up.\n"
+                     + extra +
+                     f"\npos: [{pos[0]:+.4f} {pos[1]:+.4f} {pos[2]:+.4f}]\n"
                      f"rpy: [{rpy[0]:+.4f} {rpy[1]:+.4f} {rpy[2]:+.4f}]")
         save_btn.enabled = True
+        window.set_needs_layout()
+
+    def show_marker(world_pt):
+        face_pt, normal, _bi = snap_to_box_face(world_pt, boxes)
+        pos, rpy = marker_pose_from_face(face_pt, normal, surface_offset)
+        state['pos'], state['rpy'] = pos, rpy
+        redraw_marker(
+            f"\nface normal: [{normal[0]:+.2f} {normal[1]:+.2f} {normal[2]:+.2f}]")
         print(f"  marker '{marker_name}' -> pos={np.round(pos, 4).tolist()} "
               f"rpy={np.round(rpy, 4).tolist()}")
-        window.set_needs_layout()
+
+    def rotate_marker(deg):
+        """Spin the placed marker about its own face normal (the plate's local
+        +X) in 90-degree steps — the one orientation DOF a click can't choose.
+        Re-clicking a face resets to the default upright orientation."""
+        if state['pos'] is None:
+            return
+        from scipy.spatial.transform import Rotation as R
+        rot = (R.from_euler('xyz', state['rpy'])
+               * R.from_euler('x', np.radians(deg)))
+        state['rpy'] = rot.as_euler('xyz')
+        redraw_marker()
+        print(f"  marker '{marker_name}' spun {deg:+.0f} deg -> "
+              f"rpy={np.round(state['rpy'], 4).tolist()}")
+
+    def on_key(event):
+        if event.type != gui.KeyEvent.Type.DOWN:
+            return gui.Widget.EventCallbackResult.IGNORED
+        if event.key == ord('r'):
+            rotate_marker(90.0)
+            return gui.Widget.EventCallbackResult.HANDLED
+        if event.key == ord('e'):
+            rotate_marker(-90.0)
+            return gui.Widget.EventCallbackResult.HANDLED
+        return gui.Widget.EventCallbackResult.IGNORED
+
+    widget.set_on_key(on_key)
 
     def on_mouse(event):
         if event.type != gui.MouseEvent.Type.BUTTON_DOWN:
@@ -526,9 +568,11 @@ def run_marker_placement(printer, model, geoms, json_path, marker_name,
 
 def main():
     # ================= CONFIG (edit these; no command-line args) =============
-    PRINTER = 'a1'          # which model to view: 'a1' or 'a1_mini'
-    # (a1_mini's source is a .stp, which needs trimesh+cascadio; without them
-    # the viewer still opens, just with the boxes and no mesh underlay)
+    # any model in models/printers/ works here: 'a1', 'a1_mini',
+    # 'scrape_fixture', ... — the JSON's source_mesh is drawn underneath when
+    # it's readable (.stp needs trimesh+cascadio; without them the viewer
+    # still opens, just with the boxes and no mesh underlay)
+    PRINTER = 'a1'
     SOLID_BOXES = False     # True adds translucent-colored box fills
     SCREENSHOT = None       # set to a PNG path to render headlessly; None = window
     CHECK_ONLY = False      # True = build geometries + print stats, no window

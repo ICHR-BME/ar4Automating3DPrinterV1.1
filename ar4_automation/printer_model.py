@@ -27,7 +27,7 @@ DEFAULT_PRINTERS_DIR = os.path.join(
 
 class PrinterModel:
     def __init__(self, name, footprint, boxes, bed_size=None, markers=None,
-                 plate=None, procedures=None, meta=None):
+                 plate=None, procedures=None, ground_cutout=None, meta=None):
         self.name = name
         self.footprint = footprint          # dict: width/depth/height (m)
         self.boxes = boxes                  # list of {center:[3], size:[3], rpy:[3]}
@@ -47,6 +47,15 @@ class PrinterModel:
         # documented at printerAutomation.offset_configs. NB 'traj' entries
         # replay recorded JOINT paths and are inherently robot-specific.
         self.procedures = procedures
+        # Optional: this object needs a HOLE in the ground obstacle. For
+        # objects that sit in/below the floor plane (the scrape fixture): the
+        # ground outside stays an obstacle, but the full vertical column over
+        # this object's footprint (+ margin) is left free so path planning can
+        # descend into it and approach its faces, even below z=0.
+        #   "ground_cutout": true  or  {"margin": 0.1}
+        # The cutout follows the body pose (scan-derived), any yaw, and any
+        # number of such objects — see printerAutomation.add_ground_plane.
+        self.ground_cutout = ground_cutout
         # ArUco mount poses in the printer-local frame, placed by CTRL+clicking
         # the box model in tools/view_printer_model.py:
         #   [{name, size, pos:[3], rpy:[3]}, ...]
@@ -79,6 +88,7 @@ class PrinterModel:
             markers=d.get('markers'),
             plate=d.get('plate'),
             procedures=d.get('procedures'),
+            ground_cutout=d.get('ground_cutout'),
             meta={k: d[k] for k in ('source_mesh', 'coverage', 'frame') if k in d},
         )
 

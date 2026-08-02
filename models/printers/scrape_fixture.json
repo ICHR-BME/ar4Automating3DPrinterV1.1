@@ -1,0 +1,198 @@
+{
+ "name": "scrape_fixture",
+ "procedures": {
+  "notes": [
+   "Scrape fixture: not a printer. Only the 'scrape' procedure exists -",
+   "plates are never picked from or placed on it. Same conventions as the",
+   "printer files: 'pos' entries are GRIPPER-TCP poses in the MARKER frame",
+   "(frame=grasp), robot-independent; all robot geometry comes from",
+   "TF/robot_config at runtime."
+  ],
+  "frame": "grasp",
+  "pickup": null,
+  "place": null,
+  "scrape": [
+   {
+    "description": "scrape standoff along marker Z",
+    "pos": [
+     0.0,
+     -0.0727,
+     0.3167
+    ],
+    "angle_deg": 0.0
+   },
+   {
+    "description": "full scrape depth",
+    "pos": [
+     0.0,
+     -0.0727,
+     -0.0033
+    ],
+    "angle_deg": 0.0,
+    "linear": true
+   },
+   {
+    "description": "retract to standoff",
+    "pos": [
+     0.0,
+     -0.0727,
+     0.3167
+    ],
+    "angle_deg": 0.0,
+    "linear": true
+   }
+  ]
+ },
+ "ground_cutout": {
+  "margin": 0.1
+ },
+ "source_mesh": "models/scrapingModel.stl",
+ "units_scale": 0.001,
+ "rotate_z_deg": 0.0,
+ "frame": "printer_center",
+ "footprint": {
+  "width": 0.2250000000000001,
+  "depth": 0.55,
+  "height": 0.5
+ },
+ "bed_size": null,
+ "boxes": [
+  {
+   "center": [
+    -0.05703250122309126,
+    0.23741835484599055,
+    0.0
+   ],
+   "size": [
+    0.1169349975538176,
+    0.08116329030801897,
+    0.506
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    0.05547431133513003,
+    0.24281449344914913,
+    0.0
+   ],
+   "size": [
+    0.12005137732974003,
+    0.07037101310170177,
+    0.506
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    0.055476388315503604,
+    -0.2449750653785373,
+    0.0
+   ],
+   "size": [
+    0.12004722336899289,
+    0.06604986924292544,
+    0.506
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    -0.057030596222044976,
+    -0.2449673959032393,
+    0.0
+   ],
+   "size": [
+    0.11693880755591,
+    0.06606520819352149,
+    0.506
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    -0.0875,
+    -0.007549994894649595,
+    0.0
+   ],
+   "size": [
+    0.05600000000000009,
+    0.4207416028820432,
+    0.506
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "center": [
+    0.08750000000000005,
+    -0.002156774557659849,
+    0.0
+   ],
+   "size": [
+    0.055999999999999994,
+    0.43155879999431945,
+    0.506
+   ],
+   "rpy": [
+    0.0,
+    0.0,
+    0.0
+   ]
+  }
+ ],
+ "coverage": {
+  "voxel_coverage": 1.0,
+  "max_protrusion_mm": 0.0,
+  "box_union_volume_m3": 0.041149,
+  "mesh_aabb_volume_m3": 0.061875,
+  "fill_ratio_vs_aabb": 0.665,
+  "num_boxes": 6,
+  "method": "coacd",
+  "threshold": 0.12,
+  "remesh_mm": 6.0,
+  "dilate": 1
+ },
+ "markers": [
+  {
+   "name": "door",
+   "size": 0.025,
+   "pos": [
+    -0.088589,
+    0.002257,
+    0.2531
+   ],
+   "rpy": [
+    -3.141593,
+    1.570796,
+    0.0
+   ]
+  }
+ ],
+ "notes": [
+  "PLACEHOLDER GEOMETRY - hand-authored, no source mesh. Edit footprint,",
+  "boxes and the marker mount to match the real fixture (or generate a box",
+  "model from a mesh with tools/printer_mesh_to_boxes.py and merge). The",
+  "'door' mount is what pins the body to the scanned marker pose",
+  "(pose_from_marker), so place it where the real tag is glued."
+ ]
+}

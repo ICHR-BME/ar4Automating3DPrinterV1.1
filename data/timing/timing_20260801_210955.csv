@@ -1,0 +1,17 @@
+timestamp,call_chain,duration_s
+2026-08-01T21:09:57.618958,add_ground_plane,0.0219
+2026-08-01T21:09:58.932781,add_printer_collision_boxes > add_ground_plane,0.0219
+2026-08-01T21:10:00.923165,add_printer_collision_boxes,2.0127
+2026-08-01T21:10:02.232224,add_printer_collision_boxes,0.0228
+2026-08-01T21:10:03.407138,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries > scanToMarker,1.1732
+2026-08-01T21:10:06.463554,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries > scanToMarker,3.0562
+2026-08-01T21:10:06.463587,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries,4.2296
+2026-08-01T21:10:07.538333,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries > scanToMarker,1.0747
+2026-08-01T21:10:11.402955,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries > scanToMarker,3.8646
+2026-08-01T21:10:11.402989,scrapePlate > pickupPlate > moveToMarker > _scan_with_retries,4.9394
+2026-08-01T21:10:13.490840,scrapePlate > pickupPlate > moveToMarker > set_entry_zone_collisions,1.2797
+2026-08-01T21:10:22.645651,scrapePlate > pickupPlate > moveToMarker > set_entry_zone_collisions,1.3951
+2026-08-01T21:10:22.645683,scrapePlate > pickupPlate > moveToMarker,20.412
+2026-08-01T21:10:22.645696,scrapePlate > pickupPlate,20.412
+2026-08-01T21:10:41.192175,scrapePlate > placePlate,7.7015
+2026-08-01T21:10:41.192354,scrapePlate,38.9601
