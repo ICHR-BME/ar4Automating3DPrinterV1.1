@@ -4,9 +4,9 @@ Select with the robot= kwarg on printerAutomation (threads down through
 ArucoDetectionViewer and PoseReader), e.g.:
     node = start_node(sim=1, robot='lite6')
 
-'ar4' is the Annin AR4 (annin_ar4 packages); 'lite6' is the UFACTORY Lite 6
-via xarm_ros2 (launch Gazebo with scripts/launchVirtualXArmLite6.sh, which
-adds the simulated D435i wrist camera).
+'ar4' is the Annin AR4; 'lite6' is the UFACTORY Lite 6; and 'xarm6' is the
+UFACTORY xArm 6.  Lite 6 and xArm 6 are distinct robot models even though
+both expose six joints through xarm_ros2.
 """
 
 import numpy as np
@@ -116,6 +116,68 @@ ROBOT_CONFIGS = {
             'reduced_mode': True,
             'reduced_max_tcp_speed_mm_s': 100.0,
             'reduced_max_joint_speed_rad_s': 0.35,
+        },
+    },
+    'xarm6': {
+        'joint_names': ["joint1", "joint2", "joint3",
+                        "joint4", "joint5", "joint6"],
+        'base_link': "link_base",
+        'end_effector_link': "link_eef",
+        'move_group': "xarm6",
+        'camera_frame': "camera_color_optical_frame",
+        'color_topic': "/camera/color/image_raw",
+        'depth_topic': "/camera/depth/image",
+        'camera_info_topic': "/camera/color/camera_info",
+        # Provisional until the physical wrist-camera transform is measured.
+        'camera_z_offset': 0.04,
+        # The actual end tool has not yet been identified/commissioned.  A
+        # physical manipulation routine must fail instead of simulating a
+        # successful grasp with a no-op gripper.
+        'gripper': None,
+        'frame_rotation_angles': np.array([0.0, 0.0, 0.0]),
+        'frame_offset_angles': np.array([0.0, 0.0, 0.0]),
+        'offset_ori': np.array([np.pi, 0.0, np.pi / 2]),
+        # xarm_description/urdf/xarm6/xarm6_robot_macro.xacro, limited=true,
+        # with a 0.035 rad margin from each hard limit.
+        'joint_limits': [
+            (-np.pi * 0.99 + 0.035, np.pi * 0.99 - 0.035),
+            (-2.059 + 0.035, 2.0944 - 0.035),
+            (-np.pi * 0.99 + 0.035, 0.19198 - 0.035),
+            (-np.pi * 0.99 + 0.035, np.pi * 0.99 - 0.035),
+            (-1.69297 + 0.035, np.pi * 0.99 - 0.035),
+            (-np.pi * 0.99 + 0.035, np.pi * 0.99 - 0.035),
+        ],
+        # Initial commissioning envelope. Narrow it to the measured printer
+        # cell before unattended operation.
+        'workspace': {
+            'x': (-0.75, 0.75),
+            'y': (-0.75, 0.75),
+            'z': (0.025, 0.90),
+            'radius': (0.10, 0.90),
+        },
+        'physical_motion': {
+            'max_velocity': 0.08,
+            'max_acceleration': 0.08,
+            'max_manual_joint_delta': np.radians(10.0),
+            'max_jog_translation': 0.01,
+            'max_jog_rotation': np.radians(5.0),
+            'joint_state_max_age': 1.0,
+        },
+        'simulation_motion': {
+            'max_velocity': 0.25,
+            'max_acceleration': 0.20,
+            'max_manual_joint_delta': np.radians(45.0),
+            'max_jog_translation': 0.05,
+            'max_jog_rotation': np.radians(15.0),
+            'joint_state_max_age': 2.0,
+        },
+        'xarm_safety': {
+            'namespace': '/xarm',
+            'collision_sensitivity': 3,
+            'self_collision_detection': True,
+            'reduced_mode': True,
+            'reduced_max_tcp_speed_mm_s': 80.0,
+            'reduced_max_joint_speed_rad_s': 0.25,
         },
     },
 }

@@ -127,8 +127,8 @@ class PoseReader(Node):
 		self._init_xarm_safety_monitor()
 
 	def _init_xarm_safety_monitor(self):
-		"""Subscribe to the physical Lite 6 controller state when available."""
-		if self.robot != 'lite6':
+		"""Subscribe to an xarm_ros2 physical controller when configured."""
+		if 'xarm_safety' not in self.robot_config:
 			return
 		try:
 			from xarm_msgs.msg import RobotMsg
@@ -159,13 +159,13 @@ class PoseReader(Node):
 			self._cancellation_pub.publish(stop)
 
 	def configure_xarm_safety(self, timeout=3.0):
-		"""Apply non-motion controller safety settings for a physical Lite 6.
+		"""Apply non-motion controller safety settings for a physical UFACTORY arm.
 
 		No errors are cleared and motors are not enabled here.  The operator
 		must use UFACTORY's normal recovery/enable procedure after inspecting a
 		collision or fault.
 		"""
-		if self.robot != 'lite6' or self.simulation_mode:
+		if 'xarm_safety' not in self.robot_config or self.simulation_mode:
 			self._xarm_safety_configured = True
 			return True
 		try:
@@ -207,6 +207,34 @@ class PoseReader(Node):
 				self._xarm_safety_error = (
 					f"{service_name} rejected safety setting (ret={ret})")
 				return False
+
+		# Applying reduced/self-collision settings deliberately leaves UFACTORY
+		# controllers in CONFIG_CHANGED (state=5).  Return to START only when
+		# the state change was caused by this successful configuration sequence
+		# and the controller reports no error.  This does not clear errors,
+		# enable motors, or initiate motion.
+		state = self._xarm_state
+		if state is None or state['error_code'] != 0:
+			self._xarm_safety_error = (
+				"refusing to restore controller state without fresh, error-free telemetry")
+			return False
+		state_client = self.create_client(SetInt16, f"{ns}/set_state")
+		if not state_client.wait_for_service(timeout_sec=timeout):
+			self._xarm_safety_error = f"service unavailable: {ns}/set_state"
+			return False
+		state_req = SetInt16.Request()
+		state_req.data = 0
+		future = state_client.call_async(state_req)
+		deadline = time.monotonic() + timeout
+		while not future.done() and time.monotonic() < deadline:
+			time.sleep(0.01)
+		if not future.done() or future.result() is None:
+			self._xarm_safety_error = f"service failed: {ns}/set_state"
+			return False
+		if int(future.result().ret) != 0:
+			self._xarm_safety_error = (
+				f"{ns}/set_state rejected START (ret={int(future.result().ret)})")
+			return False
 		self._xarm_safety_configured = True
 		self._xarm_safety_error = None
 		return True
@@ -226,7 +254,7 @@ class PoseReader(Node):
 			'ok': joint_age is not None and joint_age <= max_age,
 			'detail': 'not received' if joint_age is None else f"age={joint_age:.2f}s",
 		})
-		if self.robot == 'lite6' and not self.simulation_mode:
+		if 'xarm_safety' in self.robot_config and not self.simulation_mode:
 			state_age = (
 				None if self._xarm_state_update_monotonic is None
 				else now - self._xarm_state_update_monotonic)

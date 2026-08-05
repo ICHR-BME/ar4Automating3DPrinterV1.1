@@ -67,6 +67,12 @@ SIM_PRINTER_SPECS_2 = SIM_PRINTER_SPECS_3[1:]
 def make_webcam_node(robot='ar4', **overrides):
     """Build a printerAutomation node with the standard webcam config."""
     kwargs = dict(WEBCAM_NODE_KWARGS)
+    # UFACTORY wrist cameras are exposed by realsense2_camera as ROS topics;
+    # only the AR4 uses the directly-opened/calibrated generic webcam.
+    if robot in {'lite6', 'xarm6'}:
+        kwargs.update(SIM_NODE_KWARGS)
+        kwargs.pop('feed_rotation_deg', None)
+        kwargs.pop('marker_sizes', None)
     kwargs.update(overrides)
     node = printerAutomation(robot=robot, **kwargs)
     # The 0.702 correction was calibrated for the AR4 webcam.  The Lite 6
@@ -100,16 +106,16 @@ def make_sim_node(robot='ar4', **overrides):
 def start_node(sim=False, robot='ar4', joint_state_timeout=10.0, **overrides):
     """(make_webcam_node or make_sim_node) + spin_in_background + wait_for_joint_states.
 
-    robot: 'ar4' or 'lite6' (see robot_config.py). Sim launch scripts:
+    robot: 'ar4', 'lite6', or 'xarm6' (see robot_config.py). Sim launch scripts:
     launchVirtualRobot.sh for the AR4, launchVirtualXArmLite6.sh for the Lite 6.
     """
     node = make_sim_node(robot=robot, **overrides) if sim else make_webcam_node(robot=robot, **overrides)
     spin_in_background(node)
     wait_for_joint_states(node, timeout=joint_state_timeout)
-    if not sim and robot == 'lite6':
+    if not sim and 'xarm_safety' in node.robot_config:
         if not node.configure_xarm_safety():
             node.get_logger().error(
-                "Lite 6 safety profile was not applied; motion will remain blocked: "
+                "UFACTORY safety profile was not applied; motion will remain blocked: "
                 f"{node._xarm_safety_error}")
     return node
 
