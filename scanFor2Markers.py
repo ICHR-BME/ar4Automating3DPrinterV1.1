@@ -32,15 +32,15 @@ from ar4_automation.runner_common import (
 
 def main():
     rclpy.init()
-    runVirtual = 1    # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
-    robot = 'xarm6'     # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
+    runVirtual = 0    # 1 = run in Gazebo (sim camera + spawned printers), 0 = hardware
+    robot = 'ar4'     # 'ar4' | 'lite6' | 'xarm6' (sim launch: launchVirtualRobot.sh / launchVirtualXArmLite6.sh / launchVirtualXArm6.sh)
     # 1 = initial estimates come from data/manual_marker_estimates.json
     # (written by teachMarkersByHand.py: drag-teach the arm until the camera
     # sees each marker) instead of the geometric seeds below. Applies in sim as
     # well as on hardware — in sim that means the scan starts from the measured
     # poses rather than from where the printers were spawned, which is how you
     # rehearse the hardware flow without the arm.
-    use_manual_estimates = 1
+    use_manual_estimates = 0
     if runVirtual:
         # make_sim_node, not a bare printerAutomation: it carries the shared
         # marker_sizes (a sim node built without them fell back to the detector's
@@ -65,16 +65,25 @@ def main():
     spin_in_background(node)
     wait_for_joint_states(node)
 
-    # Printer layout: BODY poses (the box model's center) in the good frame, one
-    # entry per printer, with the ArUco ID its 'door' mount wears. Sim uses the
-    # per-robot layout from runner_common; hardware uses the measured bench
-    # layout below. printer_model names a box model in models/printers/.
-    hardware_specs = [
+    # Printer layout in the good frame, one entry per printer: pos is where the
+    # MARKER sits, orient is the printer BODY's orientation, and marker_id is
+    # the ArUco ID its 'door' mount wears. make_sim_printer back-solves the body
+    # from the mount offset, so editing orient does NOT move the marker. Sim
+    # uses the per-robot layout from runner_common; hardware uses the measured
+    # bench layout below. printer_model names a box model in models/printers/.
+    '''hardware_specs = [
         {"marker_id": 1, "pos": [0.40, 0.10, -0.1],
          "orient": [-1/2*np.pi, 0.0, 2/2*np.pi], "printer_model": 'a1'},
         {"marker_id": 2, "pos": [0.30, 0.10, 0.1],
          "orient": [0.0, 0.0, 1*np.pi], "printer_model": 'a1_mini'},
-    ]
+    ]'''
+
+    hardware_specs = [
+            {"marker_id": 1, "pos": [0.4131, -0.2064, 0.1168],
+             "orient": [-1/2*np.pi, 0.0, 2/2*np.pi], "printer_model": 'a1'},
+            {"marker_id": 2, "pos": [0.6179, 0.1552, 0.0789],
+             "orient": [1/2*np.pi, 0.0, -1/2*np.pi], "printer_model": 'a1_mini'},
+        ]
     specs = sim_printer_specs(robot, 2) if runVirtual else hardware_specs
 
     if runVirtual:
@@ -111,7 +120,7 @@ def main():
     if not manual_ids:
         # geometric estimates: where each printer's 'door' mount sits, given the
         # body poses above
-        printer2.register_marker_estimates(node)
+        #printer2.register_marker_estimates(node)
         printer3.register_marker_estimates(node)
 
     # save the body poses alongside the markers, so restore_saved_printers can
@@ -120,7 +129,7 @@ def main():
 
 
     viewing_distance = 0.15
-    node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
+    #node.scanMarkerApproach(marker_id=1, viewing_distance=viewing_distance)
     node.scanMarkerApproach(marker_id=2, viewing_distance=viewing_distance)
 
     node.get_logger().info("Initial scan complete.")

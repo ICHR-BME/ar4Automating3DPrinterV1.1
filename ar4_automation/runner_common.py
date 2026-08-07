@@ -44,22 +44,22 @@ SIM_NODE_KWARGS = dict(
     marker_sizes=MARKER_SIZES,
 )
 
-# sim printer layouts per robot. pos/orient are the PRINTER BODY pose (its box
-# model's center) in the robot's good frame; marker_id is the ArUco ID its
-# 'door' mount wears, and printer_model names the box model in models/printers/.
-# Where that marker then appears is derived from the mount recorded in the
-# model's JSON — see Simulated3DPrinter.marker_pose_in_base.
+# sim printer layouts per robot. pos is where the MARKER lands and orient is the
+# PRINTER BODY orientation, both in the robot's good frame; marker_id is the
+# ArUco ID its 'door' mount wears, and printer_model names the box model in
+# models/printers/. make_sim_printer back-solves the body from the mount offset
+# in the model's JSON, so editing orient leaves the marker position alone.
 DEFAULT_SIM_PRINTER_MODEL = 'a1_mini'
 # the mount (a name in the model JSON's "markers") a spec's marker_id refers to
 MOUNT = Simulated3DPrinter.DEFAULT_MOUNT
 
 SIM_PRINTER_SPECS = {
     'ar4': [
-        {"marker_id": 0, "pos": [0.22, -0.2, 0.21], "orient": [0.0, 0.0, math.pi]},
+        {"marker_id": 0, "pos": [0.2474, -0.0408, 0.4057], "orient": [0.0, 0.0, math.pi]},
         # y must stay -0.3: at -0.2 the 0.38m scrape standoff has no IK solution
         # and scrapePlate aborts at the scrape waypoints
-        {"marker_id": 1, "pos": [0.44, -0.3, 0.21], "orient": [0.0, 0.0, math.pi]},
-        {"marker_id": 2, "pos": [0.60, 0.1, 0.21], "orient": [0.0, 0.0, 3/2*math.pi]},
+        {"marker_id": 1, "pos": [0.4674, -0.1408, 0.4057], "orient": [0.0, 0.0, math.pi]},
+        {"marker_id": 2, "pos": [0.4408, 0.1274, 0.4057], "orient": [0.0, 0.0, 3/2*math.pi]},
     ],
     # tuned in sim for the lite6's 0.44 m reach: the far (1.75x) viewing pose
     # of each marker must stay reachable even with the 0.03 m estimate
@@ -72,9 +72,9 @@ SIM_PRINTER_SPECS = {
     #     {"marker_id": 2, "pos": [0.58, 0.08, 0.20], "orient": [0.0, 0.0, 3/2*math.pi]},
     # ],
     'lite6': [ #Monterrey
-            {"marker_id": 0, "pos": [0.14, -0.16, 0.15], "orient": [0.0, 0.0, math.pi]},
-            {"marker_id": 2, "pos": [0.3, -0.45, 0.24], "orient": [0.0, 0.0, 0*math.pi]},
-            {"marker_id": 1, "pos": [0.40, 0.0, -0.1], "orient": [-1/2*math.pi, 0.0, 2/2*math.pi]},
+            {"marker_id": 0, "pos": [0.1674, -0.0008, 0.3457], "orient": [0.0, 0.0, math.pi]},
+            {"marker_id": 2, "pos": [0.2726, -0.6092, 0.4357], "orient": [0.0, 0.0, 0*math.pi]},
+            {"marker_id": 1, "pos": [0.4274, -0.1957, 0.0592], "orient": [-1/2*math.pi, 0.0, 2/2*math.pi]},
         ],
         # {"marker_id": 2, "pos": [0.45, -0.2, 0.12], "orient": [0.0, 0.0, -1/2*math.pi]},
     # xArm 6: same door-facing conventions as the lite6, pushed out for the
@@ -91,11 +91,11 @@ SIM_PRINTER_SPECS = {
     # scrapingModel.stl), which carries only a 'scrape' procedure.
     # z = 0.25 = its half-height (0.50 m tall).
     'xarm6': [
-            {"marker_id": 0, "pos": [0.20, -0.22, 0.30], "orient": [0.0, 0.0, math.pi],
+            {"marker_id": 0, "pos": [0.2131, -0.0032, 0.6064], "orient": [0.0, 0.0, math.pi],
              "printer_model": "a1"},
-            {"marker_id": 1, "pos": [0.30, 0.35, 0.25], "orient": [0.0, 0.0, 0*math.pi],
+            {"marker_id": 1, "pos": [0.2114, 0.3523, 0.5031], "orient": [0.0, 0.0, 0*math.pi],
              "printer_model": "scrape_fixture"},
-            {"marker_id": 2, "pos": [0.70, 0.10, 0.30], "orient": [0.0, 0.0, 3/2*math.pi],
+            {"marker_id": 2, "pos": [0.4832, 0.1131, 0.6064], "orient": [0.0, 0.0, 3/2*math.pi],
              "printer_model": "a1"},
         ],
 }
@@ -339,12 +339,33 @@ def start_node(sim=False, robot='ar4', collisions=True, **overrides):
 
 
 def make_sim_printer(node, spec, **overrides):
-    """One Simulated3DPrinter from a layout spec (marker_id/pos/orient[/printer_model])."""
+    """One Simulated3DPrinter from a layout spec (marker_id/pos/orient[/printer_model]).
+
+    spec['pos'] is where the MARKER sits, not the box centre. The door mount
+    rides on the body, so anchoring the body would swing the marker somewhere
+    new every time the orientation is edited — the body is back-solved from the
+    mount offset instead, which leaves the marker where it was put. orient is
+    still the BODY orientation.
+    """
+    import numpy as _np
+    from scipy.spatial.transform import Rotation as _R
+    from .printer_model import PrinterModel as _PrinterModel
+
+    model = spec.get("printer_model", DEFAULT_SIM_PRINTER_MODEL)
+    if not isinstance(model, _PrinterModel):
+        model = _PrinterModel.load(model)
+    orient = _np.asarray(spec["orient"], dtype=float)
+    pos = _np.asarray(spec["pos"], dtype=float)
+    mount = model.get_marker(MOUNT)
+    if mount is not None:
+        # marker = body + R_body @ mount  =>  body = marker - R_body @ mount.
+        # extrinsic 'xyz' to match how Simulated3DPrinter reads orient.
+        pos = pos - _R.from_euler("xyz", orient).apply(mount["pos"])
     kwargs = dict(
         node=node,
-        pos=spec["pos"],
+        pos=pos,
         orient=spec["orient"],
-        printer_model=spec.get("printer_model", DEFAULT_SIM_PRINTER_MODEL),
+        printer_model=model,
         marker_ids={MOUNT: spec["marker_id"]},
     )
     kwargs.update(overrides)

@@ -561,10 +561,14 @@ class printerAutomation(ArucoDetectionViewer):
                     f"({gripper_cfg['gripper_joint_names']})."
                 )
             else:
+                # open_width/closed_width describe the jaw opening for
+                # gripper_width_to_fraction; they are not constructor args.
+                meta_keys = {'kind', 'open_width', 'closed_width'}
                 self.gripper = GripperInterface(
                     node=self,
                     callback_group=self._cb_group,
-                    **{k: v for k, v in gripper_cfg.items() if k != 'kind'},
+                    **{k: v for k, v in gripper_cfg.items()
+                       if k not in meta_keys},
                 )
 
     def _record_timing(self, call_chain: str, duration_s: float):
@@ -2406,11 +2410,9 @@ class printerAutomation(ArucoDetectionViewer):
         longest distance gets one closer retry before that propagates."""
         distances = [
             (1.75 * viewing_distance, 2.0),
-            (1.50 * viewing_distance, 1.0),
-            (1.25 * viewing_distance, 1.0),
+            (1.35 * viewing_distance, 1.0),
             (1.00 * viewing_distance, 1.0),
-            (1.00 * viewing_distance, 1.0),
-            (1.00 * viewing_distance, 1.0),
+            
         ]
 
         for i, (dist, pause) in enumerate(distances):

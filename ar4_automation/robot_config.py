@@ -34,7 +34,8 @@ ROBOT_CONFIGS = {
         # camera sits below the gripper; raise the EE this much (m) when scanning
         'camera_z_offset': 0.06,
         # 'moveit_action' kind: driven through pymoveit2's GripperInterface
-        # (a GripperCommand action). The remaining keys are its constructor args.
+        # (a GripperCommand action). The keys other than 'kind' and the
+        # open_width/closed_width metadata are its constructor args.
         'gripper': {
             'kind': 'moveit_action',
             'gripper_joint_names': ["gripper_jaw1_joint"],
@@ -67,10 +68,19 @@ ROBOT_CONFIGS = {
         # flagging a collision — the jaws are clamped onto it by definition
         'gripper_touch_links': ['gripper_base_link', 'gripper_jaw1_link',
                                 'gripper_jaw2_link', 'link_6'],
-        # bad frame (base_link) -> good frame rotation, and the euler offset of
-        # the neutral tool orientation (calibrated for the AR4)
+        # bad frame (base_link) -> good frame rotation. The AR4 URDF reaches
+        # along base_link -Y (link_6 sits at (-0.007, -0.287, 0.434) with every
+        # joint at zero), so Rz(+90 deg) is what makes the good frame the
+        # ordinary x-forward / y-left / z-up convention the xArms already have
+        # in base_link. This one is real geometry, not a preference.
         'frame_rotation_angles': np.array([0.0, 0.0, np.pi / 2]),
-        'frame_offset_angles': np.array([-0.6162, -1.5706, -2.1870]),
+        # Was [-0.6162, -1.5706, -2.1870]: a "neutral tool" euler offset that
+        # to_good_frame SUBTRACTED element-wise from the euler triple (and
+        # to_bad_frame added back). Euler angles do not compose by addition, so
+        # that made good-frame orientations not orientations — 120 deg of shift
+        # with its pitch term sitting on the XYZ gimbal singularity. Zeroed to
+        # match the xArms, so a good-frame euler now means what it says.
+        'frame_offset_angles': np.array([0.0, 0.0, 0.0]),
         # tool orientation used to face a marker (bad-frame euler XYZ)
         'offset_ori': np.array([0.0, np.pi, np.pi / 2]),
     },

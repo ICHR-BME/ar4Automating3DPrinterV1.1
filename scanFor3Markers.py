@@ -59,9 +59,9 @@ def main():
     # per-robot layout from runner_common; hardware uses the measured bench
     # layout below. printer_model names a box model in models/printers/.
     hardware_specs = [
-        {"marker_id": 0, "pos": [0.28, -0.3, 0.065], "orient": [0.0, 0.0, np.pi]},
-        {"marker_id": 1, "pos": [0.50, -0.3, 0.065], "orient": [0.0, 0.0, np.pi]},
-        {"marker_id": 2, "pos": [0.65, 0.1, 0.075], "orient": [0.0, 0.0, 3/2*np.pi]},
+        {"marker_id": 0, "pos": [0.3074, -0.1408, 0.2607], "orient": [0.0, 0.0, np.pi]},
+        {"marker_id": 1, "pos": [0.5274, -0.1408, 0.2607], "orient": [0.0, 0.0, np.pi]},
+        {"marker_id": 2, "pos": [0.4908, 0.1274, 0.2707], "orient": [0.0, 0.0, 3/2*np.pi]},
     ]
     specs = sim_printer_specs(robot, 3) if runVirtual else hardware_specs
 

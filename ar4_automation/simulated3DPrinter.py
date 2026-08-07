@@ -309,8 +309,13 @@ class Simulated3DPrinter(GzEntityClient):
             R_BF_GF = R_scipy.from_euler("XYZ", self.node.frameRotationAngles, degrees=False)
             R_GF_BF = R_BF_GF.inv()
             pos = R_GF_BF.apply(pos)
-            R_orient = R_scipy.from_euler("XYZ", orient, degrees=False)
-            orient = (R_GF_BF * R_orient).as_euler("XYZ", degrees=False)
+            # extrinsic 'xyz' both ways: self.q below builds the quaternion with
+            # tf's sxyz, so reading the spec as intrinsic "XYZ" here silently
+            # reinterpreted the result as extrinsic. Single-axis specs (every
+            # xArm one) are identical under both, but the AR4's multi-axis
+            # specs came out 120 deg / 0.37 m wrong.
+            R_orient = R_scipy.from_euler("xyz", orient, degrees=False)
+            orient = (R_GF_BF * R_orient).as_euler("xyz", degrees=False)
 
         self.pos = np.array(pos, dtype=float)
         self.orient = np.array(orient, dtype=float)

@@ -1,9 +1,25 @@
 {
   "marker_offset_config": {
-    "1": "scrape_fixture",
-    "2": "a1"
+    "2": "printer_offset",
+    "1": "box_offset"
   },
   "markers": [
+    {
+      "id": 2,
+      "positionInBase": [
+        0.15561143436978242,
+        -0.6197479885405833,
+        0.08268021706847349
+      ],
+      "eulerInBase": [
+        -1.5594351949861875,
+        -0.13658405923678374,
+        3.090868329808946
+      ],
+      "dict_name": "DICT_6X6_50",
+      "marker_size": 0.024,
+      "estimated": false
+    },
     {
       "id": 1,
       "positionInBase": [
@@ -19,23 +35,36 @@
       "dict_name": "unknown",
       "marker_size": 0.024,
       "estimated": false
-    },
-    {
-      "id": 2,
-      "positionInBase": [
-        0.2202911100247235,
-        0.31879104045924644,
-        0.07036968462326752
-      ],
-      "eulerInBase": [
-        1.5931060255624037,
-        -0.015226469896956196,
-        0.03220169799455408
-      ],
-      "dict_name": "DICT_6X6_50",
-      "marker_size": 0.024,
-      "estimated": false
     }
   ],
-  "printers": []
+  "printers": [
+    {
+      "marker_id": 1,
+      "pos": [
+        0.4131,
+        -0.2064,
+        0.1168
+      ],
+      "orient": [
+        -1.5707963267948966,
+        0.0,
+        3.141592653589793
+      ],
+      "printer_model": "a1"
+    },
+    {
+      "marker_id": 2,
+      "pos": [
+        0.6179,
+        0.1552,
+        0.0789
+      ],
+      "orient": [
+        1.5707963267948966,
+        0.0,
+        -1.5707963267948966
+      ],
+      "printer_model": "a1_mini"
+    }
+  ]
 }
