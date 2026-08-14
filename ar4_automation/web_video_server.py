@@ -159,6 +159,20 @@ class WebVideoStream:
         self.depth_colormap = depth_colormap
         self.enrich_fn = enrich_fn
         self.log_fn = log_fn
+        self.color_topic = color_topic
+        self.depth_topic = depth_topic
+        self.camera_info_topic = camera_info_topic
+        self.started_monotonic = time.monotonic()
+        self.last_color_monotonic = None
+        self.last_depth_monotonic = None
+        self.last_camera_info_monotonic = None
+        self.last_detection_monotonic = None
+        self.camera_frame_id = None
+        self.camera_index = camera_index
+        self.last_error = None
+        self.calibration_file = calibration_file
+        self.cap = None
+        self._webcam_thread = None
 
         # Permanent dict of all markers ever found: {marker_id: entry_dict}
         # This is NEVER cleared. Once a marker is seen, it stays here forever.
@@ -220,11 +234,13 @@ class WebVideoStream:
                 camera_index = select_camera(preset_keyword=camera_keyword)
             assert camera_index is not None, "No camera selected"
             self.cap = cv2.VideoCapture(camera_index)
+            self.camera_index = camera_index
             assert self.cap.isOpened(), f"Could not open camera {camera_index}"
-            ret, frame = self.cap.read()
-            assert ret, "Could not read initial frame"
-            h, w = frame.shape[:2]
-            print(f"Camera: {w}x{h} (index {camera_index})")
+            # Do not synchronously read here. Some UVC nodes open correctly
+            # but block their first read indefinitely; that used to hold the
+            # whole robot backend in state=starting. The capture thread owns
+            # all reads and reports failures through diagnostics.
+            print(f"Camera opened (index {camera_index})")
             if enable_aruco:
                 import pathlib
                 _default = pathlib.Path(__file__).resolve().parents[1] / "calibration" / "camera_matrix.npz"
@@ -274,12 +290,27 @@ class WebVideoStream:
                                       callback_group=self._render_group)
 
                 def _color_cb(self, msg):
-                    self.latest_color = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+                    try:
+                        self.latest_color = self.bridge.imgmsg_to_cv2(msg, 'bgr8')
+                        outer.last_color_monotonic = time.monotonic()
+                        if msg.header.frame_id:
+                            outer.camera_frame_id = msg.header.frame_id.lstrip('/')
+                        outer.last_error = None
+                    except Exception as exc:
+                        outer.last_error = f"color conversion failed: {exc}"
 
                 def _depth_cb(self, msg):
-                    self.latest_depth = self.bridge.imgmsg_to_cv2(msg, 'passthrough')
+                    try:
+                        self.latest_depth = self.bridge.imgmsg_to_cv2(msg, 'passthrough')
+                        outer.last_depth_monotonic = time.monotonic()
+                        outer.last_error = None
+                    except Exception as exc:
+                        outer.last_error = f"depth conversion failed: {exc}"
 
                 def _info_cb(self, msg):
+                    outer.last_camera_info_monotonic = time.monotonic()
+                    if msg.header.frame_id:
+                        outer.camera_frame_id = msg.header.frame_id.lstrip('/')
                     if outer.enable_aruco and outer.camera_matrix is None:
                         outer.camera_matrix = np.array(msg.k).reshape(3, 3)
                         outer.dist_coeffs = np.array(msg.d)
@@ -301,6 +332,45 @@ class WebVideoStream:
         self.camera_matrix = camera_matrix
         self.dist_coeffs = dist_coeffs
 
+    def configure_webcam(self, camera_index: int):
+        """Switch the live capture device without rebuilding the ROS node."""
+        old = self.cap
+        if old is not None:
+            old.release()
+        cap = cv2.VideoCapture(int(camera_index))
+        if not cap.isOpened():
+            self.cap = None
+            self.last_error = f"could not open camera index {camera_index}"
+            raise RuntimeError(self.last_error)
+        self.cap = cap
+        self.camera_index = int(camera_index)
+        self.source = 'webcam'
+        if self.enable_aruco:
+            import pathlib
+            default = (pathlib.Path(__file__).resolve().parents[1] /
+                       'calibration' / 'camera_matrix.npz')
+            path = pathlib.Path(self.calibration_file) if self.calibration_file else default
+            if not path.is_file():
+                cap.release()
+                self.cap = None
+                raise RuntimeError(f"camera calibration not found: {path}")
+            data = np.load(path)
+            self.camera_matrix = data['camera_matrix']
+            self.dist_coeffs = data['dist_coeffs']
+        self.last_error = None
+        if self._webcam_thread is None or not self._webcam_thread.is_alive():
+            self._webcam_thread = threading.Thread(target=self.run, daemon=True)
+            self._webcam_thread.start()
+
+    def disable_webcam(self):
+        if self.cap is not None:
+            self.cap.release()
+        self.cap = None
+        self.source = 'disabled'
+        self.camera_index = None
+        self.last_color_monotonic = None
+        self.camera_frame_id = None
+
     def _set_default_calibration(self, width: int, height: int):
         f = max(width, height)
         self.camera_matrix = np.array([
@@ -318,6 +388,33 @@ class WebVideoStream:
     def marker_poses(self):
         """All markers ever found, as a list. Never empty once a marker has been seen."""
         return list(self.found_markers.values())
+
+    def diagnostics(self) -> dict:
+        """Small JSON-safe health report for the GUI/status endpoint."""
+        now = time.monotonic()
+
+        def age(value):
+            return None if value is None else max(0.0, now - value)
+
+        return {
+            'source': self.source,
+            'color_topic': self.color_topic if self.source == 'ros' else None,
+            'depth_topic': self.depth_topic if self.source == 'ros' else None,
+            'camera_info_topic': (
+                self.camera_info_topic if self.source == 'ros' else None),
+            'camera_frame': self.camera_frame_id,
+            'camera_index': self.camera_index if self.source == 'webcam' else None,
+            'calibrated': bool(self.is_calibrated),
+            'color_age_s': age(self.last_color_monotonic),
+            'depth_age_s': age(self.last_depth_monotonic),
+            'camera_info_age_s': age(self.last_camera_info_monotonic),
+            'detection_age_s': age(self.last_detection_monotonic),
+            'visible_marker_count': int(self.last_marker_count),
+            'known_marker_count': len(self.found_markers),
+            'marker_dictionaries': list(getattr(self, 'dict_names', [])),
+            'marker_sizes_m': [float(v) for v in getattr(self, 'marker_sizes', [])],
+            'last_error': self.last_error,
+        }
 
     # ---- MJPEG stream ----
 
@@ -404,6 +501,7 @@ class WebVideoStream:
                 entry = {
                     'id': marker_id,
                     'dict_name': self.dict_names[dict_indices[i]],
+                    'camera_frame': self.camera_frame_id,
                     'positionFromCamera': position_cam,
                     'eulerFromCamera': np.array([roll, pitch, yaw]),
                     'orientFromCamera': {
@@ -438,6 +536,7 @@ class WebVideoStream:
                         # No enrichment configured: store the raw camera entry as-is.
                         self.found_markers[marker_id] = entry.copy()
                 live_marker_poses.append(entry)
+                self.last_detection_monotonic = time.monotonic()
 
                 cv2.drawFrameAxes(output, self.camera_matrix, self.dist_coeffs,
                                   rvec[0], tvec[0], marker_size * 0.5)
@@ -602,16 +701,34 @@ class WebVideoStream:
     # ---- Blocking run ----
 
     def run(self):
-        if self.source == "webcam":
+        if self.source in {"webcam", "disabled"}:
+            if self._webcam_thread is None:
+                self._webcam_thread = threading.current_thread()
             dt = 1.0 / self.fps
             while True:
                 try:
-                    ret, frame = self.cap.read()
-                    if not ret:
+                    cap = self.cap
+                    if cap is None:
                         time.sleep(0.1)
                         continue
+                    ret, frame = cap.read()
+                    if not ret:
+                        self.last_error = (
+                            f"camera index {self.camera_index} returned no frame")
+                        time.sleep(0.1)
+                        continue
+                    self.last_color_monotonic = time.monotonic()
+                    self.camera_frame_id = 'usb_camera_optical_frame'
+                    self.last_error = None
                     self._build_frame(frame)
                 except Exception as e:
+                    self.last_error = f'frame processing failed: {e}'
+                    # Camera preview is a diagnostic/safety aid in its own
+                    # right. Preserve the unprocessed image if ArUco drawing
+                    # or panel composition fails, while reporting the error so
+                    # vision-dependent commands remain fail-closed.
+                    if 'frame' in locals() and frame is not None:
+                        self._update_frame(frame)
                     _log = self.log_fn or print
                     _log(f'Webcam frame error (recovering): {e}')
                 time.sleep(dt)

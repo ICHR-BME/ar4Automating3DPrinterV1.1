@@ -6,6 +6,8 @@ import subprocess
 import threading
 import time as _time
 import warnings
+import json
+import pathlib
 from scipy.spatial.transform import Rotation as R
 from geometry_msgs.msg import Pose, Point, TransformStamped
 from sensor_msgs.msg import Image, CameraInfo
@@ -34,11 +36,41 @@ class ArucoDetectionViewer(PoseReader):
                  feed_rotation_deg=0.0,
                  marker_sizes=None,
                  calibration_file=None,
+                 hand_eye_file=None,
                  robot='ar4'):
         super().__init__('aruco_detection_viewer', enable_pose_print=False, robot=robot)
 
         # camera frame + topic defaults come from the robot config
         self.camera_frame_name = self.robot_config['camera_frame']
+        self.hand_eye_transform = None
+        self.hand_eye_file = None
+        if robot in {'lite6', 'xarm6'}:
+            default_hand_eye = (pathlib.Path(__file__).resolve().parents[1] /
+                                'calibration' / f'{robot}_hand_eye.json')
+            path = pathlib.Path(hand_eye_file) if hand_eye_file else default_hand_eye
+            if path.is_file():
+                try:
+                    payload = json.loads(path.read_text())
+                    if payload.get('quality_passed') is not True:
+                        raise ValueError('calibration did not pass quality checks')
+                    metrics = payload.get('metrics') or {}
+                    if (float(metrics.get('translation_rmse_m', float('inf'))) > 0.01 or
+                            float(metrics.get('rotation_rmse_deg', float('inf'))) > 3.0):
+                        raise ValueError('calibration quality metrics exceed limits')
+                    if payload.get('parent_frame') != self.end_effector_name:
+                        raise ValueError(
+                            f"parent_frame={payload.get('parent_frame')!r}, expected "
+                            f"{self.end_effector_name!r}")
+                    tf = np.asarray(payload['matrix'], dtype=float)
+                    if tf.shape != (4, 4) or not np.isfinite(tf).all():
+                        raise ValueError('matrix must be a finite 4x4 transform')
+                    self.hand_eye_transform = tf
+                    self.hand_eye_file = str(path)
+                    self.get_logger().info(
+                        f"Using measured hand-eye calibration: {path}")
+                except Exception as exc:
+                    self.get_logger().error(
+                        f"Ignoring invalid hand-eye calibration {path}: {exc}")
         color_topic = color_topic or self.robot_config['color_topic']
         depth_topic = depth_topic or self.robot_config['depth_topic']
         camera_info_topic = camera_info_topic or self.robot_config['camera_info_topic']
@@ -96,8 +128,9 @@ class ArucoDetectionViewer(PoseReader):
             return entry
         # Clear the estimated flag now that we have a real detection
         entry.pop('estimated', None)
-        badPos, badEuler = self.cameraToBase(entry['positionFromCamera'], entry['eulerFromCamera'],
-                                              markerID=entry['id'])
+        badPos, badEuler = self.cameraToBase(
+            entry['positionFromCamera'], entry['eulerFromCamera'],
+            markerID=entry['id'], camera_frame=entry.get('camera_frame'))
         if badPos is None:
             self.get_logger().warn(
                 f"[enrich] ID={entry['id']} cameraToBase FAILED — "
@@ -140,13 +173,36 @@ class ArucoDetectionViewer(PoseReader):
         return (np.array([transformed.position.x, transformed.position.y, transformed.position.z]),
                 euler)
 
-    def cameraToBase(self, posInFrame, eulerInFrame, markerID=0):
+    def cameraToBase(self, posInFrame, eulerInFrame, markerID=0,
+                     camera_frame=None):
         # Guard: if dt is not yet set by PoseReader, use default
         if not hasattr(self, 'dt') or self.dt is None or self.dt == 0:
             self.dt = 1.0 / self.fps
 
         try:
-            badPos, badEuler = self.applyFrameChange(posInFrame, eulerInFrame)
+            if self.hand_eye_transform is not None:
+                base_to_eef_msg = self.tf2_buffer.lookup_transform(
+                    self.base_link_name, self.end_effector_name, Time())
+                t = base_to_eef_msg.transform.translation
+                q = base_to_eef_msg.transform.rotation
+                base_to_eef = np.eye(4)
+                base_to_eef[:3, :3] = R.from_quat(
+                    [q.x, q.y, q.z, q.w]).as_matrix()
+                base_to_eef[:3, 3] = [t.x, t.y, t.z]
+                camera_to_marker = np.eye(4)
+                camera_to_marker[:3, :3] = R.from_euler(
+                    'XYZ', eulerInFrame, degrees=False).as_matrix()
+                camera_to_marker[:3, 3] = np.asarray(posInFrame, dtype=float)
+                base_to_marker = (base_to_eef @ self.hand_eye_transform @
+                                  camera_to_marker)
+                badPos = base_to_marker[:3, 3]
+                badEuler = R.from_matrix(base_to_marker[:3, :3]).as_euler(
+                    'XYZ', degrees=False)
+            else:
+                badPos, badEuler = self.applyFrameChange(
+                    posInFrame, eulerInFrame,
+                    source_frame=self.base_link_name,
+                    target_frame=camera_frame or self.camera_frame_name)
         except Exception as e:
             # expected while the TF buffer fills at startup; throttled so a
             # persistent TF problem still shows

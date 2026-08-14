@@ -2,6 +2,7 @@
 """Shared setup/menu boilerplate for the run*/scanFor* entry scripts."""
 
 import math
+import os
 import time
 import threading
 
@@ -67,12 +68,29 @@ SIM_PRINTER_SPECS_2 = SIM_PRINTER_SPECS_3[1:]
 def make_webcam_node(robot='ar4', **overrides):
     """Build a printerAutomation node with the standard webcam config."""
     kwargs = dict(WEBCAM_NODE_KWARGS)
-    # UFACTORY wrist cameras are exposed by realsense2_camera as ROS topics;
-    # only the AR4 uses the directly-opened/calibrated generic webcam.
-    if robot in {'lite6', 'xarm6'}:
+    # Lite 6 uses the ROS RealSense/Gazebo source. The commissioned physical
+    # xArm 6 has a conventional USB webcam, opened directly with OpenCV just
+    # like the AR4. Its hand-eye file supplies the wrist-camera extrinsics.
+    if robot == 'lite6':
         kwargs.update(SIM_NODE_KWARGS)
         kwargs.pop('feed_rotation_deg', None)
-        kwargs.pop('marker_sizes', None)
+    elif robot == 'xarm6':
+        camera_mode = os.environ.get('XARM_CAMERA_MODE', 'webcam').strip().lower()
+        if camera_mode in {'disabled', 'none', 'off'}:
+            # Movement-only commissioning: use non-blocking ROS subscriptions
+            # with no expected publisher. Vision goals remain fail-closed via
+            # the GUI backend camera preflight, but a missing/broken USB camera
+            # cannot hold the entire robot backend in state=starting.
+            kwargs.update(SIM_NODE_KWARGS)
+            kwargs.pop('feed_rotation_deg', None)
+        elif camera_mode == 'webcam':
+            kwargs['feed_rotation_deg'] = 0.0
+            camera_index = os.environ.get('XARM_CAMERA_INDEX', '').strip()
+            if camera_index:
+                kwargs['camera_index'] = int(camera_index)
+        else:
+            raise ValueError(
+                "XARM_CAMERA_MODE must be 'webcam' or 'disabled'")
     kwargs.update(overrides)
     node = printerAutomation(robot=robot, **kwargs)
     # The 0.702 correction was calibrated for the AR4 webcam.  The Lite 6

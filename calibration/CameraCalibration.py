@@ -3,10 +3,12 @@ import numpy as np
 import glob
 import os
 import sys
+import argparse
 
 # Make the repo root importable so ar4_automation resolves when run directly.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ar4_automation.web_video_server import select_camera
+from calibration.charuco_utils import create_board, detect, detector_parameters
 
 # --- ChArUco board parameters (adjust to match your physical board) ---
 SQUARES_X = 11         # number of chessboard squares in X direction
@@ -23,14 +25,8 @@ OUTPUT_FILE = os.path.join(_SCRIPT_DIR, "camera_matrix.npz")
 
 def _detect_charuco(gray, board, aruco_dict, detector_params):
     """Detect ChArUco corners in a grayscale image (OpenCV 4.6 compatible)."""
-    marker_corners, marker_ids, _ = cv2.aruco.detectMarkers(
-        gray, aruco_dict, parameters=detector_params
-    )
-    if marker_ids is None or len(marker_ids) < 4:
-        return None, None, marker_corners, marker_ids
-    _, charuco_corners, charuco_ids = cv2.aruco.interpolateCornersCharuco(
-        marker_corners, marker_ids, gray, board
-    )
+    marker_corners, marker_ids, _, charuco_corners, charuco_ids = detect(
+        gray, board, aruco_dict, detector_params)
     return charuco_corners, charuco_ids, marker_corners, marker_ids
 
 
@@ -44,8 +40,8 @@ def collect_calibration_images(num_images: int = 30, camera_index: int = None):
         raise RuntimeError(f"Cannot open camera {camera_index}")
 
     aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
-    board = cv2.aruco.CharucoBoard_create(SQUARES_X, SQUARES_Y, SQUARE_LENGTH, MARKER_LENGTH, aruco_dict)
-    detector_params = cv2.aruco.DetectorParameters_create()
+    board = create_board(SQUARES_X, SQUARES_Y, SQUARE_LENGTH, MARKER_LENGTH, aruco_dict)
+    detector_params = detector_parameters()
 
     saved = 0
     print(f"Press SPACE to capture a frame ({num_images} needed), ESC to quit early.")
@@ -92,8 +88,8 @@ def calibrate_from_images(image_glob: str = IMAGE_GLOB) -> tuple[np.ndarray, np.
     rms_error     : float  (reprojection error in pixels)
     """
     aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
-    board = cv2.aruco.CharucoBoard_create(SQUARES_X, SQUARES_Y, SQUARE_LENGTH, MARKER_LENGTH, aruco_dict)
-    detector_params = cv2.aruco.DetectorParameters_create()
+    board = create_board(SQUARES_X, SQUARES_Y, SQUARE_LENGTH, MARKER_LENGTH, aruco_dict)
+    detector_params = detector_parameters()
 
     all_charuco_corners = []
     all_charuco_ids = []
@@ -181,8 +177,8 @@ def diagnose_detection(image_glob: str = IMAGE_GLOB, num_images: int = 3):
     Press any key to advance, ESC to quit.
     """
     aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
-    board = cv2.aruco.CharucoBoard_create(SQUARES_X, SQUARES_Y, SQUARE_LENGTH, MARKER_LENGTH, aruco_dict)
-    detector_params = cv2.aruco.DetectorParameters_create()
+    board = create_board(SQUARES_X, SQUARES_Y, SQUARE_LENGTH, MARKER_LENGTH, aruco_dict)
+    detector_params = detector_parameters()
 
     shown = 0
     for path in sorted(glob.glob(image_glob)):
@@ -245,7 +241,7 @@ def generate_board_pdf(output_pdf: str = "charuco_board.pdf", dpi: int = 300,
     page_w_mm, page_h_mm = paper_sizes_mm[paper]
 
     aruco_dict = cv2.aruco.getPredefinedDictionary(ARUCO_DICT)
-    board = cv2.aruco.CharucoBoard_create(
+    board = create_board(
         SQUARES_X, SQUARES_Y, SQUARE_LENGTH, MARKER_LENGTH, aruco_dict
     )
 
@@ -299,20 +295,35 @@ def load_calibration(file: str = OUTPUT_FILE) -> tuple[np.ndarray, np.ndarray]:
     return data["camera_matrix"], data["dist_coeffs"]
 
 
-if __name__ == "__main__":
+def main(argv=None):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--capture", action="store_true",
+                        help="capture fresh images from the USB webcam first")
+    parser.add_argument("--camera-index", type=int, default=None)
+    parser.add_argument("--num-images", type=int, default=30)
+    parser.add_argument("--diagnose", action="store_true")
+    args = parser.parse_args(argv)
     # Diagnostic: visually verify corner IDs match the physical board layout.
     # Check that ID=0 is top-left and IDs increase left→right, top→bottom.
     # If they look scrambled, swap SQUARES_X and SQUARES_Y.
-    #diagnose_detection(IMAGE_GLOB, num_images=3)
+    if args.diagnose:
+        diagnose_detection(IMAGE_GLOB, num_images=3)
 
     # Step 0: generate (or regenerate) the printable board PDF.
-    generate_board_pdf("charuco_board.pdf", dpi=300, paper="A4")
+    generate_board_pdf(os.path.join(_SCRIPT_DIR, "charuco_board.pdf"),
+                       dpi=300, paper="A4")
 
     # Step 1 (optional): capture fresh calibration images from a live camera.
-    #collect_calibration_images(num_images=30)
+    if args.capture:
+        collect_calibration_images(num_images=args.num_images,
+                                   camera_index=args.camera_index)
 
     # Step 2: compute the camera matrix from the saved images.
     camera_matrix, dist_coeffs, rms = calibrate_from_images(IMAGE_GLOB)
 
     # Step 3: persist the results.
     save_calibration(camera_matrix, dist_coeffs)
+
+
+if __name__ == "__main__":
+    main()

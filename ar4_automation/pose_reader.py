@@ -239,6 +239,30 @@ class PoseReader(Node):
 		self._xarm_safety_error = None
 		return True
 
+	def set_xarm_mode(self, mode, timeout=3.0):
+		"""Change UFACTORY mode without clearing faults or enabling motors."""
+		if 'xarm_safety' not in self.robot_config or self.simulation_mode:
+			raise RuntimeError('UFACTORY controller mode is physical-only')
+		from xarm_msgs.srv import SetInt16
+		ns = self.robot_config['xarm_safety']['namespace'].rstrip('/')
+		for service, value in ((f'{ns}/set_mode', int(mode)),
+		                       (f'{ns}/set_state', 0)):
+			client = self.create_client(SetInt16, service)
+			if not client.wait_for_service(timeout_sec=timeout):
+				raise RuntimeError(f'service unavailable: {service}')
+			req = SetInt16.Request()
+			req.data = value
+			future = client.call_async(req)
+			deadline = time.monotonic() + timeout
+			while not future.done() and time.monotonic() < deadline:
+				time.sleep(0.01)
+			if not future.done() or future.result() is None:
+				raise RuntimeError(f'no response from {service}')
+			if int(future.result().ret) != 0:
+				raise RuntimeError(
+					f'{service} rejected {value}: ret={future.result().ret}')
+		return True
+
 	def safety_snapshot(self):
 		"""Return machine-readable interlocks for the GUI and command guard."""
 		now = time.monotonic()

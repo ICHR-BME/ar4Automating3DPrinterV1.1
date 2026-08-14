@@ -49,7 +49,8 @@ def _timed(method):
 class printerAutomation(ArucoDetectionViewer):
     def __init__(self, calibration_mode=False, stream_source="webcam", camera_index=None, camera_keyword="GENERAL WEBCAM",
                  color_topic=None, depth_topic=None, camera_info_topic=None,
-                 feed_rotation_deg=0.0, marker_sizes=None, robot='ar4'):
+                 feed_rotation_deg=0.0, marker_sizes=None, robot='ar4',
+                 hand_eye_file=None):
         self._startup_start = time.perf_counter()
         # camera topic defaults resolve from the robot config in ArucoDetectionViewer
         super().__init__(source=stream_source,
@@ -61,6 +62,7 @@ class printerAutomation(ArucoDetectionViewer):
                          feed_rotation_deg=feed_rotation_deg,
                          marker_sizes=marker_sizes,
                          calibration_file=os.path.join(_REPO_ROOT, "calibration", "camera_matrix.npz"),
+                         hand_eye_file=hand_eye_file,
                          robot=robot)
         self.get_logger().info(f"printerAutomation initialized, robot={robot}, calibration_mode={calibration_mode}")
 
@@ -841,9 +843,10 @@ class printerAutomation(ArucoDetectionViewer):
         goodPos, goodEuler = self.to_good_frame(badPos, badEuler)
         self.get_logger().info(f'Scanning for markers at estimated position: {estimated_pos}')
         self.freeze_markers()
-        self.move_to_pose(goodPos, goodEuler)
-        self.unfreeze_markers()
-        return True
+        try:
+            return bool(self.move_to_pose(goodPos, goodEuler))
+        finally:
+            self.unfreeze_markers()
 
     def scanMultipleLocations(self, locations, viewing_distance=0.15, pause_duration=2.0):
         """Scan multiple estimated marker locations sequentially."""
