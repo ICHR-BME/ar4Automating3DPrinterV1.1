@@ -11,6 +11,27 @@ from scipy.spatial.transform import Rotation as R
 from .web_video_server import WebVideoStream
 
 
+def _estimate_pose_single_marker(corner, marker_size, camera_matrix, dist_coeffs):
+    """Stand-in for cv2.aruco.estimatePoseSingleMarkers (removed in OpenCV 4.7).
+
+    Same object-point ordering as the original (marker centred on its own
+    origin; corners top-left, top-right, bottom-right, bottom-left) and the
+    same (1, 1, 3) return shapes, so call sites are unchanged.
+    """
+    half = float(marker_size) / 2.0
+    obj_points = np.array([[-half,  half, 0.0],
+                           [ half,  half, 0.0],
+                           [ half, -half, 0.0],
+                           [-half, -half, 0.0]], dtype=np.float64)
+    img_points = np.asarray(corner, dtype=np.float64).reshape(4, 2)
+    ok, rvec, tvec = cv2.solvePnP(obj_points, img_points,
+                                  camera_matrix, dist_coeffs,
+                                  flags=cv2.SOLVEPNP_IPPE_SQUARE)
+    if not ok:
+        raise RuntimeError("solvePnP failed for marker")
+    return rvec.reshape(1, 1, 3), tvec.reshape(1, 1, 3), None
+
+
 class CameraViewer(Node):
     def __init__(self, node_name: str = None, web_port: int = 5000, enable_aruco: bool = True,
                  use_webcam: bool = False, webcam_index: int = 0):
@@ -95,6 +116,8 @@ class CameraViewer(Node):
             factory() if factory is not None
             else cv2.aruco.DetectorParameters()
         )
+        self.aruco_detectors = [cv2.aruco.ArucoDetector(d, self.aruco_params)
+                                for d in self.aruco_dicts]
         self.last_marker_count = 0
         self._last_log_time = 0.0
         self.log_interval_s = 1.0
@@ -249,8 +272,8 @@ class CameraViewer(Node):
         all_corners = []
         all_ids = []
         dict_indices = []
-        for idx, aruco_dict in enumerate(self.aruco_dicts):
-            corners, ids, _ = cv2.aruco.detectMarkers(gray, aruco_dict, parameters=self.aruco_params)
+        for idx, detector in enumerate(self.aruco_detectors):
+            corners, ids, _ = detector.detectMarkers(gray)
             if ids is not None:
                 all_corners.extend(corners)
                 all_ids.extend(ids)
@@ -281,7 +304,7 @@ class CameraViewer(Node):
                 dict_idx = dict_indices[i]
                 marker_size = self.marker_sizes[dict_idx]
 
-                rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
+                rvec, tvec, _ = _estimate_pose_single_marker(
                     corner, marker_size, self.camera_matrix, self.dist_coeffs,
                 )
 
