@@ -27,6 +27,27 @@ def create_aruco_detector_parameters():
     return cv2.aruco.DetectorParameters()
 
 
+def _estimate_pose_single_marker(corner, marker_size, camera_matrix, dist_coeffs):
+    """Stand-in for cv2.aruco.estimatePoseSingleMarkers (removed in OpenCV 4.7).
+
+    Uses the same object-point ordering the original used (marker centred on
+    its own origin, corners top-left, top-right, bottom-right, bottom-left)
+    and returns (1, 1, 3)-shaped arrays so callers index it unchanged.
+    """
+    half = float(marker_size) / 2.0
+    obj_points = np.array([[-half,  half, 0.0],
+                           [ half,  half, 0.0],
+                           [ half, -half, 0.0],
+                           [-half, -half, 0.0]], dtype=np.float64)
+    img_points = np.asarray(corner, dtype=np.float64).reshape(4, 2)
+    ok, rvec, tvec = cv2.solvePnP(obj_points, img_points,
+                                  camera_matrix, dist_coeffs,
+                                  flags=cv2.SOLVEPNP_IPPE_SQUARE)
+    if not ok:
+        raise RuntimeError("solvePnP failed for marker")
+    return rvec.reshape(1, 1, 3), tvec.reshape(1, 1, 3), None
+
+
 # ------------------------------------------------------------------
 # Camera discovery
 # ------------------------------------------------------------------
@@ -194,6 +215,8 @@ class WebVideoStream:
             self.aruco_dicts = [cv2.aruco.getPredefinedDictionary(ARUCO_DICT_MAP[n])
                                 for n in self.dict_names]
             self.aruco_params = create_aruco_detector_parameters()
+            self.aruco_detectors = [cv2.aruco.ArucoDetector(d, self.aruco_params)
+                                    for d in self.aruco_dicts]
             self.camera_matrix = None
             self.dist_coeffs = None
             self.last_marker_count = 0
@@ -450,9 +473,8 @@ class WebVideoStream:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         all_corners, all_ids, dict_indices = [], [], []
-        for idx, aruco_dict in enumerate(self.aruco_dicts):
-            corners, ids, _ = cv2.aruco.detectMarkers(
-                gray, aruco_dict, parameters=self.aruco_params)
+        for idx, detector in enumerate(self.aruco_detectors):
+            corners, ids, _ = detector.detectMarkers(gray)
             if ids is not None:
                 all_corners.extend(corners)
                 all_ids.extend(ids)
@@ -483,7 +505,7 @@ class WebVideoStream:
                 seen.add(marker_id)
 
                 marker_size = self.marker_sizes[dict_indices[i]]
-                rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
+                rvec, tvec, _ = _estimate_pose_single_marker(
                     corner, marker_size, self.camera_matrix, self.dist_coeffs)
 
                 position_cam = tvec[0][0].copy()
@@ -491,7 +513,7 @@ class WebVideoStream:
                 rot_mat, _ = cv2.Rodrigues(rvec[0])
                 roll, pitch, yaw = R.from_matrix(rot_mat).as_euler('XYZ', degrees=False)
 
-                rvec_n, tvec_n, _ = cv2.aruco.estimatePoseSingleMarkers(
+                rvec_n, tvec_n, _ = _estimate_pose_single_marker(
                     corner, marker_size, naive_K, naive_d)
                 pos_naive = tvec_n[0][0].copy()
                 dist_naive = float(np.linalg.norm(pos_naive))
